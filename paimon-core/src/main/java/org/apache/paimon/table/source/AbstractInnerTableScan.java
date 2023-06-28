@@ -27,21 +27,25 @@ import org.apache.paimon.data.BinaryRow;
 import org.apache.paimon.operation.FileStoreScan;
 import org.apache.paimon.table.source.snapshot.CompactedStartingScanner;
 import org.apache.paimon.table.source.snapshot.ContinuousCompactorStartingScanner;
+import org.apache.paimon.table.source.snapshot.ContinuousFromSnapshotFullStartingScanner;
 import org.apache.paimon.table.source.snapshot.ContinuousFromSnapshotStartingScanner;
 import org.apache.paimon.table.source.snapshot.ContinuousFromTimestampStartingScanner;
 import org.apache.paimon.table.source.snapshot.ContinuousLatestStartingScanner;
 import org.apache.paimon.table.source.snapshot.FullCompactedStartingScanner;
 import org.apache.paimon.table.source.snapshot.FullStartingScanner;
+import org.apache.paimon.table.source.snapshot.IncrementalStartingScanner;
 import org.apache.paimon.table.source.snapshot.SnapshotReader;
 import org.apache.paimon.table.source.snapshot.StartingScanner;
 import org.apache.paimon.table.source.snapshot.StaticFromSnapshotStartingScanner;
+import org.apache.paimon.table.source.snapshot.StaticFromTagStartingScanner;
 import org.apache.paimon.table.source.snapshot.StaticFromTimestampStartingScanner;
-import org.apache.paimon.utils.Preconditions;
+import org.apache.paimon.utils.Pair;
 
 import java.util.List;
 import java.util.Optional;
 
 import static org.apache.paimon.CoreOptions.FULL_COMPACTION_DELTA_COMMITS;
+import static org.apache.paimon.utils.Preconditions.checkArgument;
 
 /** An abstraction layer above {@link FileStoreScan} to provide input split generation. */
 public abstract class AbstractInnerTableScan implements InnerTableScan {
@@ -70,7 +74,7 @@ public abstract class AbstractInnerTableScan implements InnerTableScan {
         switch (type) {
             case NORMAL:
                 {
-                    Preconditions.checkArgument(
+                    checkArgument(
                             isStreaming,
                             "Set 'streaming-compact' in batch mode. This is unexpected.");
                     return new ContinuousCompactorStartingScanner();
@@ -112,29 +116,28 @@ public abstract class AbstractInnerTableScan implements InnerTableScan {
                 }
             case FROM_TIMESTAMP:
                 Long startupMillis = options.scanTimestampMills();
-                Preconditions.checkNotNull(
-                        startupMillis,
-                        String.format(
-                                "%s can not be null when you use %s for %s",
-                                CoreOptions.SCAN_TIMESTAMP_MILLIS.key(),
-                                CoreOptions.StartupMode.FROM_TIMESTAMP,
-                                CoreOptions.SCAN_MODE.key()));
                 return isStreaming
                         ? new ContinuousFromTimestampStartingScanner(startupMillis)
                         : new StaticFromTimestampStartingScanner(startupMillis);
             case FROM_SNAPSHOT:
+                if (options.scanSnapshotId() != null) {
+                    return isStreaming
+                            ? new ContinuousFromSnapshotStartingScanner(options.scanSnapshotId())
+                            : new StaticFromSnapshotStartingScanner(options.scanSnapshotId());
+                } else {
+                    checkArgument(!isStreaming, "Cannot scan from tag in streaming mode.");
+                    return new StaticFromTagStartingScanner(options().scanTagName());
+                }
             case FROM_SNAPSHOT_FULL:
-                Long snapshotId = options.scanSnapshotId();
-                Preconditions.checkNotNull(
-                        snapshotId,
-                        String.format(
-                                "%s can not be null when you use %s for %s",
-                                CoreOptions.SCAN_SNAPSHOT_ID.key(),
-                                startupMode,
-                                CoreOptions.SCAN_MODE.key()));
-                return isStreaming && startupMode == CoreOptions.StartupMode.FROM_SNAPSHOT
-                        ? new ContinuousFromSnapshotStartingScanner(snapshotId)
-                        : new StaticFromSnapshotStartingScanner(snapshotId);
+                return isStreaming
+                        ? new ContinuousFromSnapshotFullStartingScanner(options.scanSnapshotId())
+                        : new StaticFromSnapshotStartingScanner(options.scanSnapshotId());
+            case INCREMENTAL:
+                checkArgument(!isStreaming, "Cannot read incremental in streaming mode.");
+                Pair<String, String> incremental = options.incrementalBetween();
+                return new IncrementalStartingScanner(
+                        Long.parseLong(incremental.getLeft()),
+                        Long.parseLong(incremental.getRight()));
             default:
                 throw new UnsupportedOperationException(
                         "Unknown startup mode " + startupMode.name());

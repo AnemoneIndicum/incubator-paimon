@@ -248,6 +248,9 @@ Lookup will cache data on the memory and local disk, you can use the following o
     </tbody>
 </table>
 
+Lookup changelog-producer supports `changelog-producer.row-deduplicate` to avoid generating -U, +U
+changelog for the same record.
+
 ### Full Compaction
 
 If you think the resource consumption of 'lookup' is too large, you can consider using 'full-compaction' changelog producer,
@@ -265,15 +268,21 @@ Full compaction changelog producer can produce complete changelog for any type o
 
 {{< /hint >}}
 
+Full-compaction changelog-producer supports `changelog-producer.row-deduplicate` to avoid generating -U, +U
+changelog for the same record.
+
 ## Sequence Field
 
 By default, the primary key table determines the merge order according to the input order (the last input record will be the last to merge). However, in distributed computing,
 there will be some cases that lead to data disorder. At this time, you can use a time field as `sequence.field`, for example:
 
 {{< hint info >}}
-When the record is updated or deleted, the `sequence.field` must become larger and cannot remain unchanged. For example,
-you can use [Mysql Binlog operation time](https://ververica.github.io/flink-cdc-connectors/master/content/connectors/mysql-cdc.html#available-metadata) as `sequence.field`.
-If the provided `sequence.field` doesn't meet the precision, like a rough second or millisecond, you can set `sequence.auto-padding` to `second-to-micro` or `millis-to-micro` so that the precision of sequence number will be made up to microsecond by system. 
+When the record is updated or deleted, the `sequence.field` must become larger and cannot remain unchanged. 
+For -U and +U, their sequence-fields must be different.
+
+If the provided `sequence.field` doesn't meet the precision, like a rough second or millisecond, you can set
+`sequence.auto-padding` to `second-to-micro` or `millis-to-micro` so that the precision of sequence number will
+be made up to microsecond by system. 
 {{< /hint >}}
 
 {{< tabs "sequence.field" >}}

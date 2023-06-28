@@ -24,6 +24,7 @@ import org.apache.paimon.consumer.ConsumerManager;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.Path;
 import org.apache.paimon.operation.FileStoreScan;
+import org.apache.paimon.operation.Lock;
 import org.apache.paimon.operation.TagDeletion;
 import org.apache.paimon.options.Options;
 import org.apache.paimon.predicate.Predicate;
@@ -66,8 +67,10 @@ public abstract class AbstractFileStoreTable implements FileStoreTable {
     protected final FileIO fileIO;
     protected final Path path;
     protected final TableSchema tableSchema;
+    protected final Lock.Factory lockFactory;
 
-    public AbstractFileStoreTable(FileIO fileIO, Path path, TableSchema tableSchema) {
+    public AbstractFileStoreTable(
+            FileIO fileIO, Path path, TableSchema tableSchema, Lock.Factory lockFactory) {
         this.fileIO = fileIO;
         this.path = path;
         if (!tableSchema.options().containsKey(PATH.key())) {
@@ -77,6 +80,7 @@ public abstract class AbstractFileStoreTable implements FileStoreTable {
             tableSchema = tableSchema.copy(newOptions);
         }
         this.tableSchema = tableSchema;
+        this.lockFactory = lockFactory;
     }
 
     @Override
@@ -228,21 +232,30 @@ public abstract class AbstractFileStoreTable implements FileStoreTable {
                 store().newCommit(commitUser),
                 coreOptions().writeOnly() ? null : store().newExpire(),
                 coreOptions().writeOnly() ? null : store().newPartitionExpire(commitUser),
+                lockFactory.create(),
                 CoreOptions.fromMap(options()).consumerExpireTime(),
                 new ConsumerManager(fileIO, path));
     }
 
     private Optional<TableSchema> tryTimeTravel(Options options) {
         CoreOptions coreOptions = new CoreOptions(options);
-        Long snapshotId;
 
         switch (coreOptions.startupMode()) {
             case FROM_SNAPSHOT:
             case FROM_SNAPSHOT_FULL:
-                snapshotId = coreOptions.scanSnapshotId();
-                if (snapshotManager().snapshotExists(snapshotId)) {
-                    long schemaId = snapshotManager().snapshot(snapshotId).schemaId();
-                    return Optional.of(schemaManager().schema(schemaId).copy(options.toMap()));
+                if (coreOptions.scanSnapshotId() != null) {
+                    long snapshotId = coreOptions.scanSnapshotId();
+                    if (snapshotManager().snapshotExists(snapshotId)) {
+                        long schemaId = snapshotManager().snapshot(snapshotId).schemaId();
+                        return Optional.of(schemaManager().schema(schemaId).copy(options.toMap()));
+                    }
+                } else {
+                    String tagName = coreOptions.scanTagName();
+                    TagManager tagManager = new TagManager(fileIO, path);
+                    if (tagManager.tagExists(tagName)) {
+                        long schemaId = tagManager.taggedSnapshot(tagName).schemaId();
+                        return Optional.of(schemaManager().schema(schemaId).copy(options.toMap()));
+                    }
                 }
                 return Optional.empty();
             case FROM_TIMESTAMP:

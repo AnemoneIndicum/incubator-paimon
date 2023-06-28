@@ -18,7 +18,7 @@
 
 package org.apache.paimon.flink.sink;
 
-import org.apache.paimon.operation.Lock;
+import org.apache.paimon.table.AppendOnlyFileStoreTable;
 import org.apache.paimon.table.BucketMode;
 import org.apache.paimon.table.FileStoreTable;
 
@@ -39,7 +39,6 @@ public class FlinkSinkBuilder {
     private final FileStoreTable table;
 
     private DataStream<RowData> input;
-    private Lock.Factory lockFactory = Lock.emptyFactory();
     @Nullable private Map<String, String> overwritePartition;
     @Nullable private LogSinkFunction logSinkFunction;
     @Nullable private Integer parallelism;
@@ -50,11 +49,6 @@ public class FlinkSinkBuilder {
 
     public FlinkSinkBuilder withInput(DataStream<RowData> input) {
         this.input = input;
-        return this;
-    }
-
-    public FlinkSinkBuilder withLockFactory(Lock.Factory lockFactory) {
-        this.lockFactory = lockFactory;
         return this;
     }
 
@@ -81,6 +75,7 @@ public class FlinkSinkBuilder {
             case DYNAMIC:
                 return buildDynamicBucketSink();
             case UNAWARE:
+                return buildUnawareBucketSink();
             default:
                 throw new UnsupportedOperationException("Unsupported bucket mode: " + bucketMode);
         }
@@ -88,8 +83,7 @@ public class FlinkSinkBuilder {
 
     private DataStreamSink<?> buildDynamicBucketSink() {
         checkArgument(logSinkFunction == null, "Dynamic bucket mode can not work with log system.");
-        return new RowDynamicBucketSink(table, lockFactory, overwritePartition)
-                .build(input, parallelism);
+        return new RowDynamicBucketSink(table, overwritePartition).build(input, parallelism);
     }
 
     private DataStreamSink<?> buildForFixedBucket() {
@@ -98,8 +92,19 @@ public class FlinkSinkBuilder {
                         input,
                         new RowDataChannelComputer(table.schema(), logSinkFunction != null),
                         parallelism);
-        FileStoreSink sink =
-                new FileStoreSink(table, lockFactory, overwritePartition, logSinkFunction);
+        FileStoreSink sink = new FileStoreSink(table, overwritePartition, logSinkFunction);
         return sink.sinkFrom(partitioned);
+    }
+
+    private DataStreamSink<?> buildUnawareBucketSink() {
+        checkArgument(
+                table instanceof AppendOnlyFileStoreTable,
+                "Unaware bucket mode only works with append-only table for now.");
+        return new UnawareBucketWriteSink(
+                        (AppendOnlyFileStoreTable) table,
+                        overwritePartition,
+                        logSinkFunction,
+                        parallelism)
+                .sinkFrom(input);
     }
 }

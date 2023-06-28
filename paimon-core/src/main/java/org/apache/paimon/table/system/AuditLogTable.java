@@ -19,6 +19,7 @@
 package org.apache.paimon.table.system;
 
 import org.apache.paimon.CoreOptions;
+import org.apache.paimon.Snapshot;
 import org.apache.paimon.consumer.ConsumerManager;
 import org.apache.paimon.data.BinaryRow;
 import org.apache.paimon.data.BinaryString;
@@ -39,6 +40,7 @@ import org.apache.paimon.table.source.InnerStreamTableScan;
 import org.apache.paimon.table.source.InnerTableRead;
 import org.apache.paimon.table.source.InnerTableScan;
 import org.apache.paimon.table.source.Split;
+import org.apache.paimon.table.source.SplitGenerator;
 import org.apache.paimon.table.source.snapshot.SnapshotReader;
 import org.apache.paimon.types.DataField;
 import org.apache.paimon.types.RowKind;
@@ -186,12 +188,27 @@ public class AuditLogTable implements DataTable, ReadonlyTable {
         }
 
         @Override
+        public SnapshotManager snapshotManager() {
+            return snapshotReader.snapshotManager();
+        }
+
+        @Override
         public ConsumerManager consumerManager() {
             return snapshotReader.consumerManager();
         }
 
+        @Override
+        public SplitGenerator splitGenerator() {
+            return snapshotReader.splitGenerator();
+        }
+
         public SnapshotReader withSnapshot(long snapshotId) {
             snapshotReader.withSnapshot(snapshotId);
+            return this;
+        }
+
+        public SnapshotReader withSnapshot(Snapshot snapshot) {
+            snapshotReader.withSnapshot(snapshot);
             return this;
         }
 

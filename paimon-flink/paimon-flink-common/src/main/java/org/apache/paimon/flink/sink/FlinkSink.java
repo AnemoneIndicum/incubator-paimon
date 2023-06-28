@@ -66,7 +66,8 @@ public abstract class FlinkSink<T> implements Serializable {
         this.ignorePreviousFiles = ignorePreviousFiles;
     }
 
-    private StoreSinkWrite.Provider createWriteProvider(CheckpointConfig checkpointConfig) {
+    private StoreSinkWrite.Provider createWriteProvider(
+            CheckpointConfig checkpointConfig, boolean isStreaming) {
         boolean waitCompaction;
         if (table.coreOptions().writeOnly()) {
             waitCompaction = false;
@@ -100,6 +101,7 @@ public abstract class FlinkSink<T> implements Serializable {
                                 ignorePreviousFiles,
                                 waitCompaction,
                                 finalDeltaCommits,
+                                isStreaming,
                                 memoryPool);
             }
         }
@@ -112,6 +114,7 @@ public abstract class FlinkSink<T> implements Serializable {
                         ioManager,
                         ignorePreviousFiles,
                         waitCompaction,
+                        isStreaming,
                         memoryPool);
     }
 
@@ -126,19 +129,46 @@ public abstract class FlinkSink<T> implements Serializable {
     }
 
     public DataStreamSink<?> sinkFrom(DataStream<T> input, String initialCommitUser) {
+        // do the actually writing action, no snapshot generated in this stage
+        SingleOutputStreamOperator<Committable> written =
+                doWrite(input, initialCommitUser, input.getParallelism());
 
-        return sinkFrom(
-                input,
-                initialCommitUser,
-                createWriteProvider(input.getExecutionEnvironment().getCheckpointConfig()));
+        // commit the committable to generate a new snapshot
+        return doCommit(written, initialCommitUser);
     }
 
-    public DataStreamSink<?> sinkFrom(
-            DataStream<T> input, String commitUser, StoreSinkWrite.Provider sinkProvider) {
-        StreamExecutionEnvironment env = input.getExecutionEnvironment();
+    public SingleOutputStreamOperator<Committable> doWrite(
+            DataStream<T> input, String commitUser, Integer parallelism) {
+        boolean isStreaming =
+                StreamExecutionEnvironmentUtils.getConfiguration(input.getExecutionEnvironment())
+                                .get(ExecutionOptions.RUNTIME_MODE)
+                        == RuntimeExecutionMode.STREAMING;
+
+        SingleOutputStreamOperator<Committable> written =
+                input.transform(
+                                WRITER_NAME + " -> " + table.name(),
+                                new CommittableTypeInfo(),
+                                createWriteOperator(
+                                        createWriteProvider(
+                                                input.getExecutionEnvironment()
+                                                        .getCheckpointConfig(),
+                                                isStreaming),
+                                        commitUser))
+                        .setParallelism(parallelism == null ? input.getParallelism() : parallelism);
+        Options options = Options.fromMap(table.options());
+        if (options.get(SINK_USE_MANAGED_MEMORY)) {
+            MemorySize memorySize = options.get(SINK_MANAGED_WRITER_BUFFER_MEMORY);
+            written.getTransformation()
+                    .declareManagedMemoryUseCaseAtOperatorScope(
+                            ManagedMemoryUseCase.OPERATOR, memorySize.getMebiBytes());
+        }
+        return written;
+    }
+
+    protected DataStreamSink<?> doCommit(DataStream<Committable> written, String commitUser) {
+        StreamExecutionEnvironment env = written.getExecutionEnvironment();
         ReadableConfig conf = StreamExecutionEnvironmentUtils.getConfiguration(env);
         CheckpointConfig checkpointConfig = env.getCheckpointConfig();
-
         boolean isStreaming =
                 conf.get(ExecutionOptions.RUNTIME_MODE) == RuntimeExecutionMode.STREAMING;
         boolean streamingCheckpointEnabled =
@@ -147,25 +177,10 @@ public abstract class FlinkSink<T> implements Serializable {
             assertCheckpointConfiguration(env);
         }
 
-        CommittableTypeInfo typeInfo = new CommittableTypeInfo();
-        SingleOutputStreamOperator<Committable> written =
-                input.transform(
-                                WRITER_NAME + " -> " + table.name(),
-                                typeInfo,
-                                createWriteOperator(sinkProvider, isStreaming, commitUser))
-                        .setParallelism(input.getParallelism());
-        Options options = Options.fromMap(table.options());
-        if (options.get(SINK_USE_MANAGED_MEMORY)) {
-            MemorySize memorySize = options.get(SINK_MANAGED_WRITER_BUFFER_MEMORY);
-            written.getTransformation()
-                    .declareManagedMemoryUseCaseAtOperatorScope(
-                            ManagedMemoryUseCase.OPERATOR, memorySize.getMebiBytes());
-        }
-
         SingleOutputStreamOperator<?> committed =
                 written.transform(
                                 GLOBAL_COMMITTER_NAME + " -> " + table.name(),
-                                typeInfo,
+                                new CommittableTypeInfo(),
                                 new CommitterOperator<>(
                                         streamingCheckpointEnabled,
                                         commitUser,
@@ -190,7 +205,7 @@ public abstract class FlinkSink<T> implements Serializable {
     }
 
     protected abstract OneInputStreamOperator<T, Committable> createWriteOperator(
-            StoreSinkWrite.Provider writeProvider, boolean isStreaming, String commitUser);
+            StoreSinkWrite.Provider writeProvider, String commitUser);
 
     protected abstract SerializableFunction<String, Committer<Committable, ManifestCommittable>>
             createCommitterFactory(boolean streamingCheckpointEnabled);

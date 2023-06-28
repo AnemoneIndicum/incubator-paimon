@@ -50,7 +50,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /** Base tests for spark read. */
 public abstract class SparkReadTestBase {
-    private static final String COMMIT_USER = "user";
+
     private static final AtomicLong COMMIT_IDENTIFIER = new AtomicLong(0);
 
     protected static SparkSession spark = null;
@@ -68,7 +68,6 @@ public abstract class SparkReadTestBase {
         spark.conf().set("spark.sql.catalog.paimon", SparkCatalog.class.getName());
         spark.conf().set("spark.sql.catalog.paimon.warehouse", warehousePath.toString());
         spark.sql("USE paimon");
-        spark.sql("CREATE NAMESPACE default");
     }
 
     @AfterAll
@@ -169,11 +168,14 @@ public abstract class SparkReadTestBase {
                         tableName));
     }
 
+    protected static FileStoreTable getTable(String tableName) {
+        return FileStoreTableFactory.create(
+                LocalFileIO.create(),
+                new Path(warehousePath, String.format("default.db/%s", tableName)));
+    }
+
     protected static void writeTable(String tableName, GenericRow... rows) throws Exception {
-        FileStoreTable fileStoreTable =
-                FileStoreTableFactory.create(
-                        LocalFileIO.create(),
-                        new Path(warehousePath, String.format("default.db/%s", tableName)));
+        FileStoreTable fileStoreTable = getTable(tableName);
         StreamWriteBuilder streamWriteBuilder = fileStoreTable.newStreamWriteBuilder();
         StreamTableWrite writer = streamWriteBuilder.newWrite();
         StreamTableCommit commit = streamWriteBuilder.newCommit();

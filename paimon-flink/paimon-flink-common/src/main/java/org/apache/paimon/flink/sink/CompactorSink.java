@@ -19,7 +19,6 @@
 package org.apache.paimon.flink.sink;
 
 import org.apache.paimon.manifest.ManifestCommittable;
-import org.apache.paimon.operation.Lock;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.utils.SerializableFunction;
 
@@ -31,23 +30,20 @@ public class CompactorSink extends FlinkSink<RowData> {
 
     private static final long serialVersionUID = 1L;
 
-    private final Lock.Factory lockFactory;
-
-    public CompactorSink(FileStoreTable table, Lock.Factory lockFactory) {
+    public CompactorSink(FileStoreTable table) {
         super(table, false);
-        this.lockFactory = lockFactory;
     }
 
     @Override
     protected OneInputStreamOperator<RowData, Committable> createWriteOperator(
-            StoreSinkWrite.Provider writeProvider, boolean isStreaming, String commitUser) {
-        return new StoreCompactOperator(table, writeProvider, isStreaming, commitUser);
+            StoreSinkWrite.Provider writeProvider, String commitUser) {
+        return new StoreCompactOperator(table, writeProvider, commitUser);
     }
 
     @Override
     protected SerializableFunction<String, Committer<Committable, ManifestCommittable>>
             createCommitterFactory(boolean streamingCheckpointEnabled) {
-        return user -> new StoreCommitter(table.newCommit(user).withLock(lockFactory.create()));
+        return user -> new StoreCommitter(table.newCommit(user));
     }
 
     @Override

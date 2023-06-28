@@ -18,8 +18,7 @@
 
 package org.apache.paimon.spark;
 
-import org.apache.paimon.operation.Lock;
-import org.apache.paimon.table.Table;
+import org.apache.paimon.table.FileStoreTable;
 
 import org.apache.spark.sql.connector.write.Write;
 import org.apache.spark.sql.connector.write.WriteBuilder;
@@ -31,16 +30,14 @@ import org.apache.spark.sql.connector.write.WriteBuilder;
  */
 public class SparkWriteBuilder implements WriteBuilder {
 
-    private final Table table;
-    private final Lock.Factory lockFactory;
+    private final FileStoreTable table;
 
-    public SparkWriteBuilder(Table table, Lock.Factory lockFactory) {
+    public SparkWriteBuilder(FileStoreTable table) {
         this.table = table;
-        this.lockFactory = lockFactory;
     }
 
     @Override
     public Write build() {
-        return new SparkWrite(table, lockFactory);
+        return new SparkWrite(table);
     }
 }
