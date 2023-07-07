@@ -20,17 +20,19 @@ package org.apache.paimon.utils;
 
 import org.apache.paimon.Snapshot;
 import org.apache.paimon.fs.FileIO;
-import org.apache.paimon.fs.FileStatus;
 import org.apache.paimon.fs.Path;
+import org.apache.paimon.manifest.ManifestEntry;
+import org.apache.paimon.operation.TagDeletion;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
 import java.util.SortedMap;
 import java.util.TreeMap;
+import java.util.function.Predicate;
 
+import static org.apache.paimon.utils.FileUtils.listVersionedFileStatus;
 import static org.apache.paimon.utils.Preconditions.checkArgument;
 
 /** Manager for {@code Tag}. */
@@ -78,6 +80,51 @@ public class TagManager {
         }
     }
 
+    public void deleteTag(
+            String tagName, TagDeletion tagDeletion, SnapshotManager snapshotManager) {
+        checkArgument(!StringUtils.isBlank(tagName), "Tag name '%s' is blank.", tagName);
+        checkArgument(tagExists(tagName), "Tag '%s' doesn't exist.", tagName);
+
+        Snapshot taggedSnapshot = taggedSnapshot(tagName);
+        List<Snapshot> taggedSnapshots;
+
+        // skip file deletion if snapshot exists
+        if (snapshotManager.snapshotExists(taggedSnapshot.id())) {
+            fileIO.deleteQuietly(tagPath(tagName));
+            return;
+        } else {
+            // FileIO discovers tags by tag file, so we should read all tags before we delete tag
+            taggedSnapshots = taggedSnapshots();
+            fileIO.deleteQuietly(tagPath(tagName));
+        }
+
+        // collect skipping sets from the left neighbor tag and the nearest right neighbor (either
+        // the earliest snapshot or right neighbor tag)
+        List<Snapshot> skippedSnapshots = new ArrayList<>();
+
+        int index = findIndex(taggedSnapshot, taggedSnapshots);
+        // the left neighbor tag
+        if (index - 1 >= 0) {
+            skippedSnapshots.add(taggedSnapshots.get(index - 1));
+        }
+        // the nearest right neighbor
+        Snapshot right = snapshotManager.earliestSnapshot();
+        if (index + 1 < taggedSnapshots.size()) {
+            Snapshot rightTag = taggedSnapshots.get(index + 1);
+            right = right.id() < rightTag.id() ? right : rightTag;
+        }
+        skippedSnapshots.add(right);
+
+        // delete data files and empty directories
+        Predicate<ManifestEntry> dataFileSkipper = tagDeletion.dataFileSkipper(skippedSnapshots);
+        tagDeletion.cleanUnusedDataFiles(taggedSnapshot, dataFileSkipper);
+        tagDeletion.cleanDataDirectories();
+
+        // delete manifests
+        tagDeletion.cleanUnusedManifests(
+                taggedSnapshot, tagDeletion.manifestSkippingSet(skippedSnapshots));
+    }
+
     /** Check if a tag exists. */
     public boolean tagExists(String tagName) {
         Path path = tagPath(tagName);
@@ -97,8 +144,12 @@ public class TagManager {
         return Snapshot.fromPath(fileIO, tagPath(tagName));
     }
 
-    public int tagCount() {
-        return listStatus().length;
+    public long tagCount() {
+        try {
+            return listVersionedFileStatus(fileIO, tagDirectory(), TAG_PREFIX).count();
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     /** Get all tagged snapshots sorted by snapshot id. */
@@ -108,39 +159,63 @@ public class TagManager {
 
     /** Get all tagged snapshots with names sorted by snapshot id. */
     public SortedMap<Snapshot, String> tags() {
-        FileStatus[] statuses = listStatus();
         TreeMap<Snapshot, String> tags = new TreeMap<>(Comparator.comparingLong(Snapshot::id));
-
-        for (FileStatus status : statuses) {
-            Path path = status.getPath();
-            tags.put(
-                    Snapshot.fromPath(fileIO, path), path.getName().substring(TAG_PREFIX.length()));
+        try {
+            listVersionedFileStatus(fileIO, tagDirectory(), TAG_PREFIX)
+                    .forEach(
+                            status -> {
+                                Path path = status.getPath();
+                                tags.put(
+                                        Snapshot.fromPath(fileIO, path),
+                                        path.getName().substring(TAG_PREFIX.length()));
+                            });
+        } catch (IOException e) {
+            throw new RuntimeException(e);
         }
         return tags;
     }
 
-    private FileStatus[] listStatus() {
-        Path tagDirectory = tagDirectory();
-        try {
-            if (!fileIO.exists(tagDirectory)) {
-                return new FileStatus[0];
+    private int findIndex(Snapshot taggedSnapshot, List<Snapshot> taggedSnapshots) {
+        for (int i = 0; i < taggedSnapshots.size(); i++) {
+            if (taggedSnapshot.id() == taggedSnapshots.get(i).id()) {
+                return i;
             }
-
-            FileStatus[] statuses = fileIO.listStatus(tagDirectory);
-
-            if (statuses == null) {
-                throw new RuntimeException(
-                        String.format(
-                                "The return value is null of the listStatus for the '%s' directory.",
-                                tagDirectory));
-            }
-
-            return Arrays.stream(statuses)
-                    .filter(status -> status.getPath().getName().startsWith(TAG_PREFIX))
-                    .toArray(FileStatus[]::new);
-        } catch (IOException e) {
-            throw new RuntimeException(
-                    String.format("Failed to list status in the '%s' directory.", tagDirectory), e);
         }
+        throw new RuntimeException(
+                String.format(
+                        "Didn't find tag with snapshot id '%s'.This is unexpected.",
+                        taggedSnapshot.id()));
+    }
+
+    public static List<Snapshot> findOverlappedSnapshots(
+            List<Snapshot> taggedSnapshots, long beginInclusive, long endExclusive) {
+        List<Snapshot> snapshots = new ArrayList<>();
+        int right = findPreviousTag(taggedSnapshots, endExclusive);
+        if (right >= 0) {
+            int left = Math.max(findPreviousOrEqualTag(taggedSnapshots, beginInclusive), 0);
+            for (int i = left; i <= right; i++) {
+                snapshots.add(taggedSnapshots.get(i));
+            }
+        }
+        return snapshots;
+    }
+
+    public static int findPreviousTag(List<Snapshot> taggedSnapshots, long targetSnapshotId) {
+        for (int i = taggedSnapshots.size() - 1; i >= 0; i--) {
+            if (taggedSnapshots.get(i).id() < targetSnapshotId) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private static int findPreviousOrEqualTag(
+            List<Snapshot> taggedSnapshots, long targetSnapshotId) {
+        for (int i = taggedSnapshots.size() - 1; i >= 0; i--) {
+            if (taggedSnapshots.get(i).id() <= targetSnapshotId) {
+                return i;
+            }
+        }
+        return -1;
     }
 }

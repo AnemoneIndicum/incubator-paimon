@@ -32,6 +32,7 @@ import org.apache.paimon.io.DataFileMeta;
 import org.apache.paimon.io.DataFilePathFactory;
 import org.apache.paimon.io.RowDataRollingFileWriter;
 import org.apache.paimon.reader.RecordReaderIterator;
+import org.apache.paimon.statistics.FieldStatsCollector;
 import org.apache.paimon.table.BucketMode;
 import org.apache.paimon.table.source.DataSplit;
 import org.apache.paimon.types.RowType;
@@ -40,6 +41,7 @@ import org.apache.paimon.utils.FileStorePathFactory;
 import org.apache.paimon.utils.LongCounter;
 import org.apache.paimon.utils.RecordWriter;
 import org.apache.paimon.utils.SnapshotManager;
+import org.apache.paimon.utils.StatsCollectorFactories;
 
 import javax.annotation.Nullable;
 
@@ -65,6 +67,8 @@ public class AppendOnlyFileStoreWrite extends AbstractFileStoreWrite<InternalRow
     private final boolean commitForceCompact;
     private final boolean assertDisorder;
     private final String fileCompression;
+    private final FieldStatsCollector.Factory[] statsCollectors;
+
     private boolean skipCompaction;
     private BucketMode bucketMode = BucketMode.FIXED;
 
@@ -92,6 +96,8 @@ public class AppendOnlyFileStoreWrite extends AbstractFileStoreWrite<InternalRow
         this.skipCompaction = options.writeOnly();
         this.assertDisorder = options.toConfiguration().get(APPEND_ONLY_ASSERT_DISORDER);
         this.fileCompression = options.fileCompression();
+        this.statsCollectors =
+                StatsCollectorFactories.createStatsFactories(options, rowType.getFieldNames());
     }
 
     @Override
@@ -128,7 +134,8 @@ public class AppendOnlyFileStoreWrite extends AbstractFileStoreWrite<InternalRow
                 commitForceCompact,
                 factory,
                 restoreIncrement,
-                fileCompression);
+                fileCompression,
+                statsCollectors);
     }
 
     public AppendOnlyCompactManager.CompactRewriter compactRewriter(
@@ -146,7 +153,8 @@ public class AppendOnlyFileStoreWrite extends AbstractFileStoreWrite<InternalRow
                             rowType,
                             pathFactory.createDataFilePathFactory(partition, bucket),
                             new LongCounter(toCompact.get(0).minSequenceNumber()),
-                            fileCompression);
+                            fileCompression,
+                            statsCollectors);
             rewriter.write(
                     new RecordReaderIterator<>(
                             read.createReader(

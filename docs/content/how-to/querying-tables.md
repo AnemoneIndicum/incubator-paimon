@@ -73,6 +73,34 @@ SELECT * FROM t VERSION AS OF 'my-tag';
 
 {{< /tab >}}
 
+{{< tab "Spark3-DF" >}}
+
+```scala
+// read the snapshot from specified timestamp in unix seconds
+spark.read
+    .option("scan.timestamp-millis", "1678883047000")
+    .format("paimon")
+    .load("path/to/table")
+```
+
+```scala
+// read the snapshot with id 1L (use snapshot id as version)
+spark.read
+    .option("scan.snapshot-id", 1)
+    .format("paimon")
+    .load("path/to/table")
+```
+
+```scala
+// read tag 'my-tag'
+spark.read
+    .option("scan.tag-name", "my-tag")
+    .format("paimon")
+    .load("path/to/table")
+```
+
+{{< /tab >}}
+
 {{< tab "Trino" >}}
 
 ```sql

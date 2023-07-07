@@ -21,14 +21,14 @@ package org.apache.paimon.operation;
 import org.apache.paimon.Snapshot;
 import org.apache.paimon.annotation.VisibleForTesting;
 import org.apache.paimon.consumer.ConsumerManager;
-import org.apache.paimon.data.BinaryRow;
+import org.apache.paimon.utils.Preconditions;
 import org.apache.paimon.utils.SnapshotManager;
+import org.apache.paimon.utils.TagManager;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.HashMap;
-import java.util.Map;
+import java.util.List;
 import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.Callable;
@@ -55,7 +55,7 @@ public class FileStoreExpireImpl implements FileStoreExpire {
     private final ConsumerManager consumerManager;
     private final SnapshotDeletion snapshotDeletion;
 
-    private final TagFileKeeper tagFileKeeper;
+    private final TagManager tagManager;
 
     private Lock lock;
 
@@ -65,7 +65,13 @@ public class FileStoreExpireImpl implements FileStoreExpire {
             long millisRetained,
             SnapshotManager snapshotManager,
             SnapshotDeletion snapshotDeletion,
-            TagFileKeeper tagFileKeeper) {
+            TagManager tagManager) {
+        Preconditions.checkArgument(
+                numRetainedMin >= 1,
+                "The minimum number of completed snapshots to retain should be >= 1.");
+        Preconditions.checkArgument(
+                numRetainedMax >= numRetainedMin,
+                "The maximum number of snapshots to retain should be >= the minimum number.");
         this.numRetainedMin = numRetainedMin;
         this.numRetainedMax = numRetainedMax;
         this.millisRetained = millisRetained;
@@ -73,7 +79,7 @@ public class FileStoreExpireImpl implements FileStoreExpire {
         this.consumerManager =
                 new ConsumerManager(snapshotManager.fileIO(), snapshotManager.tablePath());
         this.snapshotDeletion = snapshotDeletion;
-        this.tagFileKeeper = tagFileKeeper;
+        this.tagManager = tagManager;
     }
 
     @Override
@@ -97,7 +103,9 @@ public class FileStoreExpireImpl implements FileStoreExpire {
             return;
         }
 
-        // find the earliest snapshot to retain
+        // locate the first snapshot between the numRetainedMax th and (numRetainedMin+1) th latest
+        // snapshots to be retained. This snapshot needs to be preserved because it
+        // doesn't fulfill the time threshold condition for expiration.
         for (long id = Math.max(latestSnapshotId - numRetainedMax + 1, earliest);
                 id <= latestSnapshotId - numRetainedMin;
                 id++) {
@@ -111,7 +119,7 @@ public class FileStoreExpireImpl implements FileStoreExpire {
             }
         }
 
-        // no snapshot can be retained, expire until there are only numRetainedMin snapshots left
+        // by default, expire until there are only numRetainedMin snapshots left
         expireUntil(earliest, latestSnapshotId - numRetainedMin + 1);
     }
 
@@ -149,22 +157,19 @@ public class FileStoreExpireImpl implements FileStoreExpire {
                     "Snapshot expire range is [" + beginInclusiveId + ", " + endExclusiveId + ")");
         }
 
-        tagFileKeeper.reloadTags();
+        List<Snapshot> taggedSnapshots = tagManager.taggedSnapshots();
 
         // delete merge tree files
         // deleted merge tree files in a snapshot are not used by the next snapshot, so the range of
         // id should be (beginInclusiveId, endExclusiveId]
-        Map<BinaryRow, Set<Integer>> deletionBuckets = new HashMap<>();
         for (long id = beginInclusiveId + 1; id <= endExclusiveId; id++) {
             if (LOG.isDebugEnabled()) {
                 LOG.debug("Ready to delete merge tree files not used by snapshot #" + id);
             }
             Snapshot snapshot = snapshotManager.snapshot(id);
             // expire merge tree files and collect changed buckets
-            snapshotDeletion.deleteExpiredDataFiles(
-                    snapshot.deltaManifestList(),
-                    deletionBuckets,
-                    tagFileKeeper.tagDataFileSkipper(id));
+            snapshotDeletion.cleanUnusedDataFiles(
+                    snapshot, snapshotDeletion.dataFileSkipper(taggedSnapshots, id));
         }
 
         // delete changelog files
@@ -174,32 +179,27 @@ public class FileStoreExpireImpl implements FileStoreExpire {
             }
             Snapshot snapshot = snapshotManager.snapshot(id);
             if (snapshot.changelogManifestList() != null) {
-                snapshotDeletion.deleteAddedDataFiles(
-                        snapshot.changelogManifestList(), deletionBuckets);
+                snapshotDeletion.deleteAddedDataFiles(snapshot.changelogManifestList());
             }
         }
 
         // data files and changelog files in bucket directories has been deleted
         // then delete changed bucket directories if they are empty
-        snapshotDeletion.tryDeleteDirectories(deletionBuckets);
+        snapshotDeletion.cleanDataDirectories();
 
         // delete manifests and indexFiles
-        Set<String> skipManifestFiles =
-                snapshotDeletion.collectManifestSkippingSet(
-                        snapshotManager.snapshot(endExclusiveId));
-        for (Snapshot snapshot :
-                tagFileKeeper.findOverlappedSnapshots(beginInclusiveId, endExclusiveId)) {
-            skipManifestFiles.add(snapshot.baseManifestList());
-            skipManifestFiles.add(snapshot.deltaManifestList());
-            skipManifestFiles.addAll(snapshotDeletion.collectManifestSkippingSet(snapshot));
-        }
+        List<Snapshot> skippingSnapshots =
+                TagManager.findOverlappedSnapshots(
+                        taggedSnapshots, beginInclusiveId, endExclusiveId);
+        skippingSnapshots.add(snapshotManager.snapshot(endExclusiveId));
+        Set<String> skippingSet = snapshotDeletion.manifestSkippingSet(skippingSnapshots);
         for (long id = beginInclusiveId; id < endExclusiveId; id++) {
             if (LOG.isDebugEnabled()) {
                 LOG.debug("Ready to delete manifests in snapshot #" + id);
             }
 
             Snapshot snapshot = snapshotManager.snapshot(id);
-            snapshotDeletion.deleteManifestFiles(skipManifestFiles, snapshot);
+            snapshotDeletion.cleanUnusedManifests(snapshot, skippingSet);
 
             // delete snapshot last
             snapshotManager.fileIO().deleteQuietly(snapshotManager.snapshotPath(id));

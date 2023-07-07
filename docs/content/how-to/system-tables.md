@@ -164,7 +164,7 @@ You can query the tag history information of the table through tags table, inclu
 and some historical information of the snapshots. You can also get all tag names and time travel to a specific tag data by name.
 
 ```sql
-SELECT * FROM MyTable$snapshots;
+SELECT * FROM MyTable$tags;
 
 /*
 +----------+-------------+-----------+-------------------------+--------------+
@@ -174,5 +174,39 @@ SELECT * FROM MyTable$snapshots;
 |     tag3 |           3 |         0 | 2023-06-28 14:58:24.691 |            7 |
 +----------+-------------+-----------+-------------------------+--------------+
 2 rows in set
+*/
+```
+
+## Consumers Table
+
+You can query all consumers which contains next snapshot.
+
+```sql
+SELECT * FROM MyTable$consumers;
+
+/*
++-------------+------------------+
+| consumer_id | next_snapshot_id |
++-------------+------------------+
+|         id1 |                1 |
+|         id2 |                3 |
++-------------+------------------+
+2 rows in set
+*/
+```
+
+## Manifests Table
+
+You can query all manifest files contained in the latest snapshot of the current table.
+
+```sql
+SELECT * FROM MyTable$manifests;
+
+/*
++--------------------------------+-------------+------------------+-------------------+---------------+
+|                      file_name |   file_size |  num_added_files | num_deleted_files |     schema_id |
++--------------------------------+-------------+------------------+-------------------+---------------+
+| manifest-f4dcab43-ef6b-4713... |        1648 |                1 |                 0 |             0 |
++--------------------------------+-------------+------------------+-------------------+---------------+
 */
 ```

@@ -138,8 +138,7 @@ public class ContinuousFileSplitEnumerator
 
     @Override
     public PendingSplitsCheckpoint snapshotState(long checkpointId) {
-        List<FileStoreSourceSplit> splits = new ArrayList<>();
-        splits.addAll(splitAssigner.remainingSplits());
+        List<FileStoreSourceSplit> splits = new ArrayList<>(splitAssigner.remainingSplits());
         final PendingSplitsCheckpoint checkpoint =
                 new PendingSplitsCheckpoint(splits, nextSnapshotId);
 
@@ -172,7 +171,11 @@ public class ContinuousFileSplitEnumerator
         assignSplits();
     }
 
-    private void assignSplits() {
+    /**
+     * Method should be synchronized because {@link #handleSplitRequest} and {@link
+     * #processDiscoveredSplits} have thread conflicts.
+     */
+    private synchronized void assignSplits() {
         Map<Integer, List<FileStoreSourceSplit>> assignment = createAssignment();
         if (finished) {
             Iterator<Integer> iterator = readersAwaitingSplit.iterator();
@@ -190,19 +193,18 @@ public class ContinuousFileSplitEnumerator
 
     private Map<Integer, List<FileStoreSourceSplit>> createAssignment() {
         Map<Integer, List<FileStoreSourceSplit>> assignment = new HashMap<>();
-        readersAwaitingSplit.forEach(
-                task -> {
-                    // if the reader that requested another split has failed in the meantime, remove
-                    // it from the list of waiting readers
-                    if (!context.registeredReaders().containsKey(task)) {
-                        readersAwaitingSplit.remove(task);
-                        return;
-                    }
-                    List<FileStoreSourceSplit> splits = splitAssigner.getNext(task, null);
-                    if (splits.size() > 0) {
-                        assignment.put(task, splits);
-                    }
-                });
+        Iterator<Integer> readersAwait = readersAwaitingSplit.iterator();
+        while (readersAwait.hasNext()) {
+            Integer task = readersAwait.next();
+            if (!context.registeredReaders().containsKey(task)) {
+                readersAwait.remove();
+                continue;
+            }
+            List<FileStoreSourceSplit> splits = splitAssigner.getNext(task, null);
+            if (splits.size() > 0) {
+                assignment.put(task, splits);
+            }
+        }
         return assignment;
     }
 

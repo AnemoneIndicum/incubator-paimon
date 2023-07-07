@@ -20,10 +20,11 @@
 package org.apache.paimon.io;
 
 import org.apache.paimon.data.InternalRow;
-import org.apache.paimon.format.FileStatsExtractor;
 import org.apache.paimon.format.FormatWriterFactory;
+import org.apache.paimon.format.TableStatsExtractor;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.Path;
+import org.apache.paimon.statistics.FieldStatsCollector;
 import org.apache.paimon.stats.BinaryTableStats;
 import org.apache.paimon.stats.FieldStatsArraySerializer;
 import org.apache.paimon.types.RowType;
@@ -49,18 +50,20 @@ public class RowDataFileWriter extends StatsCollectingSingleFileWriter<InternalR
             FormatWriterFactory factory,
             Path path,
             RowType writeSchema,
-            @Nullable FileStatsExtractor fileStatsExtractor,
+            @Nullable TableStatsExtractor tableStatsExtractor,
             long schemaId,
             LongCounter seqNumCounter,
-            String fileCompression) {
+            String fileCompression,
+            FieldStatsCollector.Factory[] statsCollectors) {
         super(
                 fileIO,
                 factory,
                 path,
                 Function.identity(),
                 writeSchema,
-                fileStatsExtractor,
-                fileCompression);
+                tableStatsExtractor,
+                fileCompression,
+                statsCollectors);
         this.schemaId = schemaId;
         this.seqNumCounter = seqNumCounter;
         this.statsArraySerializer = new FieldStatsArraySerializer(writeSchema);

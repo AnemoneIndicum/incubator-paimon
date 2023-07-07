@@ -28,6 +28,7 @@ import org.apache.paimon.io.DataFileMeta;
 import org.apache.paimon.io.DataFilePathFactory;
 import org.apache.paimon.io.NewFilesIncrement;
 import org.apache.paimon.io.RowDataRollingFileWriter;
+import org.apache.paimon.statistics.FieldStatsCollector;
 import org.apache.paimon.types.RowKind;
 import org.apache.paimon.types.RowType;
 import org.apache.paimon.utils.CommitIncrement;
@@ -62,6 +63,7 @@ public class AppendOnlyWriter implements RecordWriter<InternalRow> {
     private final List<DataFileMeta> compactAfter;
     private final LongCounter seqNumCounter;
     private final String fileCompression;
+    private final FieldStatsCollector.Factory[] statsCollectors;
 
     private RowDataRollingFileWriter writer;
 
@@ -76,7 +78,8 @@ public class AppendOnlyWriter implements RecordWriter<InternalRow> {
             boolean forceCompact,
             DataFilePathFactory pathFactory,
             @Nullable CommitIncrement increment,
-            String fileCompression) {
+            String fileCompression,
+            FieldStatsCollector.Factory[] statsCollectors) {
         this.fileIO = fileIO;
         this.schemaId = schemaId;
         this.fileFormat = fileFormat;
@@ -90,6 +93,7 @@ public class AppendOnlyWriter implements RecordWriter<InternalRow> {
         this.compactAfter = new ArrayList<>();
         this.seqNumCounter = new LongCounter(maxSequenceNumber + 1);
         this.fileCompression = fileCompression;
+        this.statsCollectors = statsCollectors;
 
         this.writer = createRollingRowWriter();
 
@@ -173,7 +177,8 @@ public class AppendOnlyWriter implements RecordWriter<InternalRow> {
                 writeSchema,
                 pathFactory,
                 seqNumCounter,
-                fileCompression);
+                fileCompression,
+                statsCollectors);
     }
 
     private void trySyncLatestCompaction(boolean blocking)

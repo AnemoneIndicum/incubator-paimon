@@ -18,18 +18,20 @@
 
 package org.apache.paimon.io;
 
+import org.apache.paimon.CoreOptions;
 import org.apache.paimon.KeyValue;
 import org.apache.paimon.data.BinaryRow;
 import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.data.serializer.InternalRowSerializer;
 import org.apache.paimon.format.FieldStats;
-import org.apache.paimon.format.FileStatsExtractor;
 import org.apache.paimon.format.FormatWriterFactory;
+import org.apache.paimon.format.TableStatsExtractor;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.Path;
 import org.apache.paimon.stats.BinaryTableStats;
 import org.apache.paimon.stats.FieldStatsArraySerializer;
 import org.apache.paimon.types.RowType;
+import org.apache.paimon.utils.StatsCollectorFactories;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -73,18 +75,21 @@ public class KeyValueDataFileWriter
             Function<KeyValue, InternalRow> converter,
             RowType keyType,
             RowType valueType,
-            @Nullable FileStatsExtractor fileStatsExtractor,
+            @Nullable TableStatsExtractor tableStatsExtractor,
             long schemaId,
             int level,
-            String compression) {
+            String compression,
+            CoreOptions options) {
         super(
                 fileIO,
                 factory,
                 path,
                 converter,
                 KeyValue.schema(keyType, valueType),
-                fileStatsExtractor,
-                compression);
+                tableStatsExtractor,
+                compression,
+                StatsCollectorFactories.createStatsFactories(
+                        options, KeyValue.schema(keyType, valueType).getFieldNames()));
 
         this.keyType = keyType;
         this.valueType = valueType;

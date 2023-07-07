@@ -23,6 +23,7 @@ import org.apache.paimon.fs.local.LocalFileIO;
 import org.apache.paimon.schema.SchemaChange;
 import org.apache.paimon.schema.SchemaManager;
 import org.apache.paimon.types.IntType;
+import org.apache.paimon.utils.BlockingIterator;
 
 import org.apache.commons.lang3.StringUtils;
 import org.apache.flink.types.Row;
@@ -95,6 +96,32 @@ public class CatalogTableITCase extends CatalogITCaseBase {
                 .hasRootCauseMessage(
                         "Cannot 'createTable' for system table "
                                 + "'Identifier{database='default', table='T$aa$bb'}', please use data table.");
+    }
+
+    @Test
+    public void testManifestsTable() throws Exception {
+        sql("CREATE TABLE T (a INT, b INT)");
+        sql("INSERT INTO T VALUES (1, 2)");
+
+        List<Row> result = sql("SELECT schema_id, file_name, file_size FROM T$manifests");
+
+        result.forEach(
+                row -> {
+                    assertThat((long) row.getField(0)).isEqualTo(0L);
+                    assertThat(StringUtils.startsWith((String) row.getField(1), "manifest"))
+                            .isTrue();
+                    assertThat((long) row.getField(2)).isGreaterThan(0L);
+                });
+    }
+
+    @Test
+    public void testManifestsTableWithFileCount() {
+        sql("CREATE TABLE T (a INT, b INT)");
+        sql("INSERT INTO T VALUES (1, 2)");
+        sql("INSERT INTO T VALUES (3, 4)");
+
+        List<Row> result = sql("SELECT num_added_files, num_deleted_files FROM T$manifests");
+        assertThat(result).containsExactlyInAnyOrder(Row.of(1L, 0L), Row.of(1L, 0L));
     }
 
     @Test
@@ -483,5 +510,23 @@ public class CatalogTableITCase extends CatalogITCaseBase {
         List<Row> result = sql("SELECT tag_name, snapshot_id, schema_id, record_count FROM T$tags");
 
         assertThat(result).containsExactly(Row.of("tag1", 1L, 0L, 1L), Row.of("tag2", 2L, 0L, 2L));
+    }
+
+    @Test
+    public void testConsumersTable() throws Exception {
+        batchSql("CREATE TABLE T (a INT, b INT)");
+        batchSql("INSERT INTO T VALUES (1, 2)");
+        batchSql("INSERT INTO T VALUES (3, 4)");
+
+        BlockingIterator<Row, Row> iterator =
+                BlockingIterator.of(
+                        streamSqlIter("SELECT * FROM T /*+ OPTIONS('consumer-id'='my1') */"));
+
+        batchSql("INSERT INTO T VALUES (5, 6), (7, 8)");
+        assertThat(iterator.collect(2)).containsExactlyInAnyOrder(Row.of(1, 2), Row.of(3, 4));
+        iterator.close();
+
+        List<Row> result = sql("SELECT * FROM T$consumers");
+        assertThat(result).containsExactly(Row.of("my1", 3L));
     }
 }

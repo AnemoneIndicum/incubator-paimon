@@ -399,7 +399,7 @@ public class FileDeletionTest {
             assertPathExists(fileIO, pathFactory.toManifestListPath(manifestListName));
         }
 
-        store.newTagDeletion().delete(tagManager.taggedSnapshot("tag1"));
+        tagManager.deleteTag("tag1", store.newTagDeletion(), snapshotManager);
 
         // check data files
         assertPathNotExists(fileIO, pathFactory.bucketPath(partition, 0));
@@ -475,7 +475,7 @@ public class FileDeletionTest {
             assertPathExists(fileIO, pathFactory.toManifestListPath(manifestListName));
         }
 
-        store.newTagDeletion().delete(tagManager.taggedSnapshot("tag2"));
+        tagManager.deleteTag("tag2", store.newTagDeletion(), snapshotManager);
 
         // check data files
         assertPathExists(fileIO, pathFactory.bucketPath(partition, 0));
@@ -592,7 +592,7 @@ public class FileDeletionTest {
                         null,
                         Collections.emptyMap(),
                         Snapshot.CommitKind.APPEND,
-                        store.snapshotManager().latestSnapshotId(),
+                        store.snapshotManager().latestSnapshot(),
                         null);
     }
 }

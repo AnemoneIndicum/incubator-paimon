@@ -18,17 +18,19 @@
 
 package org.apache.paimon.io;
 
+import org.apache.paimon.CoreOptions;
 import org.apache.paimon.KeyValue;
 import org.apache.paimon.KeyValueSerializer;
 import org.apache.paimon.annotation.VisibleForTesting;
 import org.apache.paimon.data.BinaryRow;
 import org.apache.paimon.format.FileFormat;
-import org.apache.paimon.format.FileStatsExtractor;
 import org.apache.paimon.format.FormatWriterFactory;
+import org.apache.paimon.format.TableStatsExtractor;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.Path;
 import org.apache.paimon.types.RowType;
 import org.apache.paimon.utils.FileStorePathFactory;
+import org.apache.paimon.utils.StatsCollectorFactories;
 
 import javax.annotation.Nullable;
 
@@ -42,11 +44,12 @@ public class KeyValueFileWriterFactory {
     private final RowType keyType;
     private final RowType valueType;
     private final FormatWriterFactory writerFactory;
-    @Nullable private final FileStatsExtractor fileStatsExtractor;
+    @Nullable private final TableStatsExtractor tableStatsExtractor;
     private final DataFilePathFactory pathFactory;
     private final long suggestedFileSize;
     private final Map<Integer, String> levelCompressions;
     private final String fileCompression;
+    private final CoreOptions options;
 
     private KeyValueFileWriterFactory(
             FileIO fileIO,
@@ -54,21 +57,23 @@ public class KeyValueFileWriterFactory {
             RowType keyType,
             RowType valueType,
             FormatWriterFactory writerFactory,
-            @Nullable FileStatsExtractor fileStatsExtractor,
+            @Nullable TableStatsExtractor tableStatsExtractor,
             DataFilePathFactory pathFactory,
             long suggestedFileSize,
             Map<Integer, String> levelCompressions,
-            String fileCompression) {
+            String fileCompression,
+            CoreOptions options) {
         this.fileIO = fileIO;
         this.schemaId = schemaId;
         this.keyType = keyType;
         this.valueType = valueType;
         this.writerFactory = writerFactory;
-        this.fileStatsExtractor = fileStatsExtractor;
+        this.tableStatsExtractor = tableStatsExtractor;
         this.pathFactory = pathFactory;
         this.suggestedFileSize = suggestedFileSize;
         this.levelCompressions = levelCompressions;
         this.fileCompression = fileCompression;
+        this.options = options;
     }
 
     public RowType keyType() {
@@ -115,10 +120,11 @@ public class KeyValueFileWriterFactory {
                 kvSerializer::toRow,
                 keyType,
                 valueType,
-                fileStatsExtractor,
+                tableStatsExtractor,
                 schemaId,
                 level,
-                compression);
+                compression,
+                options);
     }
 
     public void deleteFile(String filename) {
@@ -169,7 +175,8 @@ public class KeyValueFileWriterFactory {
                 BinaryRow partition,
                 int bucket,
                 Map<Integer, String> levelCompressions,
-                String fileCompression) {
+                String fileCompression,
+                CoreOptions options) {
             RowType recordType = KeyValue.schema(keyType, valueType);
             return new KeyValueFileWriterFactory(
                     fileIO,
@@ -177,11 +184,17 @@ public class KeyValueFileWriterFactory {
                     keyType,
                     valueType,
                     fileFormat.createWriterFactory(recordType),
-                    fileFormat.createStatsExtractor(recordType).orElse(null),
+                    fileFormat
+                            .createStatsExtractor(
+                                    recordType,
+                                    StatsCollectorFactories.createStatsFactories(
+                                            options, recordType.getFieldNames()))
+                            .orElse(null),
                     pathFactory.createDataFilePathFactory(partition, bucket),
                     suggestedFileSize,
                     levelCompressions,
-                    fileCompression);
+                    fileCompression,
+                    options);
         }
     }
 }

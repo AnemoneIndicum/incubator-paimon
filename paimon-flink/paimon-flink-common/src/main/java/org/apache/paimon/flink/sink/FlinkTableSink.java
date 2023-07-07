@@ -19,32 +19,54 @@
 package org.apache.paimon.flink.sink;
 
 import org.apache.paimon.CoreOptions.MergeEngine;
+import org.apache.paimon.flink.LogicalTypeConversion;
+import org.apache.paimon.flink.PredicateConverter;
 import org.apache.paimon.flink.log.LogStoreTableFactory;
+import org.apache.paimon.operation.FileStoreCommit;
 import org.apache.paimon.options.Options;
+import org.apache.paimon.predicate.AllPrimaryKeyEqualVisitor;
+import org.apache.paimon.predicate.OnlyPartitionKeyEqualVisitor;
+import org.apache.paimon.predicate.Predicate;
+import org.apache.paimon.predicate.PredicateBuilder;
+import org.apache.paimon.table.AbstractFileStoreTable;
 import org.apache.paimon.table.AppendOnlyFileStoreTable;
 import org.apache.paimon.table.ChangelogValueCountFileStoreTable;
 import org.apache.paimon.table.ChangelogWithKeyFileStoreTable;
 import org.apache.paimon.table.Table;
+import org.apache.paimon.table.TableUtils;
+import org.apache.paimon.table.sink.BatchWriteBuilder;
 
 import org.apache.flink.table.catalog.Column;
 import org.apache.flink.table.catalog.ObjectIdentifier;
 import org.apache.flink.table.connector.RowLevelModificationScanContext;
+import org.apache.flink.table.connector.sink.DynamicTableSink;
+import org.apache.flink.table.connector.sink.abilities.SupportsDeletePushDown;
 import org.apache.flink.table.connector.sink.abilities.SupportsRowLevelDelete;
 import org.apache.flink.table.connector.sink.abilities.SupportsRowLevelUpdate;
+import org.apache.flink.table.expressions.ResolvedExpression;
 import org.apache.flink.table.factories.DynamicTableFactory;
+import org.apache.flink.table.types.logical.RowType;
 
 import javax.annotation.Nullable;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 import static org.apache.paimon.CoreOptions.MERGE_ENGINE;
 
 /** Table sink to create sink. */
 public class FlinkTableSink extends FlinkTableSinkBase
-        implements SupportsRowLevelUpdate, SupportsRowLevelDelete {
+        implements SupportsRowLevelUpdate, SupportsRowLevelDelete, SupportsDeletePushDown {
+
+    @Nullable protected Predicate deletePredicate;
 
     public FlinkTableSink(
             ObjectIdentifier tableIdentifier,
@@ -52,6 +74,16 @@ public class FlinkTableSink extends FlinkTableSinkBase
             DynamicTableFactory.Context context,
             @Nullable LogStoreTableFactory logStoreTableFactory) {
         super(tableIdentifier, table, context, logStoreTableFactory);
+    }
+
+    @Override
+    public DynamicTableSink copy() {
+        FlinkTableSink copied =
+                new FlinkTableSink(tableIdentifier, table, context, logStoreTableFactory);
+        copied.staticPartitions = new HashMap<>(staticPartitions);
+        copied.overwrite = overwrite;
+        copied.deletePredicate = deletePredicate;
+        return copied;
     }
 
     @Override
@@ -112,17 +144,60 @@ public class FlinkTableSink extends FlinkTableSinkBase
     @Override
     public RowLevelDeleteInfo applyRowLevelDelete(
             @Nullable RowLevelModificationScanContext rowLevelModificationScanContext) {
+        validateDeletable();
+        return new RowLevelDeleteInfo() {};
+    }
+
+    // supported filters push down please refer DeletePushDownVisitorTest
+
+    @Override
+    public boolean applyDeleteFilters(List<ResolvedExpression> list) {
+        validateDeletable();
+        List<Predicate> predicates = new ArrayList<>();
+        RowType rowType = LogicalTypeConversion.toLogicalType(table.rowType());
+        for (ResolvedExpression filter : list) {
+            Optional<Predicate> predicate = PredicateConverter.convert(rowType, filter);
+            if (predicate.isPresent()) {
+                predicates.add(predicate.get());
+            } else {
+                // convert failed, leave it to flink
+                return false;
+            }
+        }
+        deletePredicate = predicates.isEmpty() ? null : PredicateBuilder.and(predicates);
+        return canPushDownDeleteFilter();
+    }
+
+    @Override
+    public Optional<Long> executeDeletion() {
+        FileStoreCommit commit =
+                ((AbstractFileStoreTable) table).store().newCommit(UUID.randomUUID().toString());
+        long identifier = BatchWriteBuilder.COMMIT_IDENTIFIER;
+        if (deletePredicate == null) {
+            commit.purgeTable(identifier);
+            return Optional.empty();
+        } else if (deleteIsDropPartition()) {
+            commit.dropPartitions(Collections.singletonList(deletePartitions()), identifier);
+            return Optional.empty();
+        } else {
+            return Optional.of(
+                    TableUtils.deleteWhere(table, Collections.singletonList(deletePredicate)));
+        }
+    }
+
+    private void validateDeletable() {
         if (table instanceof ChangelogWithKeyFileStoreTable) {
             Options options = Options.fromMap(table.options());
             if (options.get(MERGE_ENGINE) == MergeEngine.DEDUPLICATE) {
-                return new RowLevelDeleteInfo() {};
+                return;
             }
             throw new UnsupportedOperationException(
                     String.format(
                             "merge engine '%s' can not support delete, currently only %s can support delete.",
                             options.get(MERGE_ENGINE), MergeEngine.DEDUPLICATE));
         } else if (table instanceof ChangelogValueCountFileStoreTable) {
-            return new RowLevelDeleteInfo() {};
+            // ChangelogValueCountFileStoreTable is OK to be deleted
+            return;
         } else if (table instanceof AppendOnlyFileStoreTable) {
             throw new UnsupportedOperationException(
                     String.format(
@@ -134,5 +209,35 @@ public class FlinkTableSink extends FlinkTableSinkBase
                             "%s can not support delete, because it is an unknown subclass of FileStoreTable.",
                             table.getClass().getName()));
         }
+    }
+
+    private boolean canPushDownDeleteFilter() {
+        return deletePredicate == null || deleteIsDropPartition() || deleteInSingleNode();
+    }
+
+    private boolean deleteIsDropPartition() {
+        if (deletePredicate == null) {
+            return false;
+        }
+        return deletePredicate.visit(new OnlyPartitionKeyEqualVisitor(table.partitionKeys()));
+    }
+
+    private Map<String, String> deletePartitions() {
+        if (deletePredicate == null) {
+            return null;
+        }
+        OnlyPartitionKeyEqualVisitor visitor =
+                new OnlyPartitionKeyEqualVisitor(table.partitionKeys());
+        deletePredicate.visit(visitor);
+        return visitor.partitions();
+    }
+
+    private boolean deleteInSingleNode() {
+        if (deletePredicate == null) {
+            return false;
+        }
+        return deletePredicate
+                .visit(new AllPrimaryKeyEqualVisitor(table.primaryKeys()))
+                .containsAll(table.primaryKeys());
     }
 }

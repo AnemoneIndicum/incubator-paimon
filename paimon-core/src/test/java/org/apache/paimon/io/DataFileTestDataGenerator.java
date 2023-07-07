@@ -21,7 +21,9 @@ package org.apache.paimon.io;
 import org.apache.paimon.KeyValue;
 import org.apache.paimon.TestKeyValueGenerator;
 import org.apache.paimon.data.BinaryRow;
-import org.apache.paimon.format.FieldStatsCollector;
+import org.apache.paimon.format.TableStatsCollector;
+import org.apache.paimon.statistics.FieldStatsCollector;
+import org.apache.paimon.statistics.FullFieldStatsCollector;
 import org.apache.paimon.stats.FieldStatsArraySerializer;
 
 import java.util.ArrayList;
@@ -29,6 +31,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.stream.IntStream;
 
 /** Random {@link DataFileMeta} generator. */
 public class DataFileTestDataGenerator {
@@ -99,10 +102,24 @@ public class DataFileTestDataGenerator {
     }
 
     private Data createDataFile(List<KeyValue> kvs, int level, BinaryRow partition, int bucket) {
-        FieldStatsCollector keyStatsCollector =
-                new FieldStatsCollector(TestKeyValueGenerator.KEY_TYPE);
-        FieldStatsCollector valueStatsCollector =
-                new FieldStatsCollector(TestKeyValueGenerator.DEFAULT_ROW_TYPE);
+        TableStatsCollector keyStatsCollector =
+                new TableStatsCollector(
+                        TestKeyValueGenerator.KEY_TYPE,
+                        IntStream.range(0, TestKeyValueGenerator.KEY_TYPE.getFieldCount())
+                                .mapToObj(
+                                        i ->
+                                                (FieldStatsCollector.Factory)
+                                                        FullFieldStatsCollector::new)
+                                .toArray(FieldStatsCollector.Factory[]::new));
+        TableStatsCollector valueStatsCollector =
+                new TableStatsCollector(
+                        TestKeyValueGenerator.DEFAULT_ROW_TYPE,
+                        IntStream.range(0, TestKeyValueGenerator.DEFAULT_ROW_TYPE.getFieldCount())
+                                .mapToObj(
+                                        i ->
+                                                (FieldStatsCollector.Factory)
+                                                        FullFieldStatsCollector::new)
+                                .toArray(FieldStatsCollector.Factory[]::new));
         FieldStatsArraySerializer keyStatsSerializer =
                 new FieldStatsArraySerializer(TestKeyValueGenerator.KEY_TYPE);
         FieldStatsArraySerializer valueStatsSerializer =

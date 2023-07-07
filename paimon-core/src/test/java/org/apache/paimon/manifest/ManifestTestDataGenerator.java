@@ -21,8 +21,10 @@ package org.apache.paimon.manifest;
 import org.apache.paimon.KeyValue;
 import org.apache.paimon.TestKeyValueGenerator;
 import org.apache.paimon.data.BinaryRow;
-import org.apache.paimon.format.FieldStatsCollector;
+import org.apache.paimon.format.TableStatsCollector;
 import org.apache.paimon.io.DataFileTestDataGenerator;
+import org.apache.paimon.statistics.FieldStatsCollector;
+import org.apache.paimon.statistics.FullFieldStatsCollector;
 import org.apache.paimon.stats.FieldStatsArraySerializer;
 import org.apache.paimon.utils.Preconditions;
 
@@ -32,6 +34,7 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.stream.IntStream;
 
 /** Random {@link ManifestEntry} generator. */
 public class ManifestTestDataGenerator {
@@ -82,8 +85,15 @@ public class ManifestTestDataGenerator {
         Preconditions.checkArgument(
                 !entries.isEmpty(), "Manifest entries are empty. Invalid test data.");
 
-        FieldStatsCollector collector =
-                new FieldStatsCollector(TestKeyValueGenerator.DEFAULT_PART_TYPE);
+        TableStatsCollector collector =
+                new TableStatsCollector(
+                        TestKeyValueGenerator.DEFAULT_PART_TYPE,
+                        IntStream.range(0, TestKeyValueGenerator.DEFAULT_PART_TYPE.getFieldCount())
+                                .mapToObj(
+                                        i ->
+                                                (FieldStatsCollector.Factory)
+                                                        FullFieldStatsCollector::new)
+                                .toArray(FieldStatsCollector.Factory[]::new));
         FieldStatsArraySerializer serializer =
                 new FieldStatsArraySerializer(TestKeyValueGenerator.DEFAULT_PART_TYPE);
 

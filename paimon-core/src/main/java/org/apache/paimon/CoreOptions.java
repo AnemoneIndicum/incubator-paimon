@@ -30,7 +30,9 @@ import org.apache.paimon.options.Options;
 import org.apache.paimon.options.description.DescribedEnum;
 import org.apache.paimon.options.description.Description;
 import org.apache.paimon.options.description.InlineElement;
+import org.apache.paimon.table.sink.CommitCallback;
 import org.apache.paimon.utils.Pair;
+import org.apache.paimon.utils.Preconditions;
 import org.apache.paimon.utils.StringUtils;
 
 import java.io.Serializable;
@@ -51,6 +53,8 @@ import static org.apache.paimon.options.description.TextElement.text;
 
 /** Core options for paimon. */
 public class CoreOptions implements Serializable {
+
+    public static final String FIELDS_PREFIX = "fields";
 
     public static final ConfigOption<Integer> BUCKET =
             key("bucket")
@@ -161,13 +165,15 @@ public class CoreOptions implements Serializable {
             key("snapshot.num-retained.min")
                     .intType()
                     .defaultValue(10)
-                    .withDescription("The minimum number of completed snapshots to retain.");
+                    .withDescription(
+                            "The minimum number of completed snapshots to retain. Should be greater than or equal to 1.");
 
     public static final ConfigOption<Integer> SNAPSHOT_NUM_RETAINED_MAX =
             key("snapshot.num-retained.max")
                     .intType()
                     .defaultValue(Integer.MAX_VALUE)
-                    .withDescription("The maximum number of completed snapshots to retain.");
+                    .withDescription(
+                            "The maximum number of completed snapshots to retain. Should be greater than or equal to the minimum number.");
 
     public static final ConfigOption<Duration> SNAPSHOT_TIME_RETAINED =
             key("snapshot.time-retained")
@@ -411,7 +417,8 @@ public class CoreOptions implements Serializable {
             key("scan.tag-name")
                     .stringType()
                     .noDefaultValue()
-                    .withDescription("Optional tag name used in case of \"from-tag\" scan mode.");
+                    .withDescription(
+                            "Optional tag name used in case of \"from-snapshot\" scan mode.");
 
     public static final ConfigOption<Long> SCAN_BOUNDED_WATERMARK =
             key("scan.bounded.watermark")
@@ -692,6 +699,60 @@ public class CoreOptions implements Serializable {
                     .withDescription(
                             "Read incremental changes between start snapshot (exclusive) and end snapshot, "
                                     + "for example, '5,10' means changes between snapshot 5 and snapshot 10.");
+    public static final ConfigOption<String> INCREMENTAL_BETWEEN_TIMESTAMP =
+            key("incremental-between-timestamp")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Read incremental changes between start timestamp (exclusive) and end timestamp, "
+                                    + "for example, 't1,t2' means changes between timestamp t1 and timestamp t2.");
+
+    public static final String STATS_MODE_SUFFIX = "stats-mode";
+
+    public static final ConfigOption<String> METADATA_STATS_MODE =
+            key("metadata." + STATS_MODE_SUFFIX)
+                    .stringType()
+                    .defaultValue("truncate(16)")
+                    .withDescription(
+                            Description.builder()
+                                    .text(
+                                            "The mode of metadata stats collection. none, counts, truncate(16), full is available.")
+                                    .linebreak()
+                                    .list(
+                                            text(
+                                                    "\"none\": means disable the metadata stats collection."))
+                                    .list(text("\"counts\" means only collect the null count."))
+                                    .list(
+                                            text(
+                                                    "\"full\": means collect the null count, min/max value."))
+                                    .list(
+                                            text(
+                                                    "\"truncate(16)\": means collect the null count, min/max value with truncated length of 16."))
+                                    .list(
+                                            text(
+                                                    "Field level stats mode can be specified by "
+                                                            + FIELDS_PREFIX
+                                                            + "."
+                                                            + "{field_name}."
+                                                            + STATS_MODE_SUFFIX))
+                                    .build());
+
+    public static final ConfigOption<String> COMMIT_CALLBACKS =
+            key("commit.callbacks")
+                    .stringType()
+                    .defaultValue("")
+                    .withDescription(
+                            "A list of commit callback classes to be called after a successful commit. "
+                                    + "Class names are connected with comma "
+                                    + "(example: com.test.CallbackA,com.sample.CallbackB).");
+
+    public static final ConfigOption<String> COMMIT_CALLBACK_PARAM =
+            key("commit.callback.#.param")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Parameter string for the constructor of class #. "
+                                    + "Callback class should parse the parameter by itself.");
 
     private final Options options;
 
@@ -913,7 +974,8 @@ public class CoreOptions implements Serializable {
             } else if (options.getOptional(SCAN_SNAPSHOT_ID).isPresent()
                     || options.getOptional(SCAN_TAG_NAME).isPresent()) {
                 return StartupMode.FROM_SNAPSHOT;
-            } else if (options.getOptional(INCREMENTAL_BETWEEN).isPresent()) {
+            } else if (options.getOptional(INCREMENTAL_BETWEEN).isPresent()
+                    || options.getOptional(INCREMENTAL_BETWEEN_TIMESTAMP).isPresent()) {
                 return StartupMode.INCREMENTAL;
             } else {
                 return StartupMode.LATEST_FULL;
@@ -944,14 +1006,17 @@ public class CoreOptions implements Serializable {
     public Pair<String, String> incrementalBetween() {
         String str = options.get(INCREMENTAL_BETWEEN);
         if (str == null) {
-            return null;
+            str = options.get(INCREMENTAL_BETWEEN_TIMESTAMP);
+            if (str == null) {
+                return null;
+            }
         }
 
         String[] split = str.split(",");
         if (split.length != 2) {
             throw new IllegalArgumentException(
-                    "The incremental-between must specific start snapshot (exclusive) and end snapshot,"
-                            + " for example, '5,10' means changes between snapshot 5 and snapshot 10. But is: "
+                    "The incremental-between or incremental-between-timestamp  must specific start(exclusive) and end snapshot or timestamp,"
+                            + " for example, 'incremental-between'='5,10' means changes between snapshot 5 and snapshot 10. But is: "
                             + str);
         }
         return Pair.of(split[0], split[1]);
@@ -1019,6 +1084,45 @@ public class CoreOptions implements Serializable {
 
     public Duration consumerExpireTime() {
         return options.get(CONSUMER_EXPIRATION_TIME);
+    }
+
+    public List<CommitCallback> commitCallbacks() {
+        List<CommitCallback> result = new ArrayList<>();
+        for (String className : options.get(COMMIT_CALLBACKS).split(",")) {
+            className = className.trim();
+            if (className.length() == 0) {
+                continue;
+            }
+
+            Class<?> clazz;
+            try {
+                clazz =
+                        Class.forName(
+                                className, true, Thread.currentThread().getContextClassLoader());
+            } catch (ClassNotFoundException e) {
+                throw new RuntimeException(e);
+            }
+            Preconditions.checkArgument(
+                    CommitCallback.class.isAssignableFrom(clazz),
+                    "Class " + clazz + " must implement " + CommitCallback.class);
+            String param = options.get(COMMIT_CALLBACK_PARAM.key().replace("#", className));
+
+            try {
+                if (param == null) {
+                    result.add((CommitCallback) clazz.newInstance());
+                } else {
+                    result.add(
+                            (CommitCallback) clazz.getConstructor(String.class).newInstance(param));
+                }
+            } catch (Exception e) {
+                throw new RuntimeException(
+                        "Failed to initialize commit callback "
+                                + className
+                                + (param == null ? "" : " with param " + param),
+                        e);
+            }
+        }
+        return result;
     }
 
     /** Specifies the merge engine for table with primary key. */
@@ -1101,7 +1205,8 @@ public class CoreOptions implements Serializable {
                         + "produces a snapshot specified by \"scan.snapshot-id\" but does not read new changes."),
 
         INCREMENTAL(
-                "incremental", "Read incremental changes between start snapshot and end snapshot.");
+                "incremental",
+                "Read incremental changes between start and end snapshot or timestamp.");
 
         private final String value;
         private final String description;
@@ -1358,7 +1463,9 @@ public class CoreOptions implements Serializable {
             options.set(SCAN_MODE, StartupMode.FROM_SNAPSHOT);
         }
 
-        if (options.contains(INCREMENTAL_BETWEEN) && !options.contains(SCAN_MODE)) {
+        if ((options.contains(INCREMENTAL_BETWEEN_TIMESTAMP)
+                        || options.contains(INCREMENTAL_BETWEEN))
+                && !options.contains(SCAN_MODE)) {
             options.set(SCAN_MODE, StartupMode.INCREMENTAL);
         }
     }
