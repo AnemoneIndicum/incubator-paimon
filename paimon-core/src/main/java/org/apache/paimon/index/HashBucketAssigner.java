@@ -72,8 +72,19 @@ public class HashBucketAssigner {
                 recordAssignId,
                 assignId);
 
-        PartitionIndex index = partitionIndex.computeIfAbsent(partition, this::loadIndex);
-        return index.assign(hash, (bucket) -> computeAssignId(bucket) == assignId);
+        PartitionIndex index = this.partitionIndex.get(partition);
+        if (index == null) {
+            partition = partition.copy();
+            index = loadIndex(partition);
+            this.partitionIndex.put(partition, index);
+        }
+
+        int assigned = index.assign(hash, (bucket) -> computeAssignId(bucket) == assignId);
+        if (LOG.isDebugEnabled()) {
+            LOG.debug(
+                    "Assign " + assigned + " to the partition " + partition + " key hash " + hash);
+        }
+        return assigned;
     }
 
     /** Prepare commit to clear outdated partition index. */
