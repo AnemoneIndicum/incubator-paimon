@@ -18,6 +18,7 @@
 
 package org.apache.paimon.table;
 
+import org.apache.paimon.CoreOptions;
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.Identifier;
 import org.apache.paimon.data.DataFormatTestUtil;
@@ -34,9 +35,12 @@ import org.apache.paimon.table.sink.StreamTableWrite;
 import org.apache.paimon.table.source.InnerTableRead;
 import org.apache.paimon.table.source.Split;
 import org.apache.paimon.table.source.snapshot.SnapshotReader;
+import org.apache.paimon.testutils.assertj.AssertionUtils;
 import org.apache.paimon.types.DataType;
 import org.apache.paimon.types.DataTypes;
 import org.apache.paimon.types.RowType;
+
+import org.apache.paimon.shade.guava30.com.google.common.collect.Lists;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -48,6 +52,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.function.Consumer;
 
@@ -72,6 +77,126 @@ public class SchemaEvolutionTest {
         identifier = SchemaManager.fromPath(tablePath.getPath(), true);
         schemaManager = new SchemaManager(LocalFileIO.create(), tablePath);
         commitUser = UUID.randomUUID().toString();
+    }
+
+    @Test
+    public void testDefaultValue() throws Exception {
+        {
+            Map<String, String> option = new HashMap<>();
+            option.put(
+                    String.format(
+                            "%s.%s.%s",
+                            CoreOptions.FIELDS_PREFIX, "a", CoreOptions.DEFAULT_VALUE_SUFFIX),
+                    "1");
+            Schema schema =
+                    new Schema(
+                            RowType.of(
+                                            new DataType[] {
+                                                DataTypes.MAP(DataTypes.INT(), DataTypes.STRING()),
+                                                DataTypes.BIGINT()
+                                            },
+                                            new String[] {"a", "b"})
+                                    .getFields(),
+                            Collections.emptyList(),
+                            Collections.emptyList(),
+                            option,
+                            "");
+
+            assertThatThrownBy(() -> schemaManager.createTable(schema))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining(
+                            "The column %s with datatype %s is currently not supported for default value.",
+                            "a", DataTypes.MAP(DataTypes.INT(), DataTypes.STRING()).asSQLString());
+        }
+
+        {
+            Map<String, String> option = new HashMap<>();
+            option.put(
+                    String.format(
+                            "%s.%s.%s",
+                            CoreOptions.FIELDS_PREFIX, "a", CoreOptions.DEFAULT_VALUE_SUFFIX),
+                    "abcxxxx");
+            Schema schema =
+                    new Schema(
+                            RowType.of(
+                                            new DataType[] {DataTypes.BIGINT(), DataTypes.BIGINT()},
+                                            new String[] {"a", "b"})
+                                    .getFields(),
+                            Collections.emptyList(),
+                            Collections.emptyList(),
+                            option,
+                            "");
+            assertThatThrownBy(() -> schemaManager.createTable(schema))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining(
+                            "The default value %s of the column a can not be cast to datatype: %s",
+                            "abcxxxx", DataTypes.BIGINT().asSQLString());
+        }
+
+        {
+            Schema schema =
+                    new Schema(
+                            RowType.of(
+                                            new DataType[] {
+                                                DataTypes.BIGINT(),
+                                                DataTypes.BIGINT(),
+                                                DataTypes.BIGINT()
+                                            },
+                                            new String[] {"a", "b", "c"})
+                                    .getFields(),
+                            Lists.newArrayList("c"),
+                            Lists.newArrayList("a", "c"),
+                            new HashMap<>(),
+                            "");
+
+            schemaManager.createTable(schema);
+
+            assertThatThrownBy(
+                            () ->
+                                    schemaManager.commitChanges(
+                                            Collections.singletonList(
+                                                    SchemaChange.setOption(
+                                                            String.format(
+                                                                    "%s.%s.%s",
+                                                                    CoreOptions.FIELDS_PREFIX,
+                                                                    "b",
+                                                                    CoreOptions
+                                                                            .DEFAULT_VALUE_SUFFIX),
+                                                            "abcxxxx"))))
+                    .hasCauseInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining(
+                            "The default value %s of the column b can not be cast to datatype: %s",
+                            "abcxxxx", DataTypes.BIGINT().asSQLString());
+            assertThatThrownBy(
+                            () ->
+                                    schemaManager.commitChanges(
+                                            Collections.singletonList(
+                                                    SchemaChange.setOption(
+                                                            String.format(
+                                                                    "%s.%s.%s",
+                                                                    CoreOptions.FIELDS_PREFIX,
+                                                                    "a",
+                                                                    CoreOptions
+                                                                            .DEFAULT_VALUE_SUFFIX),
+                                                            "abc"))))
+                    .hasCauseInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("Primary key a should not be assign default column.");
+
+            assertThatThrownBy(
+                            () ->
+                                    schemaManager.commitChanges(
+                                            Collections.singletonList(
+                                                    SchemaChange.setOption(
+                                                            String.format(
+                                                                    "%s.%s.%s",
+                                                                    CoreOptions.FIELDS_PREFIX,
+                                                                    "c",
+                                                                    CoreOptions
+                                                                            .DEFAULT_VALUE_SUFFIX),
+                                                            "abc"))))
+                    .hasCauseInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("Partition key c should not be assign default column.");
+        }
     }
 
     @Test
@@ -332,11 +457,12 @@ public class SchemaEvolutionTest {
                                 schemaManager.commitChanges(
                                         Collections.singletonList(
                                                 SchemaChange.renameColumn("f0", "_VALUE_KIND"))))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessage(
-                        String.format(
-                                "Field name[%s] in schema cannot be exist in %s",
-                                "_VALUE_KIND", SYSTEM_FIELD_NAMES));
+                .satisfies(
+                        AssertionUtils.anyCauseMatches(
+                                RuntimeException.class,
+                                String.format(
+                                        "Field name[%s] in schema cannot be exist in %s",
+                                        "_VALUE_KIND", SYSTEM_FIELD_NAMES)));
     }
 
     private List<String> readRecords(FileStoreTable table, Predicate filter) throws IOException {

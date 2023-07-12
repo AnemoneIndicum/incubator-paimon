@@ -280,6 +280,8 @@ public class SparkCatalog implements TableCatalog, SupportsNamespaces {
             return loadTable(ident);
         } catch (Catalog.TableNotExistException e) {
             throw new NoSuchTableException(ident);
+        } catch (Catalog.ColumnAlreadyExistException | Catalog.ColumnNotExistException e) {
+            throw new RuntimeException(e);
         }
     }
 
