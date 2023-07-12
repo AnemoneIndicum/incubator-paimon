@@ -63,9 +63,11 @@ public class CdcMultiTableParsingProcessFunction<T> extends ProcessFunction<T, V
         parser.setRawEvent(raw);
         String tableName = parser.parseTableName();
         List<DataField> schemaChange = parser.parseSchemaChange();
+        // 判断是 schema change 还是 正常的数据流
         if (schemaChange.size() > 0) {
             context.output(getUpdatedDataFieldsOutputTag(tableName), schemaChange);
         }
+        // todo: 把每个表的数据流都拆分成测流
         parser.parseRecords()
                 .forEach(record -> context.output(getRecordOutputTag(tableName), record));
     }

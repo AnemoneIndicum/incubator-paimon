@@ -87,6 +87,7 @@ import java.util.stream.Collectors;
  * must be thrown to restart the job. It is recommended to run FileStoreCommitTest thousands of
  * times to make sure that your changes is correct.
  */
+// todo: 数据提交至表中
 public class FileStoreCommitImpl implements FileStoreCommit {
 
     private static final Logger LOG = LoggerFactory.getLogger(FileStoreCommitImpl.class);
@@ -642,6 +643,7 @@ public class FileStoreCommitImpl implements FileStoreCommit {
 
             // write new changes into manifest files
             long deltaRecordCount = Snapshot.recordCount(tableFiles);
+            // todo: 写数据
             List<ManifestFileMeta> newChangesManifests = manifestFile.write(tableFiles);
             newMetas.addAll(newChangesManifests);
             newChangesListName = manifestList.write(newChangesManifests);

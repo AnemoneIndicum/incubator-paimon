@@ -127,6 +127,7 @@ public class CommitterOperator<CommitT, GlobalCommitT> extends AbstractStreamOpe
     public void snapshotState(StateSnapshotContext context) throws Exception {
         super.snapshotState(context);
         pollInputs();
+        // todo: 做checkpoint时 更新state 数据
         committableStateManager.snapshotState(context, committables(committablesPerCheckpoint));
     }
 
@@ -148,6 +149,7 @@ public class CommitterOperator<CommitT, GlobalCommitT> extends AbstractStreamOpe
     @Override
     public void notifyCheckpointComplete(long checkpointId) throws Exception {
         super.notifyCheckpointComplete(checkpointId);
+        // todo: checkpoint 回调完成开始写数据至表中
         commitUpToCheckpoint(endInput ? Long.MAX_VALUE : checkpointId);
     }
 
@@ -161,6 +163,7 @@ public class CommitterOperator<CommitT, GlobalCommitT> extends AbstractStreamOpe
     @Override
     public void processElement(StreamRecord<CommitT> element) {
         output.collect(element);
+        // TODO：数据写 Deque 队列
         this.inputs.add(element.getValue());
     }
 

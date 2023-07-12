@@ -87,9 +87,11 @@ public class CdcDynamicTableParsingProcessFunction<T> extends ProcessFunction<T,
         String tableName = parser.parseTableName();
 
         // check for newly added table
+        // todo:处理新增表
         parser.parseNewTable(database)
                 .ifPresent(
                         schema -> {
+                            // todo: 执行paimon 创建表
                             Identifier identifier =
                                     new Identifier(database, parser.parseTableName());
                             try {
@@ -97,14 +99,14 @@ public class CdcDynamicTableParsingProcessFunction<T> extends ProcessFunction<T,
                             } catch (Throwable ignored) {
                             }
                         });
-
+        // todo:处理表结构变更
         List<DataField> schemaChange = parser.parseSchemaChange();
         if (schemaChange.size() > 0) {
             context.output(
                     DYNAMIC_SCHEMA_CHANGE_OUTPUT_TAG,
                     Tuple2.of(Identifier.create(database, tableName), schemaChange));
         }
-
+        // todo: 处理正常的变更流 before after
         parser.parseRecords()
                 .forEach(
                         record ->

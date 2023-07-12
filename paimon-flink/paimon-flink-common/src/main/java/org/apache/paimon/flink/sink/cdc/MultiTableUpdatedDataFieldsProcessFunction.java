@@ -95,7 +95,7 @@ public class MultiTableUpdatedDataFieldsProcessFunction
         if (Objects.isNull(schemaManager)) {
             throw new IOException("Failed to get schema manager for table " + tableId);
         }
-
+        // todo: 执行表结构变更
         for (SchemaChange schemaChange :
                 extractSchemaChanges(schemaManager, updatedDataFields.f1)) {
             applySchemaChange(schemaManager, schemaChange);
@@ -104,6 +104,7 @@ public class MultiTableUpdatedDataFieldsProcessFunction
 
     private List<SchemaChange> extractSchemaChanges(
             SchemaManager schemaManager, List<DataField> updatedDataFields) {
+        // todo 获取旧的表元数据 column name and column type
         RowType oldRowType = schemaManager.latest().get().logicalRowType();
         Map<String, DataField> oldFields = new HashMap<>();
         for (DataField oldField : oldRowType.getFields()) {
@@ -112,17 +113,20 @@ public class MultiTableUpdatedDataFieldsProcessFunction
 
         List<SchemaChange> result = new ArrayList<>();
         for (DataField newField : updatedDataFields) {
+            // 旧的元数据中存在 就修改
             if (oldFields.containsKey(newField.name())) {
                 DataField oldField = oldFields.get(newField.name());
                 // we compare by ignoring nullable, because partition keys and primary keys might be
                 // nullable in source database, but they can't be null in Paimon
                 if (oldField.type().equalsIgnoreNullable(newField.type())) {
+                    // 更改备注
                     if (!Objects.equals(oldField.description(), newField.description())) {
                         result.add(
                                 SchemaChange.updateColumnComment(
                                         new String[] {newField.name()}, newField.description()));
                     }
                 } else {
+                    // 更改类型
                     result.add(SchemaChange.updateColumnType(newField.name(), newField.type()));
                     if (newField.description() != null) {
                         result.add(

@@ -149,7 +149,7 @@ public class FileSystemCatalog extends AbstractCatalog {
         if (!databaseExists(identifier.getDatabaseName())) {
             throw new DatabaseNotExistException(identifier.getDatabaseName());
         }
-
+       // 获取表的存储位置
         Path path = getDataTableLocation(identifier);
         if (tableExists(path)) {
             if (ignoreIfExists) {
@@ -160,7 +160,7 @@ public class FileSystemCatalog extends AbstractCatalog {
         }
 
         copyTableDefaultOptions(schema.options());
-
+        // 交给 SchemaManager 创建表
         uncheck(() -> new SchemaManager(fileIO, path).createTable(schema));
     }
 

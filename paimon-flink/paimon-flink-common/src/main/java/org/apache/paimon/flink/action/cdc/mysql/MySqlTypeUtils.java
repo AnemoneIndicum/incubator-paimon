@@ -154,6 +154,7 @@ public class MySqlTypeUtils {
                 // user should not use tinyint(1) to store number although jdbc url parameter
                 // tinyInt1isBit=false can help change the return value, it's not a general way
                 // btw: mybatis and mysql-connector-java map tinyint(1) to boolean by default
+                // todo: TINYINT(1) 存储值是 非1的其它 -127到128的数字转换就会报错
                 return length != null && length == 1 ? DataTypes.BOOLEAN() : DataTypes.TINYINT();
             case TINYINT_UNSIGNED:
             case TINYINT_UNSIGNED_ZEROFILL:

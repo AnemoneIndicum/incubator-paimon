@@ -199,6 +199,7 @@ public class MySqlDebeziumJsonEventParser implements EventParser<String> {
 
             SQLStatement statement = SQLUtils.parseSingleStatement(ddl, JdbcConstants.MYSQL);
 
+            // 判断是不是 create ddl
             if (!(statement instanceof MySqlCreateTableStatement)) {
                 return Optional.empty();
             }
@@ -208,6 +209,7 @@ public class MySqlDebeziumJsonEventParser implements EventParser<String> {
             // TODO: add default table config, partitions, and computed column
             //     for newly added table;
             MySqlSchema mySqlSchema = buildMySqlSchema(databaseName, createTableStatement);
+            // TODO: 将 mysql的 schema 转换成 paimon schema
             Schema fromMySql =
                     MySqlActionUtils.buildPaimonSchema(
                             mySqlSchema,

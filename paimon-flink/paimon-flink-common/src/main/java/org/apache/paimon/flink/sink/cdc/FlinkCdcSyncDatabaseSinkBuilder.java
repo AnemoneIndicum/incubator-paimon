@@ -105,16 +105,19 @@ public class FlinkCdcSyncDatabaseSinkBuilder<T> {
         SingleOutputStreamOperator<Void> parsed =
                 input.forward()
                         .process(
+                                // todo: 自定义function 表结构变更，处理正常的变更流 拆分为测流
                                 new CdcDynamicTableParsingProcessFunction<>(
                                         database, catalogLoader, parserFactory))
                         .setParallelism(input.getParallelism());
 
         // for newly-added tables, create a multiplexing operator that handles all their records
         //     and writes to multiple tables
+        // todo: 表结构变更和 数据流（before after）拆解成两个侧输出流
         DataStream<CdcMultiplexRecord> newlyAddedTableStream =
                 SingleOutputStreamOperatorUtils.getSideOutput(
                         parsed, CdcDynamicTableParsingProcessFunction.DYNAMIC_OUTPUT_TAG);
         // handles schema change for newly added tables
+        // todo: 处理表结构变更
         SingleOutputStreamOperatorUtils.getSideOutput(
                         parsed,
                         CdcDynamicTableParsingProcessFunction.DYNAMIC_SCHEMA_CHANGE_OUTPUT_TAG)
@@ -122,6 +125,7 @@ public class FlinkCdcSyncDatabaseSinkBuilder<T> {
 
         FlinkStreamPartitioner<CdcMultiplexRecord> partitioner =
                 new FlinkStreamPartitioner<>(new CdcMultiplexRecordChannelComputer(catalogLoader));
+        // todo:  数据流（before after）转换成 PartitionTransformation
         PartitionTransformation<CdcMultiplexRecord> partitioned =
                 new PartitionTransformation<>(
                         newlyAddedTableStream.getTransformation(), partitioner);
@@ -151,6 +155,7 @@ public class FlinkCdcSyncDatabaseSinkBuilder<T> {
                         .setParallelism(input.getParallelism());
 
         for (FileStoreTable table : tables) {
+            // todo: schema change 测流
             DataStream<Void> schemaChangeProcessFunction =
                     SingleOutputStreamOperatorUtils.getSideOutput(
                                     parsed,
@@ -162,6 +167,7 @@ public class FlinkCdcSyncDatabaseSinkBuilder<T> {
             schemaChangeProcessFunction.getTransformation().setParallelism(1);
             schemaChangeProcessFunction.getTransformation().setMaxParallelism(1);
 
+            // 正常数据流
             DataStream<CdcRecord> parsedForTable =
                     SingleOutputStreamOperatorUtils.getSideOutput(
                             parsed,
@@ -169,10 +175,13 @@ public class FlinkCdcSyncDatabaseSinkBuilder<T> {
                                     table.name()));
 
             BucketMode bucketMode = table.bucketMode();
+            // todo: feature 动态bucket 判断
             switch (bucketMode) {
+                // 固定桶数据写入
                 case FIXED:
                     buildForFixedBucket(table, parsedForTable);
                     break;
+                // 动态桶数据写入
                 case DYNAMIC:
                     buildForDynamicBucket(table, parsedForTable);
                     break;

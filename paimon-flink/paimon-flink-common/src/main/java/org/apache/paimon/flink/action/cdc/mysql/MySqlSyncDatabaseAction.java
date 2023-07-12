@@ -172,6 +172,7 @@ public class MySqlSyncDatabaseAction extends ActionBase {
                         + " cannot be set for mysql-sync-database. "
                         + "If you want to sync several MySQL tables into one Paimon table, "
                         + "use mysql-sync-table instead.");
+        // catalog 下库表字段是否区分大小写 默认 true
         boolean caseSensitive = catalog.caseSensitive();
 
         if (!caseSensitive) {
@@ -179,6 +180,7 @@ public class MySqlSyncDatabaseAction extends ActionBase {
         }
 
         List<String> excludedTables = new LinkedList<>();
+        // todo: 获取源表的 schema信息
         List<MySqlSchema> mySqlSchemas = getMySqlSchemaList(excludedTables);
         String mySqlDatabase = mySqlConfig.get(MySqlSourceOptions.DATABASE_NAME);
         checkArgument(
@@ -191,9 +193,11 @@ public class MySqlSyncDatabaseAction extends ActionBase {
         TableNameConverter tableNameConverter =
                 new TableNameConverter(caseSensitive, tablePrefix, tableSuffix);
 
+        // todo: 将mysql的表结构转化为 paimon的表
         List<FileStoreTable> fileStoreTables = new ArrayList<>();
         List<String> monitoredTables = new ArrayList<>();
         for (MySqlSchema mySqlSchema : mySqlSchemas) {
+            // 表明转换 加上配置的前缀后缀
             String paimonTableName = tableNameConverter.convert(mySqlSchema.tableName());
             Identifier identifier = new Identifier(database, paimonTableName);
             FileStoreTable table;
@@ -240,8 +244,9 @@ public class MySqlSyncDatabaseAction extends ActionBase {
             tableList = "(" + String.join("|", monitoredTables) + ")";
         }
         mySqlConfig.set(MySqlSourceOptions.TABLE_NAME, tableList);
+        // 构建mysql cdc source
         MySqlSource<String> source = MySqlActionUtils.buildMySqlSource(mySqlConfig);
-
+        // 时区问题
         String serverTimeZone = mySqlConfig.get(MySqlSourceOptions.SERVER_TIME_ZONE);
         ZoneId zoneId = serverTimeZone == null ? ZoneId.systemDefault() : ZoneId.of(serverTimeZone);
         EventParser.Factory<String> parserFactory =
@@ -253,6 +258,7 @@ public class MySqlSyncDatabaseAction extends ActionBase {
         Options catalogOptions = this.catalogOptions;
         FlinkCdcSyncDatabaseSinkBuilder<String> sinkBuilder =
                 new FlinkCdcSyncDatabaseSinkBuilder<String>()
+                        // todo: env 加入 source
                         .withInput(
                                 env.fromSource(
                                         source, WatermarkStrategy.noWatermarks(), "MySQL Source"))
@@ -264,12 +270,12 @@ public class MySqlSyncDatabaseAction extends ActionBase {
                                 })
                         .withTables(fileStoreTables)
                         .withMode(mode);
-
+        // sink 并行度
         String sinkParallelism = tableConfig.get(FlinkConnectorOptions.SINK_PARALLELISM.key());
         if (sinkParallelism != null) {
             sinkBuilder.withParallelism(Integer.parseInt(sinkParallelism));
         }
-
+        // todo: sink operator
         sinkBuilder.build();
     }
 
@@ -294,12 +300,14 @@ public class MySqlSyncDatabaseAction extends ActionBase {
     private List<MySqlSchema> getMySqlSchemaList(List<String> excludedTables) throws Exception {
         String databaseName = mySqlConfig.get(MySqlSourceOptions.DATABASE_NAME);
         List<MySqlSchema> mySqlSchemaList = new ArrayList<>();
+        // todo: 创建 DB connection
         try (Connection conn = MySqlActionUtils.getConnection(mySqlConfig)) {
             DatabaseMetaData metaData = conn.getMetaData();
             try (ResultSet tables =
                     metaData.getTables(databaseName, null, "%", new String[] {"TABLE"})) {
                 while (tables.next()) {
                     String tableName = tables.getString("TABLE_NAME");
+                    // 排除不需要的表
                     if (!shouldMonitorTable(tableName)) {
                         excludedTables.add(tableName);
                         continue;
@@ -356,6 +364,7 @@ public class MySqlSyncDatabaseAction extends ActionBase {
 
     // ------------------------------------------------------------------------
     //  Flink run methods
+    //  todo cdc同步整库-mysql
     // ------------------------------------------------------------------------
 
     public static Optional<Action> create(String[] args) {
@@ -486,6 +495,7 @@ public class MySqlSyncDatabaseAction extends ActionBase {
 
     @Override
     public void run() throws Exception {
+        // todo: 启动同步任务
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         build(env);
         execute(env, String.format("MySQL-Paimon Database Sync: %s", database));

@@ -177,10 +177,12 @@ public abstract class FlinkSink<T> implements Serializable {
         boolean streamingCheckpointEnabled =
                 isStreaming && checkpointConfig.isCheckpointingEnabled();
         if (streamingCheckpointEnabled) {
+            // 暂不支持费检查点对齐，不支持非精确一次性
             assertStreamingConfiguration(env);
         }
 
         SingleOutputStreamOperator<?> committed =
+                // 输出流进行转换 即：sink数据
                 written.transform(
                                 GLOBAL_COMMITTER_NAME + " -> " + table.name(),
                                 new CommittableTypeInfo(),
@@ -188,9 +190,11 @@ public abstract class FlinkSink<T> implements Serializable {
                                         streamingCheckpointEnabled,
                                         commitUser,
                                         createCommitterFactory(streamingCheckpointEnabled),
+                                        // commit table state manager
                                         createCommittableStateManager()))
                         .setParallelism(1)
                         .setMaxParallelism(1);
+        // todo: 数据已经输出 故后续直接抛弃 DiscardingSink
         return committed.addSink(new DiscardingSink<>()).name("end").setParallelism(1);
     }
 
