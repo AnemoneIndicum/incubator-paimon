@@ -23,6 +23,7 @@ import org.apache.paimon.catalog.Identifier;
 import org.apache.paimon.flink.FlinkConnectorOptions;
 import org.apache.paimon.flink.action.Action;
 import org.apache.paimon.flink.action.ActionBase;
+import org.apache.paimon.flink.action.cdc.DatabaseSyncMode;
 import org.apache.paimon.flink.action.cdc.TableNameConverter;
 import org.apache.paimon.flink.sink.cdc.EventParser;
 import org.apache.paimon.flink.sink.cdc.FlinkCdcSyncDatabaseSinkBuilder;
@@ -54,8 +55,9 @@ import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
-import static org.apache.paimon.flink.action.cdc.mysql.MySqlDatabaseSyncMode.SEPARATE;
-import static org.apache.paimon.flink.action.cdc.mysql.MySqlDatabaseSyncMode.UNIFIED;
+import static org.apache.paimon.flink.action.cdc.DatabaseSyncMode.COMBINED;
+import static org.apache.paimon.flink.action.cdc.DatabaseSyncMode.DIVIDED;
+import static org.apache.paimon.flink.action.cdc.mysql.MySqlActionUtils.MYSQL_CONVERTER_TINYINT1_BOOL;
 import static org.apache.paimon.utils.Preconditions.checkArgument;
 
 /**
@@ -107,7 +109,7 @@ public class MySqlSyncDatabaseAction extends ActionBase {
     @Nullable private final Pattern excludingPattern;
     private final Map<String, String> tableConfig;
     private final String includingTables;
-    private final MySqlDatabaseSyncMode mode;
+    private final DatabaseSyncMode mode;
 
     public MySqlSyncDatabaseAction(
             Map<String, String> mySqlConfig,
@@ -127,7 +129,7 @@ public class MySqlSyncDatabaseAction extends ActionBase {
                 null,
                 catalogConfig,
                 tableConfig,
-                SEPARATE);
+                DIVIDED);
     }
 
     public MySqlSyncDatabaseAction(
@@ -141,7 +143,7 @@ public class MySqlSyncDatabaseAction extends ActionBase {
             @Nullable String excludingTables,
             Map<String, String> catalogConfig,
             Map<String, String> tableConfig,
-            MySqlDatabaseSyncMode mode) {
+            DatabaseSyncMode mode) {
         super(warehouse, catalogConfig);
         this.mySqlConfig = Configuration.fromMap(mySqlConfig);
         this.database = database;
@@ -217,10 +219,10 @@ public class MySqlSyncDatabaseAction extends ActionBase {
                         + "MySQL database are not compatible with those of existed Paimon tables. Please check the log.");
         String tableList;
 
-        if (mode == UNIFIED) {
-            // First excluding all tables that failed the excludingPattern and those does not
-            //     have a primary key. Then including other table using regex so that newly
-            //     added table DDLs and DMLs during job runtime will be captured
+        if (mode == COMBINED) {
+            // First excluding all tables that failed the excludingPattern and don't have primary
+            // keys. Then including other tables using regex so that newly added table DDLs and DMLs
+            // during job runtime can be captured
             tableList =
                     excludedTables.stream()
                                     .map(t -> String.format("(?!(%s))", t))
@@ -234,11 +236,24 @@ public class MySqlSyncDatabaseAction extends ActionBase {
 
         String serverTimeZone = mySqlConfig.get(MySqlSourceOptions.SERVER_TIME_ZONE);
         ZoneId zoneId = serverTimeZone == null ? ZoneId.systemDefault() : ZoneId.of(serverTimeZone);
+        MySqlTableSchemaBuilder schemaBuilder =
+                new MySqlTableSchemaBuilder(tableConfig, caseSensitive);
+        Pattern includingPattern = this.includingPattern;
+        Pattern excludingPattern = this.excludingPattern;
+        Boolean convertTinyint1ToBool = mySqlConfig.get(MYSQL_CONVERTER_TINYINT1_BOOL);
         EventParser.Factory<String> parserFactory =
-                () -> new MySqlDebeziumJsonEventParser(zoneId, caseSensitive, tableNameConverter);
+                () ->
+                        new MySqlDebeziumJsonEventParser(
+                                zoneId,
+                                caseSensitive,
+                                tableNameConverter,
+                                schemaBuilder,
+                                includingPattern,
+                                excludingPattern,
+                                convertTinyint1ToBool);
 
         String database = this.database;
-        MySqlDatabaseSyncMode mode = this.mode;
+        DatabaseSyncMode mode = this.mode;
         FlinkCdcSyncDatabaseSinkBuilder<String> sinkBuilder =
                 new FlinkCdcSyncDatabaseSinkBuilder<String>()
                         .withInput(
@@ -289,7 +304,12 @@ public class MySqlSyncDatabaseAction extends ActionBase {
                         excludedTables.add(tableName);
                         continue;
                     }
-                    MySqlSchema mySqlSchema = new MySqlSchema(metaData, databaseName, tableName);
+                    MySqlSchema mySqlSchema =
+                            new MySqlSchema(
+                                    metaData,
+                                    databaseName,
+                                    tableName,
+                                    mySqlConfig.get(MYSQL_CONVERTER_TINYINT1_BOOL));
                     if (mySqlSchema.primaryKeys().size() > 0) {
                         // only tables with primary keys will be considered
                         mySqlSchemaList.add(mySqlSchema);
