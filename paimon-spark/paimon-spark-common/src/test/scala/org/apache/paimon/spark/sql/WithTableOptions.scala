@@ -15,22 +15,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package org.apache.paimon.spark.sql
 
-package org.apache.paimon.format.avro;
+import org.apache.paimon.WriteMode
+import org.apache.paimon.WriteMode._
 
-import org.apache.paimon.format.FileFormat;
-import org.apache.paimon.format.FormatReadWriteTest;
-import org.apache.paimon.options.Options;
+trait WithTableOptions {
 
-/** An avro {@link FormatReadWriteTest}. */
-public class AvroFormatReadWriteTest extends FormatReadWriteTest {
+  // 3: fixed bucket, -1: dynamic bucket
+  protected val bucketModes: Seq[Int] = Seq(3, -1)
 
-    protected AvroFormatReadWriteTest() {
-        super("avro");
-    }
+  protected val writeModes: Seq[WriteMode] = Seq(CHANGE_LOG, APPEND_ONLY)
 
-    @Override
-    protected FileFormat fileFormat() {
-        return new AvroFileFormat(new Options());
-    }
 }
