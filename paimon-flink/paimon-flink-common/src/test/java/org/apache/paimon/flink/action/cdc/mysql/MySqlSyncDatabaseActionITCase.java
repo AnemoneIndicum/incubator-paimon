@@ -59,8 +59,8 @@ import java.util.Objects;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Collectors;
 
-import static org.apache.paimon.flink.action.cdc.mysql.MySqlDatabaseSyncMode.SEPARATE;
-import static org.apache.paimon.flink.action.cdc.mysql.MySqlDatabaseSyncMode.UNIFIED;
+import static org.apache.paimon.flink.action.cdc.DatabaseSyncMode.COMBINED;
+import static org.apache.paimon.flink.action.cdc.DatabaseSyncMode.DIVIDED;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -69,6 +69,11 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 public class MySqlSyncDatabaseActionITCase extends MySqlActionITCaseBase {
 
     private static final String DATABASE_NAME = "paimon_sync_database";
+
+    private static final String DATABASE_NAME_TINYINT_CONVERT =
+            "paimon_sync_database_tinyint_schema";
+
+    private static final String DATABASE_NAME_TINYINT = "paimon_sync_database_tinyint";
     @TempDir java.nio.file.Path tempDir;
 
     @Test
@@ -216,6 +221,103 @@ public class MySqlSyncDatabaseActionITCase extends MySqlActionITCaseBase {
                         "+I[6, six, 60, 600, string_6]",
                         "+I[8, eight, 80, 800, string_8]",
                         "+I[10, ten, 100, 1000, long_long_string_10]");
+        waitForResult(expected, table2, rowType2, primaryKeys2);
+    }
+
+    @Test
+    @Timeout(60)
+    public void testSchemaEvolutionWithTinyInt1Convert() throws Exception {
+        Map<String, String> mySqlConfig = getBasicMySqlConfig();
+        mySqlConfig.put("database-name", DATABASE_NAME_TINYINT_CONVERT);
+        mySqlConfig.put("mysql.converter.tinyint1-to-bool", "false");
+
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(2);
+        env.enableCheckpointing(1000);
+        env.setRestartStrategy(RestartStrategies.noRestart());
+
+        Map<String, String> tableConfig = getBasicTableConfig();
+        MySqlSyncDatabaseAction action =
+                new MySqlSyncDatabaseAction(
+                        mySqlConfig,
+                        warehouse,
+                        database,
+                        false,
+                        Collections.emptyMap(),
+                        tableConfig);
+        action.build(env);
+        JobClient client = env.executeAsync();
+        waitJobRunning(client);
+
+        try (Connection conn =
+                DriverManager.getConnection(
+                        MYSQL_CONTAINER.getJdbcUrl(DATABASE_NAME),
+                        MYSQL_CONTAINER.getUsername(),
+                        MYSQL_CONTAINER.getPassword())) {
+            try (Statement statement = conn.createStatement()) {
+                testSchemaEvolutionImplWithTinyInt1Convert(statement);
+            }
+        }
+    }
+
+    private void testSchemaEvolutionImplWithTinyInt1Convert(Statement statement) throws Exception {
+        FileStoreTable table1 = getFileStoreTable("schema_evolution_4");
+        FileStoreTable table2 = getFileStoreTable("schema_evolution_5");
+
+        statement.executeUpdate("USE " + DATABASE_NAME_TINYINT_CONVERT);
+
+        statement.executeUpdate("INSERT INTO schema_evolution_4 VALUES (1, 'one')");
+        statement.executeUpdate("INSERT INTO schema_evolution_5 VALUES (2, 'two', 21)");
+        statement.executeUpdate("INSERT INTO schema_evolution_4 VALUES (3, 'three')");
+        statement.executeUpdate("INSERT INTO schema_evolution_5 VALUES (4, 'four', 24)");
+
+        RowType rowType1 =
+                RowType.of(
+                        new DataType[] {DataTypes.INT().notNull(), DataTypes.VARCHAR(10)},
+                        new String[] {"_id", "v1"});
+
+        List<String> primaryKeys1 = Arrays.asList("_id");
+        List<String> expected = Arrays.asList("+I[1, one]", "+I[3, three]");
+
+        waitForResult(expected, table1, rowType1, primaryKeys1);
+
+        RowType rowType2 =
+                RowType.of(
+                        new DataType[] {
+                            DataTypes.INT().notNull(), DataTypes.VARCHAR(10), DataTypes.TINYINT()
+                        },
+                        new String[] {"_id", "v1", "v2"});
+        List<String> primaryKeys2 = Arrays.asList("_id");
+        expected = Arrays.asList("+I[2, two, 21]", "+I[4, four, 24]");
+        waitForResult(expected, table2, rowType2, primaryKeys2);
+
+        statement.executeUpdate("ALTER TABLE schema_evolution_4 ADD COLUMN v2 TINYINT(1)");
+        statement.executeUpdate("INSERT INTO schema_evolution_4 VALUES (5, 'five', 42)");
+        statement.executeUpdate("ALTER TABLE schema_evolution_5 ADD COLUMN v3 TINYINT(1)");
+        statement.executeUpdate("INSERT INTO schema_evolution_5 VALUES (6, 'six', 42, 43)");
+
+        rowType1 =
+                RowType.of(
+                        new DataType[] {
+                            DataTypes.INT().notNull(), DataTypes.VARCHAR(10), DataTypes.TINYINT()
+                        },
+                        new String[] {"_id", "v1", "v2"});
+
+        expected = Arrays.asList("+I[1, one, NULL]", "+I[3, three, NULL]", "+I[5, five, 42]");
+        waitForResult(expected, table1, rowType1, primaryKeys1);
+
+        rowType2 =
+                RowType.of(
+                        new DataType[] {
+                            DataTypes.INT().notNull(),
+                            DataTypes.VARCHAR(10),
+                            DataTypes.TINYINT(),
+                            DataTypes.TINYINT()
+                        },
+                        new String[] {"_id", "v1", "v2", "v3"});
+        expected =
+                Arrays.asList(
+                        "+I[2, two, 21, NULL]", "+I[4, four, 24, NULL]", "+I[6, six, 42, 43]");
         waitForResult(expected, table2, rowType2, primaryKeys2);
     }
 
@@ -374,7 +476,7 @@ public class MySqlSyncDatabaseActionITCase extends MySqlActionITCaseBase {
                         null,
                         Collections.emptyMap(),
                         tableConfig,
-                        SEPARATE);
+                        DIVIDED);
         action.build(env);
         JobClient client = env.executeAsync();
         waitJobRunning(client);
@@ -549,7 +651,7 @@ public class MySqlSyncDatabaseActionITCase extends MySqlActionITCaseBase {
                         excludingTables,
                         Collections.emptyMap(),
                         tableConfig,
-                        SEPARATE);
+                        DIVIDED);
         action.build(env);
         JobClient client = env.executeAsync();
         waitJobRunning(client);
@@ -664,6 +766,82 @@ public class MySqlSyncDatabaseActionITCase extends MySqlActionITCaseBase {
     @Timeout(600)
     public void testNewlyAddedTableSingleTableWithSavepoint() throws Exception {
         testNewlyAddedTable(1, true, true, "paimon_sync_database_newly_added_tables_4");
+    }
+
+    @Test
+    public void testAddIgnoredTable() throws Exception {
+        String mySqlDatabase = "paimon_sync_database_add_ignored_table";
+
+        Map<String, String> mySqlConfig = getBasicMySqlConfig();
+        mySqlConfig.put("database-name", mySqlDatabase);
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(2);
+        env.enableCheckpointing(1000);
+        env.setRestartStrategy(RestartStrategies.noRestart());
+
+        ThreadLocalRandom random = ThreadLocalRandom.current();
+        Map<String, String> tableConfig = new HashMap<>();
+        tableConfig.put("bucket", String.valueOf(random.nextInt(3) + 1));
+        tableConfig.put("sink.parallelism", String.valueOf(random.nextInt(2) + 2));
+
+        MySqlSyncDatabaseAction action =
+                new MySqlSyncDatabaseAction(
+                        mySqlConfig,
+                        warehouse,
+                        database,
+                        false,
+                        null,
+                        null,
+                        "t.+",
+                        ".*a$",
+                        Collections.emptyMap(),
+                        tableConfig,
+                        COMBINED);
+        action.build(env);
+        JobClient client = env.executeAsync();
+        waitJobRunning(client);
+
+        try (Connection conn =
+                        DriverManager.getConnection(
+                                MYSQL_CONTAINER.getJdbcUrl(mySqlDatabase),
+                                MYSQL_CONTAINER.getUsername(),
+                                MYSQL_CONTAINER.getPassword());
+                Statement statement = conn.createStatement()) {
+
+            FileStoreTable table1 = getFileStoreTable("t1");
+
+            statement.executeUpdate("USE " + mySqlDatabase);
+            statement.executeUpdate("INSERT INTO t1 VALUES (1, 'one')");
+            statement.executeUpdate("INSERT INTO a VALUES (1, 'one')");
+
+            // make sure the job steps into incremental phase
+            RowType rowType =
+                    RowType.of(
+                            new DataType[] {DataTypes.INT().notNull(), DataTypes.VARCHAR(10)},
+                            new String[] {"k", "v1"});
+            List<String> primaryKeys = Collections.singletonList("k");
+            waitForResult(Collections.singletonList("+I[1, one]"), table1, rowType, primaryKeys);
+
+            // create new tables at runtime
+            // synchronized table: t2
+            statement.executeUpdate("CREATE TABLE t2 (k INT, v1 VARCHAR(10), PRIMARY KEY (k))");
+            statement.executeUpdate("INSERT INTO t2 VALUES (1, 'Hi')");
+            // not synchronized tables: ta, t3
+            statement.executeUpdate("CREATE TABLE ta (k INT, v1 VARCHAR(10), PRIMARY KEY (k))");
+            statement.executeUpdate("INSERT INTO ta VALUES (1, 'Apache')");
+            statement.executeUpdate("CREATE TABLE t3 (k INT, v1 VARCHAR(10))");
+            statement.executeUpdate("INSERT INTO t3 VALUES (1, 'Paimon')");
+
+            statement.executeUpdate("INSERT INTO t1 VALUES (2, 'two')");
+            waitForResult(Arrays.asList("+I[1, one]", "+I[2, two]"), table1, rowType, primaryKeys);
+
+            // check tables
+            assertTableExists(Arrays.asList("t1", "t2"));
+            assertTableNotExists(Arrays.asList("a", "ta", "t3"));
+
+            FileStoreTable newTable = getFileStoreTable("t2");
+            waitForResult(Collections.singletonList("+I[1, Hi]"), newTable, rowType, primaryKeys);
+        }
     }
 
     public void testNewlyAddedTable(
@@ -924,7 +1102,7 @@ public class MySqlSyncDatabaseActionITCase extends MySqlActionITCaseBase {
                         null,
                         catalogConfig,
                         tableConfig,
-                        UNIFIED);
+                        COMBINED);
         action.build(env);
 
         if (Objects.nonNull(savepointPath)) {
@@ -937,14 +1115,72 @@ public class MySqlSyncDatabaseActionITCase extends MySqlActionITCaseBase {
         return env.executeAsync();
     }
 
+    @Test
+    @Timeout(60)
+    public void testTinyInt1Convert() throws Exception {
+        Map<String, String> mySqlConfig = getBasicMySqlConfig();
+        mySqlConfig.put("database-name", DATABASE_NAME_TINYINT);
+        mySqlConfig.put("mysql.converter.tinyint1-to-bool", "false");
+
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(2);
+        env.enableCheckpointing(1000);
+        env.setRestartStrategy(RestartStrategies.noRestart());
+
+        Map<String, String> tableConfig = getBasicTableConfig();
+        MySqlSyncDatabaseAction action =
+                new MySqlSyncDatabaseAction(
+                        mySqlConfig,
+                        warehouse,
+                        database,
+                        false,
+                        Collections.emptyMap(),
+                        tableConfig);
+        action.build(env);
+        JobClient client = env.executeAsync();
+        waitJobRunning(client);
+
+        try (Connection conn =
+                DriverManager.getConnection(
+                        MYSQL_CONTAINER.getJdbcUrl(DATABASE_NAME),
+                        MYSQL_CONTAINER.getUsername(),
+                        MYSQL_CONTAINER.getPassword())) {
+            try (Statement statement = conn.createStatement()) {
+                testTinyInt1Convert(statement);
+            }
+        }
+    }
+
+    private void testTinyInt1Convert(Statement statement) throws Exception {
+        FileStoreTable table = getFileStoreTable("t4");
+
+        statement.executeUpdate("USE paimon_sync_database_tinyint");
+
+        statement.executeUpdate("INSERT INTO t4 VALUES (1, '2021-09-15 15:00:10', 21)");
+        statement.executeUpdate("INSERT INTO t4 VALUES (2, '2023-03-23 16:00:20', 42)");
+
+        RowType rowType =
+                RowType.of(
+                        new DataType[] {
+                            DataTypes.INT().notNull(), DataTypes.TIMESTAMP(0), DataTypes.TINYINT()
+                        },
+                        new String[] {"pk", "_datetime", "_tinyint1"});
+        List<String> expected =
+                Arrays.asList("+I[1, 2021-09-15T15:00:10, 21]", "+I[2, 2023-03-23T16:00:20, 42]");
+        waitForResult(expected, table, rowType, Arrays.asList("pk"));
+    }
+
+    private Catalog catalog() {
+        return CatalogFactory.createCatalog(CatalogContext.create(new Path(warehouse)));
+    }
+
     private FileStoreTable getFileStoreTable(String tableName) throws Exception {
-        Catalog catalog = CatalogFactory.createCatalog(CatalogContext.create(new Path(warehouse)));
         Identifier identifier = Identifier.create(database, tableName);
-        return (FileStoreTable) catalog.getTable(identifier);
+        return (FileStoreTable) catalog().getTable(identifier);
     }
 
     private void assertTableExists(List<String> tableNames) {
-        Catalog catalog = CatalogFactory.createCatalog(CatalogContext.create(new Path(warehouse)));
+        Catalog catalog = catalog();
         for (String tableName : tableNames) {
             Identifier identifier = Identifier.create(database, tableName);
             assertThat(catalog.tableExists(identifier)).isTrue();
@@ -952,7 +1188,7 @@ public class MySqlSyncDatabaseActionITCase extends MySqlActionITCaseBase {
     }
 
     private void assertTableNotExists(List<String> tableNames) {
-        Catalog catalog = CatalogFactory.createCatalog(CatalogContext.create(new Path(warehouse)));
+        Catalog catalog = catalog();
         for (String tableName : tableNames) {
             Identifier identifier = Identifier.create(database, tableName);
             assertThat(catalog.tableExists(identifier)).isFalse();

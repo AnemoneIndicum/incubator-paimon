@@ -22,7 +22,6 @@ import org.apache.paimon.annotation.Documentation.ExcludeFromDocumentation;
 import org.apache.paimon.annotation.Documentation.Immutable;
 import org.apache.paimon.annotation.VisibleForTesting;
 import org.apache.paimon.format.FileFormat;
-import org.apache.paimon.format.FileFormatDiscover;
 import org.apache.paimon.fs.Path;
 import org.apache.paimon.options.ConfigOption;
 import org.apache.paimon.options.MemorySize;
@@ -30,9 +29,7 @@ import org.apache.paimon.options.Options;
 import org.apache.paimon.options.description.DescribedEnum;
 import org.apache.paimon.options.description.Description;
 import org.apache.paimon.options.description.InlineElement;
-import org.apache.paimon.table.sink.CommitCallback;
 import org.apache.paimon.utils.Pair;
-import org.apache.paimon.utils.Preconditions;
 import org.apache.paimon.utils.StringUtils;
 
 import java.io.Serializable;
@@ -53,6 +50,7 @@ import static org.apache.paimon.options.description.TextElement.text;
 
 /** Core options for paimon. */
 public class CoreOptions implements Serializable {
+
     public static final String DEFAULT_VALUE_SUFFIX = "default-value";
 
     public static final String FIELDS_PREFIX = "fields";
@@ -118,6 +116,17 @@ public class CoreOptions implements Serializable {
                                     + " 'file.compression.per.level' = '0:lz4,1:zlib', for orc file format, the compression value "
                                     + "could be NONE, ZLIB, SNAPPY, LZO, LZ4, for parquet file format, the compression value could be "
                                     + "UNCOMPRESSED, SNAPPY, GZIP, LZO, BROTLI, LZ4, ZSTD.");
+
+    public static final ConfigOption<Map<String, String>> FILE_FORMAT_PER_LEVEL =
+            key("file.format.per.level")
+                    .mapType()
+                    .defaultValue(new HashMap<>())
+                    .withDescription(
+                            "Define different file format for different level, you can add the conf like this:"
+                                    + " 'file.format.per.level' = '0:avro,3:parquet', if the file format for level is not provided, "
+                                    + "the default format which set by `"
+                                    + FILE_FORMAT.key()
+                                    + "` will be used.");
 
     public static final ConfigOption<String> FILE_COMPRESSION =
             key("file.compression")
@@ -615,6 +624,12 @@ public class CoreOptions implements Serializable {
                     .defaultValue(1024)
                     .withDescription("Read batch size for orc and parquet.");
 
+    public static final ConfigOption<Integer> ORC_WRITE_BATCH_SIZE =
+            key("orc.write.batch-size")
+                    .intType()
+                    .defaultValue(1024)
+                    .withDescription("write batch size for orc.");
+
     public static final ConfigOption<String> CONSUMER_ID =
             key("consumer-id")
                     .stringType()
@@ -765,6 +780,44 @@ public class CoreOptions implements Serializable {
                                     + "you need to create this table as a partitioned table in Hive metastore.\n"
                                     + "This config option does not affect the default filesystem metastore.");
 
+    public static final ConfigOption<TagCreationMode> TAG_AUTOMATIC_CREATION =
+            key("tag.automatic-creation")
+                    .enumType(TagCreationMode.class)
+                    .defaultValue(TagCreationMode.NONE)
+                    .withDescription(
+                            "Whether to create tag automatically. And how to generate tags.");
+
+    public static final ConfigOption<TagCreationPeriod> TAG_CREATION_PERIOD =
+            key("tag.creation-period")
+                    .enumType(TagCreationPeriod.class)
+                    .defaultValue(TagCreationPeriod.DAILY)
+                    .withDescription("What frequency is used to generate tags.");
+
+    public static final ConfigOption<Duration> TAG_CREATION_DELAY =
+            key("tag.creation-delay")
+                    .durationType()
+                    .defaultValue(Duration.ofMillis(0))
+                    .withDescription(
+                            "How long is the delay after the period ends before creating a tag."
+                                    + " This can allow some late data to enter the Tag.");
+
+    public static final ConfigOption<Integer> TAG_NUM_RETAINED_MAX =
+            key("tag.num-retained-max")
+                    .intType()
+                    .noDefaultValue()
+                    .withDescription("The maximum number of tags to retain.");
+
+    public static final ConfigOption<String> SINK_WATERMARK_TIME_ZONE =
+            key("sink.watermark-time-zone")
+                    .stringType()
+                    .defaultValue("UTC")
+                    .withDescription(
+                            "The time zone to parse the long watermark value to TIMESTAMP value."
+                                    + " The default value is 'UTC', which means the watermark is defined on TIMESTAMP column or not defined."
+                                    + " If the watermark is defined on TIMESTAMP_LTZ column, the time zone of watermark is user configured time zone,"
+                                    + " the value should be the user configured local time zone. The option value is either a full name"
+                                    + " such as 'America/Los_Angeles', or a custom timezone id such as 'GMT-08:00'.");
+
     private final Options options;
 
     public CoreOptions(Map<String, String> options) {
@@ -834,12 +887,18 @@ public class CoreOptions implements Serializable {
     public static FileFormat createFileFormat(
             Options options, ConfigOption<FileFormatType> formatOption) {
         String formatIdentifier = options.get(formatOption).toString();
-        return FileFormatDiscover.getFileFormat(options, formatIdentifier);
+        return FileFormat.getFileFormat(options, formatIdentifier);
     }
 
     public Map<Integer, String> fileCompressionPerLevel() {
         Map<String, String> levelCompressions = options.get(FILE_COMPRESSION_PER_LEVEL);
         return levelCompressions.entrySet().stream()
+                .collect(Collectors.toMap(e -> Integer.valueOf(e.getKey()), Map.Entry::getValue));
+    }
+
+    public Map<Integer, String> fileFormatPerLevel() {
+        Map<String, String> levelFormats = options.get(FILE_FORMAT_PER_LEVEL);
+        return levelFormats.entrySet().stream()
                 .collect(Collectors.toMap(e -> Integer.valueOf(e.getKey()), Map.Entry::getValue));
     }
 
@@ -1101,55 +1160,56 @@ public class CoreOptions implements Serializable {
         return options.get(METASTORE_PARTITIONED_TABLE);
     }
 
-    public Options getFieldDefaultValues() {
-        Map<String, String> defultValues = new HashMap<>();
-        for (Map.Entry<String, String> option : options.toMap().entrySet()) {
-            String key = option.getKey();
-            String fieldPrefix = FIELDS_PREFIX + ".";
-            String defaultValueSuffix = "." + DEFAULT_VALUE_SUFFIX;
-            if (key != null && key.startsWith(fieldPrefix) && key.endsWith(defaultValueSuffix)) {
-                String fieldName = key.replace(fieldPrefix, "").replace(defaultValueSuffix, "");
-                defultValues.put(fieldName, option.getValue());
-            }
-        }
-        return new Options(defultValues);
+    public TagCreationMode tagCreationMode() {
+        return options.get(TAG_AUTOMATIC_CREATION);
     }
 
-    public List<CommitCallback> commitCallbacks() {
-        List<CommitCallback> result = new ArrayList<>();
+    public TagCreationPeriod tagCreationPeriod() {
+        return options.get(TAG_CREATION_PERIOD);
+    }
+
+    public Duration tagCreationDelay() {
+        return options.get(TAG_CREATION_DELAY);
+    }
+
+    public Integer tagNumRetainedMax() {
+        return options.get(TAG_NUM_RETAINED_MAX);
+    }
+
+    public String sinkWatermarkTimeZone() {
+        return options.get(SINK_WATERMARK_TIME_ZONE);
+    }
+
+    public Map<String, String> getFieldDefaultValues() {
+        Map<String, String> defaultValues = new HashMap<>();
+        String fieldPrefix = FIELDS_PREFIX + ".";
+        String defaultValueSuffix = "." + DEFAULT_VALUE_SUFFIX;
+        for (Map.Entry<String, String> option : options.toMap().entrySet()) {
+            String key = option.getKey();
+            if (key != null && key.startsWith(fieldPrefix) && key.endsWith(defaultValueSuffix)) {
+                String fieldName = key.replace(fieldPrefix, "").replace(defaultValueSuffix, "");
+                defaultValues.put(fieldName, option.getValue());
+            }
+        }
+        return defaultValues;
+    }
+
+    public Map<String, String> commitCallbacks() {
+        Map<String, String> result = new HashMap<>();
         for (String className : options.get(COMMIT_CALLBACKS).split(",")) {
             className = className.trim();
             if (className.length() == 0) {
                 continue;
             }
 
-            Class<?> clazz;
-            try {
-                clazz = Class.forName(className, true, this.getClass().getClassLoader());
-            } catch (ClassNotFoundException e) {
-                throw new RuntimeException(e);
-            }
-            Preconditions.checkArgument(
-                    CommitCallback.class.isAssignableFrom(clazz),
-                    "Class " + clazz + " must implement " + CommitCallback.class);
             String param = options.get(COMMIT_CALLBACK_PARAM.key().replace("#", className));
-
-            try {
-                if (param == null) {
-                    result.add((CommitCallback) clazz.newInstance());
-                } else {
-                    result.add(
-                            (CommitCallback) clazz.getConstructor(String.class).newInstance(param));
-                }
-            } catch (Exception e) {
-                throw new RuntimeException(
-                        "Failed to initialize commit callback "
-                                + className
-                                + (param == null ? "" : " with param " + param),
-                        e);
-            }
+            result.put(className, param);
         }
         return result;
+    }
+
+    public int orcWriteBatch() {
+        return options.getInteger(ORC_WRITE_BATCH_SIZE.key(), ORC_WRITE_BATCH_SIZE.defaultValue());
     }
 
     /** Specifies the merge engine for table with primary key. */
@@ -1568,6 +1628,60 @@ public class CoreOptions implements Serializable {
         private final String description;
 
         SequenceAutoPadding(String value, String description) {
+            this.value = value;
+            this.description = description;
+        }
+
+        @Override
+        public String toString() {
+            return value;
+        }
+
+        @Override
+        public InlineElement getDescription() {
+            return text(description);
+        }
+    }
+
+    /** The mode for tag creation. */
+    public enum TagCreationMode implements DescribedEnum {
+        NONE("none", "No automatically created tags."),
+        PROCESS_TIME(
+                "process-time",
+                "Based on the time of the machine, create TAG once the processing time passes period time plus delay."),
+        WATERMARK(
+                "watermark",
+                "Based on the watermark of the input, create TAG once the watermark passes period time plus delay.");
+
+        private final String value;
+        private final String description;
+
+        TagCreationMode(String value, String description) {
+            this.value = value;
+            this.description = description;
+        }
+
+        @Override
+        public String toString() {
+            return value;
+        }
+
+        @Override
+        public InlineElement getDescription() {
+            return text(description);
+        }
+    }
+
+    /** The period for tag creation. */
+    public enum TagCreationPeriod implements DescribedEnum {
+        DAILY("daily", "Generate a tag every day."),
+        HOURLY("hourly", "Generate a tag every hour."),
+        TWO_HOURS("two-hours", "Generate a tag every two hours.");
+
+        private final String value;
+        private final String description;
+
+        TagCreationPeriod(String value, String description) {
             this.value = value;
             this.description = description;
         }

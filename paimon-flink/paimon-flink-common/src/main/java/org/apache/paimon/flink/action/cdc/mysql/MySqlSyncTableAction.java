@@ -45,7 +45,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
+import static org.apache.paimon.flink.action.cdc.mysql.MySqlActionUtils.MYSQL_CONVERTER_TINYINT1_BOOL;
 import static org.apache.paimon.utils.Preconditions.checkArgument;
 
 /**
@@ -164,9 +166,18 @@ public class MySqlSyncTableAction extends ActionBase {
                         caseSensitive);
         try {
             table = (FileStoreTable) catalog.getTable(identifier);
-            checkArgument(
-                    computedColumnArgs.isEmpty(),
-                    "Cannot add computed column when table already exists.");
+            if (computedColumns.size() > 0) {
+                List<String> computedFields =
+                        computedColumns.stream()
+                                .map(ComputedColumn::columnName)
+                                .collect(Collectors.toList());
+                List<String> fieldNames = table.schema().fieldNames();
+                checkArgument(
+                        fieldNames.containsAll(computedFields),
+                        " Exists Table should contain all computed columns %s, but are %s.",
+                        computedFields,
+                        fieldNames);
+            }
             MySqlActionUtils.assertSchemaCompatible(table.schema(), fromMySql);
         } catch (Catalog.TableNotExistException e) {
             catalog.createTable(identifier, fromMySql, false);
@@ -175,8 +186,11 @@ public class MySqlSyncTableAction extends ActionBase {
 
         String serverTimeZone = mySqlConfig.get(MySqlSourceOptions.SERVER_TIME_ZONE);
         ZoneId zoneId = serverTimeZone == null ? ZoneId.systemDefault() : ZoneId.of(serverTimeZone);
+        Boolean convertTinyint1ToBool = mySqlConfig.get(MYSQL_CONVERTER_TINYINT1_BOOL);
         EventParser.Factory<String> parserFactory =
-                () -> new MySqlDebeziumJsonEventParser(zoneId, caseSensitive, computedColumns);
+                () ->
+                        new MySqlDebeziumJsonEventParser(
+                                zoneId, caseSensitive, computedColumns, convertTinyint1ToBool);
 
         CdcSinkBuilder<String> sinkBuilder =
                 new CdcSinkBuilder<String>()
@@ -239,7 +253,12 @@ public class MySqlSyncTableAction extends ActionBase {
                                 Matcher tableMatcher = tablePattern.matcher(tableName);
                                 if (tableMatcher.matches()) {
                                     mySqlSchemaList.add(
-                                            new MySqlSchema(metaData, databaseName, tableName));
+                                            new MySqlSchema(
+                                                    metaData,
+                                                    databaseName,
+                                                    tableName,
+                                                    mySqlConfig.get(
+                                                            MYSQL_CONVERTER_TINYINT1_BOOL)));
                                 }
                             }
                         }
