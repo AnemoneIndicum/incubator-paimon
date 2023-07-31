@@ -116,7 +116,7 @@ public class LookupLevelsTest {
         assertThat(kv).isNull();
 
         lookupLevels.close();
-        assertThat(lookupLevels.lookupFiles().size()).isEqualTo(0);
+        assertThat(lookupLevels.lookupFiles().estimatedSize()).isEqualTo(0);
     }
 
     @Test
@@ -160,7 +160,7 @@ public class LookupLevelsTest {
         }
 
         lookupLevels.close();
-        assertThat(lookupLevels.lookupFiles().size()).isEqualTo(0);
+        assertThat(lookupLevels.lookupFiles().estimatedSize()).isEqualTo(0);
     }
 
     @Test
@@ -188,14 +188,14 @@ public class LookupLevelsTest {
         }
 
         // some files are invalided
-        long fileNumber = lookupLevels.lookupFiles().size();
+        long fileNumber = lookupLevels.lookupFiles().estimatedSize();
         String[] lookupFiles =
                 tempDir.toFile().list((dir, name) -> name.startsWith(LOOKUP_FILE_PREFIX));
         assertThat(lookupFiles).isNotNull();
         assertThat(fileNumber).isNotEqualTo(fileNum).isEqualTo(lookupFiles.length);
 
         lookupLevels.close();
-        assertThat(lookupLevels.lookupFiles().size()).isEqualTo(0);
+        assertThat(lookupLevels.lookupFiles().estimatedSize()).isEqualTo(0);
     }
 
     private LookupLevels createLookupLevels(Levels levels, MemorySize maxDiskSize) {

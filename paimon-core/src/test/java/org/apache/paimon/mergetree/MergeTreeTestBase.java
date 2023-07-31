@@ -135,6 +135,7 @@ public abstract class MergeTreeTestBase {
         configuration.set(CoreOptions.WRITE_BUFFER_SIZE, new MemorySize(4096 * 3));
         configuration.set(CoreOptions.PAGE_SIZE, new MemorySize(4096));
         configuration.set(CoreOptions.TARGET_FILE_SIZE, new MemorySize(targetFileSize));
+        configuration.set(CoreOptions.SORT_ENGINE, getSortEngine());
         options = new CoreOptions(configuration);
         RowType keyType = new RowType(singletonList(new DataField(0, "k", new IntType())));
         RowType valueType = new RowType(singletonList(new DataField(0, "v", new IntType())));
@@ -443,7 +444,7 @@ public abstract class MergeTreeTestBase {
                 new Levels(comparator, files, options.numLevels()),
                 strategy,
                 comparator,
-                options.targetFileSize(),
+                options.compactionFileSize(),
                 options.numSortedRunStopTrigger(),
                 new TestRewriter());
     }
@@ -467,7 +468,11 @@ public abstract class MergeTreeTestBase {
                     rewriter);
         }
 
-        protected CompactResult obtainCompactResult() throws ExecutionException {
+        protected CompactResult obtainCompactResult()
+                throws InterruptedException, ExecutionException {
+            if (taskFuture != null && !taskFuture.isDone()) {
+                taskFuture.get();
+            }
             OutOfMemoryError outOfMemoryError = new OutOfMemoryError();
             throw new ExecutionException("mock", outOfMemoryError);
         }

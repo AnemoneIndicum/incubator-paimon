@@ -19,6 +19,7 @@
 package org.apache.paimon.schema;
 
 import org.apache.paimon.CoreOptions;
+import org.apache.paimon.CoreOptions.ChangelogProducer;
 import org.apache.paimon.WriteMode;
 import org.apache.paimon.casting.CastExecutor;
 import org.apache.paimon.casting.CastExecutors;
@@ -82,8 +83,9 @@ public class SchemaValidation {
 
         validateStartupMode(options);
 
+        ChangelogProducer changelogProducer = options.changelogProducer();
         if (options.writeMode() == WriteMode.APPEND_ONLY
-                && options.changelogProducer() != CoreOptions.ChangelogProducer.NONE) {
+                && changelogProducer != ChangelogProducer.NONE) {
             throw new UnsupportedOperationException(
                     String.format(
                             "Can not set the %s to %s and %s at the same time.",
@@ -99,16 +101,16 @@ public class SchemaValidation {
                         + " should not be larger than "
                         + SNAPSHOT_NUM_RETAINED_MAX.key());
 
-        // Only changelog tables with primary keys support full compaction or lookup changelog
-        // producer
+        // Only changelog tables with primary keys support full compaction or lookup
+        // changelog producer
         if (options.writeMode() == WriteMode.CHANGE_LOG) {
-            switch (options.changelogProducer()) {
+            switch (changelogProducer) {
                 case FULL_COMPACTION:
                 case LOOKUP:
                     if (schema.primaryKeys().isEmpty()) {
                         throw new UnsupportedOperationException(
                                 "Changelog table with "
-                                        + options.changelogProducer()
+                                        + changelogProducer
                                         + " must have primary keys");
                     }
                     break;
@@ -170,6 +172,19 @@ public class SchemaValidation {
                                 schema.fieldNames().contains(field),
                                 "Nonexistent sequence field: '%s'",
                                 field));
+
+        CoreOptions.MergeEngine mergeEngine = options.mergeEngine();
+        if (mergeEngine == CoreOptions.MergeEngine.FIRST_ROW) {
+            if (sequenceField.isPresent()) {
+                throw new IllegalArgumentException(
+                        "Do not support use sequence field on FIRST_MERGE merge engine");
+            }
+
+            if (changelogProducer != ChangelogProducer.LOOKUP) {
+                throw new IllegalArgumentException(
+                        "Only support 'lookup' changelog-producer on FIRST_MERGE merge engine");
+            }
+        }
     }
 
     private static void validatePrimaryKeysType(List<DataField> fields, List<String> primaryKeys) {

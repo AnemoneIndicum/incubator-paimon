@@ -16,4 +16,21 @@
  * limitations under the License.
  */
 
-{"data":null,"database":"paimon_sync_table","es":1683880506000,"id":2145,"isDdl":true,"mysqlType":null,"old":null,"pkNames":null,"sql":"/* Query from DMS-WEBSQL-0-Qid_30150719072767475G by user 1486767996652600 */ ALTER TABLE all_types_table DROP COLUMN v","sqlType":null,"table":"all_types_table","ts":1683880506424,"type":"ALTER"}
+package org.apache.paimon.table.source;
+
+import java.util.Collections;
+import java.util.List;
+
+/** This is used to distinguish the case where the snapshot does not exist and the plan is empty. */
+public class SnapshotNotExistPlan implements TableScan.Plan {
+    public static final SnapshotNotExistPlan INSTANCE = new SnapshotNotExistPlan();
+
+    private SnapshotNotExistPlan() {
+        // private
+    }
+
+    @Override
+    public List<Split> splits() {
+        return Collections.emptyList();
+    }
+}

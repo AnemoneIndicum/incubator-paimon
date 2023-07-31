@@ -16,4 +16,20 @@
  * limitations under the License.
  */
 
-{"data":null,"database":"paimon_sync_table","es":1683880505000,"id":2145,"isDdl":true,"mysqlType":null,"old":null,"pkNames":null,"sql":"/* Query from DMS-WEBSQL-0-Qid_30150719072766844D by user 1486767996652600 */ ALTER TABLE all_types_table ADD COLUMN v INT","sqlType":null,"table":"all_types_table","ts":1683880506421,"type":"ALTER"}
+package org.apache.paimon.utils;
+
+import java.io.IOException;
+
+/** A bi function with {@link IOException}. */
+@FunctionalInterface
+public interface BiFunctionWithIOE<T, U, R> {
+
+    /**
+     * Applies this function to the given arguments.
+     *
+     * @param t the first function argument
+     * @param u the second function argument
+     * @return the function result
+     */
+    R apply(T t, U u) throws IOException;
+}
