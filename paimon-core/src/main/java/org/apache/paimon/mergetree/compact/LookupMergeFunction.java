@@ -86,6 +86,11 @@ public class LookupMergeFunction implements MergeFunction<KeyValue> {
 
     public static MergeFunctionFactory<KeyValue> wrap(
             MergeFunctionFactory<KeyValue> wrapped, RowType keyType, RowType valueType) {
+        if (wrapped.create() instanceof FirstRowMergeFunction) {
+            // don't wrap first row, it is already OK
+            return wrapped;
+        }
+
         return new Factory(wrapped, keyType, valueType);
     }
 
