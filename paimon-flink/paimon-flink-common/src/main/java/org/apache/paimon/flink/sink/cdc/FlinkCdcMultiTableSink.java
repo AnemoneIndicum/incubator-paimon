@@ -84,6 +84,7 @@ public class FlinkCdcMultiTableSink implements Serializable {
         // When the job restarts, commitUser will be recovered from states and this value is
         // ignored.
         String initialCommitUser = UUID.randomUUID().toString();
+        // createWriteProvider() 创建一个 table writer 对象，用于写数据
         return sinkFrom(input, initialCommitUser, createWriteProvider());
     }
 

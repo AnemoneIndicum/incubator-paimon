@@ -199,6 +199,10 @@ public class AppendOnlyCompactManager extends CompactFutureManager {
             this.rewriter = rewriter;
         }
 
+        /**
+         * todo: Do compact for small files.
+         * The number of small files is more than big files and 'FULL_COMPACT_MIN_FILE', and then do compaction.
+         */
         @Override
         protected CompactResult doCompact() throws Exception {
             // remove large files

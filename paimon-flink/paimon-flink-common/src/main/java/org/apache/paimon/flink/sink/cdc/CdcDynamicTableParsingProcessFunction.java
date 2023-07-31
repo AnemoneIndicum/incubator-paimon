@@ -93,7 +93,7 @@ public class CdcDynamicTableParsingProcessFunction<T> extends ProcessFunction<T,
 
         // check for newly added table
         // todo:处理新增表
-        parser.parseNewTable(database)
+        parser.parseNewTable()
                 .ifPresent(
                         schema -> {
                             // todo: 执行paimon 创建表

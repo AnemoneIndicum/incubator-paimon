@@ -64,6 +64,9 @@ public class CdcDynamicBucketWriteOperator extends TableWriteOperator<Tuple2<Cdc
         return false;
     }
 
+    /**
+     * Processing data record, which includes transforming the data to 'paimon GenericRow'
+     */
     @Override
     public void processElement(StreamRecord<Tuple2<CdcRecord, Integer>> element) throws Exception {
         Tuple2<CdcRecord, Integer> record = element.getValue();
@@ -77,10 +80,12 @@ public class CdcDynamicBucketWriteOperator extends TableWriteOperator<Tuple2<Cdc
                 }
                 Thread.sleep(retrySleepMillis);
             }
+            // 替换最新的表结构
             write.replace(table);
         }
 
         try {
+            // 数据写入
             write.write(new DynamicBucketRow(optionalConverted.get(), record.f1));
         } catch (Exception e) {
             throw new IOException(e);

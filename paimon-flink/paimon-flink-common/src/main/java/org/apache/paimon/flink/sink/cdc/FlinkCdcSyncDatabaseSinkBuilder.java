@@ -121,6 +121,7 @@ public class FlinkCdcSyncDatabaseSinkBuilder<T> {
 
     private void buildCombinedCdcSink() {
         SingleOutputStreamOperator<Void> parsed =
+                // forward 并行度一致 直接将数据转发
                 input.forward()
                         .process(
                                 // todo: 自定义function 表结构变更，处理正常的变更流 拆分为测流

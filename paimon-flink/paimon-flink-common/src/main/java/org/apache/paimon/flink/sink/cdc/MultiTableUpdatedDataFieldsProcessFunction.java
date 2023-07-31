@@ -79,6 +79,7 @@ public class MultiTableUpdatedDataFieldsProcessFunction
             Collector<Void> collector)
             throws Exception {
         Identifier tableId = updatedDataFields.f0;
+        // 创建 schemaMange 管理器
         SchemaManager schemaManager =
                 schemaManagers.computeIfAbsent(
                         tableId,
@@ -134,7 +135,7 @@ public class MultiTableUpdatedDataFieldsProcessFunction
                                         new String[] {newField.name()}, newField.description()));
                     }
                 } else {
-                    // 更改类型
+                    // 更改数据类型
                     result.add(SchemaChange.updateColumnType(newField.name(), newField.type()));
                     if (newField.description() != null) {
                         result.add(
@@ -143,6 +144,7 @@ public class MultiTableUpdatedDataFieldsProcessFunction
                     }
                 }
             } else {
+                // 添加 column
                 result.add(
                         SchemaChange.addColumn(
                                 newField.name(), newField.type(), newField.description(), null));

@@ -141,6 +141,7 @@ public class CdcRecordStoreMultiWriteOperator
             while (true) {
                 latestTable = latestTable.copyWithLatestSchema();
                 tables.put(tableId, latestTable);
+                // todo:  根据表的 schema 结合真是的数据行 record ，将数据转换成 GenericRow
                 optionalConverted = toGenericRow(record.record(), latestTable.schema().fields());
                 if (optionalConverted.isPresent()) {
                     break;
@@ -174,6 +175,7 @@ public class CdcRecordStoreMultiWriteOperator
                     // table not found, waiting until table is created by
                     //     upstream operators
                 }
+                // 等待创建表
                 Thread.sleep(RETRY_SLEEP_TIME.defaultValue().toMillis());
             }
         }
