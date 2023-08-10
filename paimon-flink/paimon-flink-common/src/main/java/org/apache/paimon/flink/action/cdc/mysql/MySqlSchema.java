@@ -18,6 +18,7 @@
 
 package org.apache.paimon.flink.action.cdc.mysql;
 
+import org.apache.paimon.catalog.Identifier;
 import org.apache.paimon.flink.sink.cdc.UpdatedDataFieldsProcessFunction;
 import org.apache.paimon.types.DataType;
 
@@ -31,25 +32,17 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import static org.apache.paimon.utils.Preconditions.checkState;
+
 /** Utility class to load MySQL table schema with JDBC. */
 public class MySqlSchema {
 
     private final String databaseName;
     private final String tableName;
-
     private final LinkedHashMap<String, Tuple2<DataType, String>> fields;
     private final List<String> primaryKeys;
 
-    public MySqlSchema(
-            String databaseName,
-            String tableName,
-            LinkedHashMap<String, Tuple2<DataType, String>> fields,
-            List<String> primaryKeys) {
-        this.databaseName = databaseName;
-        this.tableName = tableName;
-        this.fields = fields;
-        this.primaryKeys = primaryKeys;
-    }
+    private boolean hasMerged = false;
 
     public MySqlSchema(
             DatabaseMetaData metaData,
@@ -93,12 +86,13 @@ public class MySqlSchema {
         }
     }
 
-    public String databaseName() {
-        return databaseName;
-    }
-
     public String tableName() {
         return tableName;
+    }
+
+    public Identifier identifier() {
+        checkState(!hasMerged, "Cannot get table identifier from merged schema.");
+        return Identifier.create(databaseName, tableName);
     }
 
     public LinkedHashMap<String, Tuple2<DataType, String>> fields() {
@@ -116,6 +110,7 @@ public class MySqlSchema {
     }
 
     public MySqlSchema merge(MySqlSchema other) {
+        hasMerged = true;
         for (Map.Entry<String, Tuple2<DataType, String>> entry : other.fields.entrySet()) {
             String fieldName = entry.getKey();
             DataType newType = entry.getValue().f0;

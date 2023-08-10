@@ -35,18 +35,17 @@ import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 
-import java.sql.Connection;
-import java.sql.DatabaseMetaData;
-import java.sql.ResultSet;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.regex.Matcher;
+import java.util.function.Predicate;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
+import static org.apache.paimon.flink.action.cdc.ComputedColumnUtils.buildComputedColumns;
 import static org.apache.paimon.flink.action.cdc.mysql.MySqlActionUtils.MYSQL_CONVERTER_TINYINT1_BOOL;
 import static org.apache.paimon.utils.Preconditions.checkArgument;
 
@@ -133,7 +132,10 @@ public class MySqlSyncTableAction extends ActionBase {
     }
 
     public void build(StreamExecutionEnvironment env) throws Exception {
-        MySqlSource<String> source = MySqlActionUtils.buildMySqlSource(mySqlConfig);
+        checkArgument(
+                mySqlConfig.contains(MySqlSourceOptions.TABLE_NAME),
+                String.format(
+                        "mysql-conf [%s] must be specified.", MySqlSourceOptions.TABLE_NAME.key()));
 
         boolean caseSensitive = catalog.caseSensitive();
 
@@ -141,8 +143,19 @@ public class MySqlSyncTableAction extends ActionBase {
             validateCaseInsensitive();
         }
 
+        List<MySqlSchema> mySqlSchemaList =
+                MySqlActionUtils.getMySqlSchemaList(
+                        mySqlConfig, monitorTablePredication(), new ArrayList<>());
+
+        String tableList =
+                mySqlSchemaList.stream()
+                        .map(m -> m.identifier().getDatabaseName() + "." + m.tableName())
+                        .collect(Collectors.joining("|"));
+
+        MySqlSource<String> source = MySqlActionUtils.buildMySqlSource(mySqlConfig, tableList);
+
         MySqlSchema mySqlSchema =
-                getMySqlSchemaList().stream()
+                mySqlSchemaList.stream()
                         .reduce(MySqlSchema::merge)
                         .orElseThrow(
                                 () ->
@@ -154,8 +167,7 @@ public class MySqlSyncTableAction extends ActionBase {
         Identifier identifier = new Identifier(database, table);
         FileStoreTable table;
         List<ComputedColumn> computedColumns =
-                MySqlActionUtils.buildComputedColumns(
-                        computedColumnArgs, mySqlSchema.typeMapping());
+                buildComputedColumns(computedColumnArgs, mySqlSchema.typeMapping());
         Schema fromMySql =
                 MySqlActionUtils.buildPaimonSchema(
                         mySqlSchema,
@@ -173,7 +185,7 @@ public class MySqlSyncTableAction extends ActionBase {
                                 .collect(Collectors.toList());
                 List<String> fieldNames = table.schema().fieldNames();
                 checkArgument(
-                        fieldNames.containsAll(computedFields),
+                        new HashSet<>(fieldNames).containsAll(computedFields),
                         " Exists Table should contain all computed columns %s, but are %s.",
                         computedFields,
                         fieldNames);
@@ -235,38 +247,12 @@ public class MySqlSyncTableAction extends ActionBase {
         }
     }
 
-    private List<MySqlSchema> getMySqlSchemaList() throws Exception {
-        Pattern databasePattern =
-                Pattern.compile(mySqlConfig.get(MySqlSourceOptions.DATABASE_NAME));
-        Pattern tablePattern = Pattern.compile(mySqlConfig.get(MySqlSourceOptions.TABLE_NAME));
-        List<MySqlSchema> mySqlSchemaList = new ArrayList<>();
-        try (Connection conn = MySqlActionUtils.getConnection(mySqlConfig)) {
-            DatabaseMetaData metaData = conn.getMetaData();
-            try (ResultSet schemas = metaData.getCatalogs()) {
-                while (schemas.next()) {
-                    String databaseName = schemas.getString("TABLE_CAT");
-                    Matcher databaseMatcher = databasePattern.matcher(databaseName);
-                    if (databaseMatcher.matches()) {
-                        try (ResultSet tables = metaData.getTables(databaseName, null, "%", null)) {
-                            while (tables.next()) {
-                                String tableName = tables.getString("TABLE_NAME");
-                                Matcher tableMatcher = tablePattern.matcher(tableName);
-                                if (tableMatcher.matches()) {
-                                    mySqlSchemaList.add(
-                                            new MySqlSchema(
-                                                    metaData,
-                                                    databaseName,
-                                                    tableName,
-                                                    mySqlConfig.get(
-                                                            MYSQL_CONVERTER_TINYINT1_BOOL)));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        return mySqlSchemaList;
+    private Predicate<MySqlSchema> monitorTablePredication() {
+        return schema -> {
+            Pattern tableNamePattern =
+                    Pattern.compile(mySqlConfig.get(MySqlSourceOptions.TABLE_NAME));
+            return tableNamePattern.matcher(schema.tableName()).matches();
+        };
     }
 
     // ------------------------------------------------------------------------

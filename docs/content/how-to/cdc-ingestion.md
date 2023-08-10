@@ -72,7 +72,7 @@ To use this feature through `flink run`, run the following shell command.
 
 If the Paimon table you specify does not exist, this action will automatically create the table. Its schema will be derived from all specified MySQL tables. If the Paimon table already exists, its schema will be compared against the schema of all specified MySQL tables.
 
-Example
+Example 1: synchronize tables into one Paimon table
 
 ```bash
 <FLINK_HOME>/bin/flink run \
@@ -83,12 +83,12 @@ Example
     --table test_table \
     --partition-keys pt \
     --primary-keys pt,uid \
-    --computed-columns '_year=year(age)' \
+    --computed-column '_year=year(age)' \
     --mysql-conf hostname=127.0.0.1 \
     --mysql-conf username=root \
     --mysql-conf password=123456 \
-    --mysql-conf database-name=source_db \
-    --mysql-conf table-name='source_table' \
+    --mysql-conf database-name='source_db' \
+    --mysql-conf table-name='source_table1|source_table2' \
     --catalog-conf metastore=hive \
     --catalog-conf uri=thrift://hive-metastore:9083 \
     --table-conf bucket=4 \
@@ -96,8 +96,36 @@ Example
     --table-conf sink.parallelism=4
 ```
 
-The mysql-conf table-name also supports regular expressions to monitor multiple tables that satisfy
-the regular expressions.
+As example shows, the mysql-conf's table-name supports regular expressions to monitor multiple tables that satisfy
+the regular expressions. The schemas of all the tables will be merged into one Paimon table schema.
+
+Example 2: synchronize shards into one Paimon table
+
+You can also set 'database-name' with a regular expression to capture multiple databases. A typical scenario is that a 
+table 'source_table' is split into database 'source_db1', 'source_db2' ..., then you can synchronize data of all the 
+'source_table's into one Paimon table.
+
+```bash
+<FLINK_HOME>/bin/flink run \
+    /path/to/paimon-flink-action-{{< version >}}.jar \
+    mysql-sync-table \
+    --warehouse hdfs:///path/to/warehouse \
+    --database test_db \
+    --table test_table \
+    --partition-keys pt \
+    --primary-keys pt,uid \
+    --computed-column '_year=year(age)' \
+    --mysql-conf hostname=127.0.0.1 \
+    --mysql-conf username=root \
+    --mysql-conf password=123456 \
+    --mysql-conf database-name='source_db.+' \
+    --mysql-conf table-name='source_table' \
+    --catalog-conf metastore=hive \
+    --catalog-conf uri=thrift://hive-metastore:9083 \
+    --table-conf bucket=4 \
+    --table-conf changelog-producer=input \
+    --table-conf sink.parallelism=4
+```
 
 ### Synchronizing Databases
 
@@ -112,6 +140,7 @@ To use this feature through `flink run`, run the following shell command.
     --warehouse <warehouse-path> \
     --database <database-name> \
     [--ignore-incompatible <true/false>] \
+    [--merge-shards <true/false>] \
     [--table-prefix <paimon-table-prefix>] \
     [--table-suffix <paimon-table-suffix>] \
     [--including-tables <mysql-table-name|name-regular-expr>] \
@@ -196,6 +225,42 @@ The command to recover from previous snapshot and add new tables to synchronize 
     --including-tables 'product|user|address|order|custom'
 ```
 
+{{< hint info >}}
+You can set `--mode combined` to enable synchronizing newly added tables without restarting job.
+{{< /hint >}}
+
+Example 3: synchronize and merge multiple shards
+
+Let's say you have multiple database shards `db1`, `db2`, ... and each database has tables `tbl1`, `tbl2`, .... You can 
+synchronize all the `db.+.tbl.+` into tables `test_db.tbl1`, `test_db.tbl2` ... by following command:
+
+```bash
+<FLINK_HOME>/bin/flink run \
+    /path/to/paimon-flink-action-{{< version >}}.jar \
+    mysql-sync-database \
+    --warehouse hdfs:///path/to/warehouse \
+    --database test_db \
+    --mysql-conf hostname=127.0.0.1 \
+    --mysql-conf username=root \
+    --mysql-conf password=123456 \
+    --mysql-conf database-name='db.+' \
+    --catalog-conf metastore=hive \
+    --catalog-conf uri=thrift://hive-metastore:9083 \
+    --table-conf bucket=4 \
+    --table-conf changelog-producer=input \
+    --table-conf sink.parallelism=4 \
+    --including-tables 'tbl.+'
+```
+
+By setting database-name to a regular expression, the synchronization job will capture all tables under matched databases 
+and merge tables of the same name into one table.
+
+{{< hint info >}}
+You can set `--merge-shards false` to prevent merging shards. The synchronized tables will be named to 'databaseName_tableName' 
+to avoid potential name conflict.
+{{< /hint >}}
+
+
 ## Kafka
 
 ### Prepare Kafka Bundled Jar
@@ -270,7 +335,7 @@ Example
     --table test_table \
     --partition-keys pt \
     --primary-keys pt,uid \
-    --computed-columns '_year=year(age)' \
+    --computed-column '_year=year(age)' \
     --kafka-conf properties.bootstrap.servers=127.0.0.1:9020 \
     --kafka-conf topic=order \
     --kafka-conf properties.group.id=123456 \
@@ -353,8 +418,8 @@ Synchronization from multiple Kafka topics to Paimon database.
 
 ## Schema Change Evolution
 
-Cdc Ingestion supports a limited number of schema changes. Currently, the framework can not drop columns, so the
-behaviors of `DROP` will be ignored, `RENAME` will add a new column. Currently supported schema changes includes:
+Cdc Ingestion supports a limited number of schema changes. Currently, the framework can not rename table, drop columns, so the
+behaviors of `RENAME TABLE` and `DROP COLUMN` will be ignored, `RENAME COLUMN` will add a new column. Currently supported schema changes includes:
 
 * Adding columns.
 

@@ -18,6 +18,7 @@
 
 package org.apache.paimon.flink.action.cdc.mysql;
 
+import org.apache.paimon.catalog.Identifier;
 import org.apache.paimon.flink.action.ActionITCaseBase;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.source.ReadBuilder;
@@ -33,6 +34,10 @@ import org.slf4j.LoggerFactory;
 import org.testcontainers.containers.output.Slf4jLogConsumer;
 import org.testcontainers.lifecycle.Startables;
 
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.SQLException;
+import java.sql.Statement;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -74,6 +79,15 @@ public class MySqlActionITCaseBase extends ActionITCaseBase {
         LOG.info("Starting containers...");
         Startables.deepStart(Stream.of(MYSQL_CONTAINER)).join();
         LOG.info("Containers are started.");
+    }
+
+    protected Statement getStatement() throws SQLException {
+        Connection conn =
+                DriverManager.getConnection(
+                        MYSQL_CONTAINER.getJdbcUrl(),
+                        MYSQL_CONTAINER.getUsername(),
+                        MYSQL_CONTAINER.getPassword());
+        return conn.createStatement();
     }
 
     protected void waitForResult(
@@ -148,5 +162,10 @@ public class MySqlActionITCaseBase extends ActionITCaseBase {
             }
             Thread.sleep(1000);
         }
+    }
+
+    protected FileStoreTable getFileStoreTable(String tableName) throws Exception {
+        Identifier identifier = Identifier.create(database, tableName);
+        return (FileStoreTable) catalog().getTable(identifier);
     }
 }

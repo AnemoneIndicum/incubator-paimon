@@ -45,6 +45,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.TreeMap;
 import java.util.concurrent.ArrayBlockingQueue;
 
@@ -122,8 +123,9 @@ public class AlignedContinuousFileSplitEnumerator extends ContinuousFileSplitEnu
             Collection<FileStoreSourceSplit> splits) {
         Map<Integer, List<FileStoreSourceSplit>> subtaskSplits = new HashMap<>();
         for (FileStoreSourceSplit split : splits) {
-            int taskId = assignTask(((DataSplit) split.split()).bucket());
-            subtaskSplits.computeIfAbsent(taskId, subtask -> new ArrayList<>()).add(split);
+            subtaskSplits
+                    .computeIfAbsent(assignSuggestedTask(split), subtask -> new ArrayList<>())
+                    .add(split);
         }
         return subtaskSplits;
     }
@@ -154,7 +156,7 @@ public class AlignedContinuousFileSplitEnumerator extends ContinuousFileSplitEnu
                 }
             }
             PlanWithNextSnapshotId pendingPlan = pendingPlans.poll();
-            addSplits(splitGenerator.createSplits(pendingPlan.plan()));
+            addSplits(splitGenerator.createSplits(Objects.requireNonNull(pendingPlan).plan()));
             nextSnapshotId = pendingPlan.nextSnapshotId();
             assignSplits();
         }
@@ -218,6 +220,7 @@ public class AlignedContinuousFileSplitEnumerator extends ContinuousFileSplitEnu
         PlanWithNextSnapshotId nextPlan = pendingPlans.poll();
         if (nextPlan != null) {
             nextSnapshotId = nextPlan.nextSnapshotId();
+            Objects.requireNonNull(nextSnapshotId);
             TableScan.Plan plan = nextPlan.plan();
             if (plan.splits().isEmpty()) {
                 addSplits(
@@ -240,7 +243,7 @@ public class AlignedContinuousFileSplitEnumerator extends ContinuousFileSplitEnu
     }
 
     @Override
-    protected SplitAssigner createSplitAssigner() {
+    protected SplitAssigner createSplitAssigner(BucketMode bucketMode) {
         return new AlignedSplitAssigner();
     }
 }

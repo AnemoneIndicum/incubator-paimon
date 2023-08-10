@@ -18,8 +18,6 @@
 
 package org.apache.paimon.flink.action.cdc.mysql;
 
-import org.apache.paimon.catalog.Catalog;
-import org.apache.paimon.catalog.Identifier;
 import org.apache.paimon.options.CatalogOptions;
 import org.apache.paimon.schema.SchemaChange;
 import org.apache.paimon.schema.SchemaManager;
@@ -37,8 +35,6 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
-import java.sql.Connection;
-import java.sql.DriverManager;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -49,8 +45,7 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** IT cases for {@link MySqlSyncTableAction}. */
 public class MySqlSyncTableActionITCase extends MySqlActionITCaseBase {
@@ -94,14 +89,8 @@ public class MySqlSyncTableActionITCase extends MySqlActionITCaseBase {
         checkTableSchema(
                 "[{\"id\":0,\"name\":\"pt\",\"type\":\"INT NOT NULL\",\"description\":\"primary\"},{\"id\":1,\"name\":\"_id\",\"type\":\"INT NOT NULL\",\"description\":\"_id\"},{\"id\":2,\"name\":\"v1\",\"type\":\"VARCHAR(10)\",\"description\":\"v1\"}]");
 
-        try (Connection conn =
-                DriverManager.getConnection(
-                        MYSQL_CONTAINER.getJdbcUrl(DATABASE_NAME),
-                        MYSQL_CONTAINER.getUsername(),
-                        MYSQL_CONTAINER.getPassword())) {
-            try (Statement statement = conn.createStatement()) {
-                testSchemaEvolutionImpl(statement);
-            }
+        try (Statement statement = getStatement()) {
+            testSchemaEvolutionImpl(statement);
         }
     }
 
@@ -109,12 +98,12 @@ public class MySqlSyncTableActionITCase extends MySqlActionITCaseBase {
 
         FileStoreTable table = getFileStoreTable();
 
-        assertEquals(excepted, JsonSerdeUtil.toFlatJson(table.schema().fields()));
+        assertThat(JsonSerdeUtil.toFlatJson(table.schema().fields())).isEqualTo(excepted);
     }
 
     private void testSchemaEvolutionImpl(Statement statement) throws Exception {
         FileStoreTable table = getFileStoreTable();
-        statement.executeUpdate("USE paimon_sync_table");
+        statement.executeUpdate("USE " + DATABASE_NAME);
 
         statement.executeUpdate("INSERT INTO schema_evolution_1 VALUES (1, 1, 'one')");
         statement.executeUpdate(
@@ -285,20 +274,14 @@ public class MySqlSyncTableActionITCase extends MySqlActionITCaseBase {
         checkTableSchema(
                 "[{\"id\":0,\"name\":\"_id\",\"type\":\"INT NOT NULL\",\"description\":\"primary\"},{\"id\":1,\"name\":\"v1\",\"type\":\"VARCHAR(10)\",\"description\":\"v1\"},{\"id\":2,\"name\":\"v2\",\"type\":\"INT\",\"description\":\"v2\"},{\"id\":3,\"name\":\"v3\",\"type\":\"VARCHAR(10)\",\"description\":\"v3\"}]");
 
-        try (Connection conn =
-                DriverManager.getConnection(
-                        MYSQL_CONTAINER.getJdbcUrl(DATABASE_NAME),
-                        MYSQL_CONTAINER.getUsername(),
-                        MYSQL_CONTAINER.getPassword())) {
-            try (Statement statement = conn.createStatement()) {
-                testSchemaEvolutionMultipleImpl(statement);
-            }
+        try (Statement statement = getStatement()) {
+            testSchemaEvolutionMultipleImpl(statement);
         }
     }
 
     private void testSchemaEvolutionMultipleImpl(Statement statement) throws Exception {
         FileStoreTable table = getFileStoreTable();
-        statement.executeUpdate("USE paimon_sync_table");
+        statement.executeUpdate("USE " + DATABASE_NAME);
 
         statement.executeUpdate(
                 "INSERT INTO schema_evolution_multiple VALUES (1, 'one', 10, 'string_1')");
@@ -380,14 +363,8 @@ public class MySqlSyncTableActionITCase extends MySqlActionITCaseBase {
         JobClient client = env.executeAsync();
         waitJobRunning(client);
 
-        try (Connection conn =
-                DriverManager.getConnection(
-                        MYSQL_CONTAINER.getJdbcUrl(DATABASE_NAME),
-                        MYSQL_CONTAINER.getUsername(),
-                        MYSQL_CONTAINER.getPassword())) {
-            try (Statement statement = conn.createStatement()) {
-                testAllTypesImpl(statement);
-            }
+        try (Statement statement = getStatement()) {
+            testAllTypesImpl(statement);
         }
 
         client.cancel().get();
@@ -635,6 +612,7 @@ public class MySqlSyncTableActionITCase extends MySqlActionITCaseBase {
 
         // test all types during schema evolution
         try {
+            statement.executeUpdate("USE " + DATABASE_NAME);
             statement.executeUpdate("ALTER TABLE all_types_table ADD COLUMN v INT");
             List<DataField> newFields = new ArrayList<>(rowType.getFields());
             newFields.add(new DataField(rowType.getFieldCount(), "v", DataTypes.INT()));
@@ -669,12 +647,8 @@ public class MySqlSyncTableActionITCase extends MySqlActionITCaseBase {
                         Collections.emptyMap(),
                         Collections.emptyMap());
 
-        IllegalArgumentException e =
-                assertThrows(
-                        IllegalArgumentException.class,
-                        () -> action.build(env),
-                        "Expecting IllegalArgumentException");
-        assertThat(e)
+        assertThatThrownBy(() -> action.build(env))
+                .isInstanceOf(IllegalArgumentException.class)
                 .hasMessage(
                         "Column v1 have different types in table "
                                 + DATABASE_NAME
@@ -709,12 +683,9 @@ public class MySqlSyncTableActionITCase extends MySqlActionITCaseBase {
                         Collections.emptyMap(),
                         Collections.emptyMap());
 
-        IllegalArgumentException e =
-                assertThrows(
-                        IllegalArgumentException.class,
-                        () -> action.build(env),
-                        "Expecting IllegalArgumentException");
-        assertThat(e).hasMessageContaining("Paimon schema and MySQL schema are not compatible.");
+        assertThatThrownBy(() -> action.build(env))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Paimon schema and MySQL schema are not compatible.");
     }
 
     @Test
@@ -735,12 +706,8 @@ public class MySqlSyncTableActionITCase extends MySqlActionITCaseBase {
                         Collections.emptyMap(),
                         Collections.emptyMap());
 
-        IllegalArgumentException e =
-                assertThrows(
-                        IllegalArgumentException.class,
-                        () -> action.build(env),
-                        "Expecting IllegalArgumentException");
-        assertThat(e)
+        assertThatThrownBy(() -> action.build(env))
+                .isInstanceOf(IllegalArgumentException.class)
                 .hasMessage(
                         "Specified primary key pk does not exist in MySQL tables or computed columns.");
     }
@@ -763,12 +730,8 @@ public class MySqlSyncTableActionITCase extends MySqlActionITCaseBase {
                         Collections.emptyMap(),
                         Collections.emptyMap());
 
-        IllegalArgumentException e =
-                assertThrows(
-                        IllegalArgumentException.class,
-                        () -> action.build(env),
-                        "Expecting IllegalArgumentException");
-        assertThat(e)
+        assertThatThrownBy(() -> action.build(env))
+                .isInstanceOf(IllegalArgumentException.class)
                 .hasMessage(
                         "Primary keys are not specified. "
                                 + "Also, can't infer primary keys from MySQL table schemas because "
@@ -829,13 +792,8 @@ public class MySqlSyncTableActionITCase extends MySqlActionITCaseBase {
         waitJobRunning(client);
 
         if (executeMysql) {
-            try (Connection conn =
-                            DriverManager.getConnection(
-                                    MYSQL_CONTAINER.getJdbcUrl(DATABASE_NAME),
-                                    MYSQL_CONTAINER.getUsername(),
-                                    MYSQL_CONTAINER.getPassword());
-                    Statement statement = conn.createStatement()) {
-                statement.execute("USE paimon_sync_table");
+            try (Statement statement = getStatement()) {
+                statement.execute("USE " + DATABASE_NAME);
                 statement.executeUpdate(
                         "INSERT INTO test_computed_column VALUES (1, '2023-03-23', '2022-01-01 14:30', '2021-09-15 15:00:10')");
                 statement.executeUpdate(
@@ -923,13 +881,8 @@ public class MySqlSyncTableActionITCase extends MySqlActionITCaseBase {
         JobClient client = env.executeAsync();
         waitJobRunning(client);
 
-        try (Connection conn =
-                        DriverManager.getConnection(
-                                MYSQL_CONTAINER.getJdbcUrl(DATABASE_NAME),
-                                MYSQL_CONTAINER.getUsername(),
-                                MYSQL_CONTAINER.getPassword());
-                Statement statement = conn.createStatement()) {
-            statement.execute("USE paimon_sync_table");
+        try (Statement statement = getStatement()) {
+            statement.execute("USE " + DATABASE_NAME);
             statement.executeUpdate(
                     "INSERT INTO test_tinyint1_convert VALUES (1, '2021-09-15 15:00:10', 21)");
             statement.executeUpdate(
@@ -947,7 +900,7 @@ public class MySqlSyncTableActionITCase extends MySqlActionITCaseBase {
             List<String> expected =
                     Arrays.asList(
                             "+I[1, 2021-09-15T15:00:10, 21]", "+I[2, 2023-03-23T16:00:20, 42]");
-            waitForResult(expected, table, rowType, Arrays.asList("pk"));
+            waitForResult(expected, table, rowType, Collections.singletonList("pk"));
         }
     }
 
@@ -983,14 +936,8 @@ public class MySqlSyncTableActionITCase extends MySqlActionITCaseBase {
         checkTableSchema(
                 "[{\"id\":0,\"name\":\"pt\",\"type\":\"INT NOT NULL\",\"description\":\"primary\"},{\"id\":1,\"name\":\"_id\",\"type\":\"INT NOT NULL\",\"description\":\"_id\"},{\"id\":2,\"name\":\"v1\",\"type\":\"VARCHAR(10)\",\"description\":\"v1\"}]");
 
-        try (Connection conn =
-                DriverManager.getConnection(
-                        MYSQL_CONTAINER.getJdbcUrl(DATABASE_NAME),
-                        MYSQL_CONTAINER.getUsername(),
-                        MYSQL_CONTAINER.getPassword())) {
-            try (Statement statement = conn.createStatement()) {
-                testSchemaEvolutionImplWithTinyIntConvert(statement);
-            }
+        try (Statement statement = getStatement()) {
+            testSchemaEvolutionImplWithTinyIntConvert(statement);
         }
     }
 
@@ -1035,9 +982,100 @@ public class MySqlSyncTableActionITCase extends MySqlActionITCaseBase {
         waitForResult(expected, table, rowType, primaryKeys);
     }
 
+    @Test
+    public void testSyncShards() throws Exception {
+        Map<String, String> mySqlConfig = getBasicMySqlConfig();
+        mySqlConfig.put("database-name", "shard_.+");
+        mySqlConfig.put("table-name", "t.+");
+
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(2);
+        env.enableCheckpointing(1000);
+        env.setRestartStrategy(RestartStrategies.noRestart());
+
+        MySqlSyncTableAction action =
+                new MySqlSyncTableAction(
+                        mySqlConfig,
+                        warehouse,
+                        database,
+                        tableName,
+                        Collections.singletonList("pt"),
+                        Arrays.asList("pk", "pt"),
+                        Collections.singletonList("pt=substring(_date,5)"),
+                        Collections.emptyMap(),
+                        Collections.emptyMap());
+        action.build(env);
+        JobClient client = env.executeAsync();
+        waitJobRunning(client);
+
+        try (Statement statement = getStatement()) {
+            statement.execute("USE shard_1");
+            statement.executeUpdate("INSERT INTO t1 VALUES (1, '2023-07-30'), (2, '2023-07-30')");
+            statement.execute("USE shard_2");
+            statement.executeUpdate("INSERT INTO t1 VALUES (3, '2023-07-31'), (4, '2023-07-31')");
+        }
+
+        FileStoreTable table = getFileStoreTable();
+        RowType rowType =
+                RowType.of(
+                        new DataType[] {
+                            DataTypes.INT().notNull(),
+                            DataTypes.VARCHAR(10),
+                            DataTypes.STRING().notNull()
+                        },
+                        new String[] {"pk", "_date", "pt"});
+        waitForResult(
+                Arrays.asList(
+                        "+I[1, 2023-07-30, 07-30]",
+                        "+I[2, 2023-07-30, 07-30]",
+                        "+I[3, 2023-07-31, 07-31]",
+                        "+I[4, 2023-07-31, 07-31]"),
+                table,
+                rowType,
+                Arrays.asList("pk", "pt"));
+    }
+
+    @Test
+    public void testSyncMultipleTable() throws Exception {
+        Map<String, String> mySqlConfig = getBasicMySqlConfig();
+        mySqlConfig.put("database-name", "paimon_multiple_table");
+        mySqlConfig.put("table-name", "t1|t2");
+
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(2);
+        env.enableCheckpointing(1000);
+        env.setRestartStrategy(RestartStrategies.noRestart());
+
+        MySqlSyncTableAction action =
+                new MySqlSyncTableAction(
+                        mySqlConfig,
+                        warehouse,
+                        database,
+                        tableName,
+                        Collections.emptyList(),
+                        Collections.singletonList("id"),
+                        Collections.emptyList(),
+                        Collections.emptyMap(),
+                        Collections.emptyMap());
+        action.build(env);
+        JobClient client = env.executeAsync();
+        waitJobRunning(client);
+
+        FileStoreTable table = getFileStoreTable();
+        RowType rowType =
+                RowType.of(
+                        new DataType[] {
+                            DataTypes.INT().notNull(), DataTypes.VARCHAR(10),
+                        },
+                        new String[] {"id", "name"});
+        waitForResult(
+                Arrays.asList("+I[1, flink]", "+I[2, paimon]"),
+                table,
+                rowType,
+                Collections.singletonList("id"));
+    }
+
     private FileStoreTable getFileStoreTable() throws Exception {
-        Catalog catalog = catalog();
-        Identifier identifier = Identifier.create(database, tableName);
-        return (FileStoreTable) catalog.getTable(identifier);
+        return getFileStoreTable(tableName);
     }
 }
