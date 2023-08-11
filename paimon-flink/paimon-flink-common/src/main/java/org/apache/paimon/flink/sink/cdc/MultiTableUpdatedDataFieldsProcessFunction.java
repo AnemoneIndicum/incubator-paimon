@@ -28,7 +28,6 @@ import org.apache.paimon.types.DataField;
 import org.apache.paimon.types.DataType;
 import org.apache.paimon.types.DataTypeChecks;
 import org.apache.paimon.types.DataTypeRoot;
-import org.apache.paimon.types.RowType;
 import org.apache.paimon.utils.Preconditions;
 
 import org.apache.flink.api.java.tuple.Tuple2;
@@ -38,13 +37,13 @@ import org.apache.flink.util.Collector;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.IOException;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+
+import static org.apache.paimon.flink.sink.cdc.UpdatedDataFieldsProcessFunction.getSchemaChanges;
 
 /**
  * A {@link ProcessFunction} to handle schema changes. New schema is represented by a list of {@link
@@ -94,12 +93,13 @@ public class MultiTableUpdatedDataFieldsProcessFunction
                         });
 
         if (Objects.isNull(schemaManager)) {
-            throw new IOException("Failed to get schema manager for table " + tableId);
-        }
-        // todo: 执行表结构变更
-        for (SchemaChange schemaChange :
-                extractSchemaChanges(schemaManager, updatedDataFields.f1)) {
-            applySchemaChange(schemaManager, schemaChange, tableId);
+            LOG.error("Failed to get schema manager for table " + tableId);
+        } else {
+            // todo: 执行表结构变更
+            for (SchemaChange schemaChange :
+                    extractSchemaChanges(schemaManager, updatedDataFields.f1)) {
+                applySchemaChange(schemaManager, schemaChange, tableId);
+            }
         }
     }
 
@@ -114,43 +114,7 @@ public class MultiTableUpdatedDataFieldsProcessFunction
     private List<SchemaChange> extractSchemaChanges(
             SchemaManager schemaManager, List<DataField> updatedDataFields) {
         // todo 获取旧的表元数据 column name and column type
-        RowType oldRowType = schemaManager.latest().get().logicalRowType();
-        Map<String, DataField> oldFields = new HashMap<>();
-        for (DataField oldField : oldRowType.getFields()) {
-            oldFields.put(oldField.name(), oldField);
-        }
-
-        List<SchemaChange> result = new ArrayList<>();
-        for (DataField newField : updatedDataFields) {
-            // 旧的元数据中存在 就修改
-            if (oldFields.containsKey(newField.name())) {
-                DataField oldField = oldFields.get(newField.name());
-                // we compare by ignoring nullable, because partition keys and primary keys might be
-                // nullable in source database, but they can't be null in Paimon
-                if (oldField.type().equalsIgnoreNullable(newField.type())) {
-                    // 更改备注
-                    if (!Objects.equals(oldField.description(), newField.description())) {
-                        result.add(
-                                SchemaChange.updateColumnComment(
-                                        new String[] {newField.name()}, newField.description()));
-                    }
-                } else {
-                    // 更改数据类型
-                    result.add(SchemaChange.updateColumnType(newField.name(), newField.type()));
-                    if (newField.description() != null) {
-                        result.add(
-                                SchemaChange.updateColumnComment(
-                                        new String[] {newField.name()}, newField.description()));
-                    }
-                }
-            } else {
-                // 添加 column
-                result.add(
-                        SchemaChange.addColumn(
-                                newField.name(), newField.type(), newField.description(), null));
-            }
-        }
-        return result;
+        return getSchemaChanges(updatedDataFields, schemaManager);
     }
 
     private void applySchemaChange(

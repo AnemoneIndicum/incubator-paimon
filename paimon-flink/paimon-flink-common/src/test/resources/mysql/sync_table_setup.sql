@@ -281,6 +281,10 @@ CREATE TABLE test_tinyint1_convert (
     PRIMARY KEY (pk)
 );
 
+-- ################################################################################
+--  testSchemaEvolutionWithTinyint1Convert
+-- ################################################################################
+
 CREATE DATABASE paimon_sync_table_tinyint;
 USE paimon_sync_table_tinyint;
 
@@ -290,3 +294,49 @@ CREATE TABLE schema_evolution_3 (
     v1 VARCHAR(10) comment  'v1',
     PRIMARY KEY (_id)
 );
+
+-- ################################################################################
+--  testSyncShard
+-- ################################################################################
+
+CREATE DATABASE shard_1;
+USE shard_1;
+
+CREATE TABLE t1 (
+    pk INT,
+    _date VARCHAR(10),
+    PRIMARY KEY (pk)
+);
+
+CREATE DATABASE shard_2;
+USE shard_2;
+
+CREATE TABLE t1 (
+    pk INT,
+    _date VARCHAR(10),
+    PRIMARY KEY (pk)
+);
+
+
+-- ################################################################################
+--  testSyncMultipleTable
+-- ################################################################################
+
+CREATE DATABASE paimon_multiple_table;
+USE paimon_multiple_table;
+
+CREATE TABLE t1 (
+    id INT,
+    name VARCHAR(10),
+    PRIMARY KEY (id)
+);
+
+INSERT INTO t1 VALUES (1, 'flink');
+
+CREATE TABLE t2 (
+    id INT,
+    name VARCHAR(10),
+    PRIMARY KEY (id)
+);
+
+INSERT INTO t2 VALUES (2, 'paimon');

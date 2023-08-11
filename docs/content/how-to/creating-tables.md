@@ -168,14 +168,14 @@ SET hive.metastore.warehouse.dir=warehouse_path;
 CREATE TABLE MyTable (
     user_id BIGINT,
     item_id BIGINT,
-    behavior STRING,
+    behavior STRING
+) PARTITIONED BY ( 
     dt STRING,
     hh STRING
 )
 STORED BY 'org.apache.paimon.hive.PaimonStorageHandler'
 TBLPROPERTIES (
-    'primary-key' = 'dt,hh,user_id',
-    'partition'='dt,hh'
+    'primary-key' = 'dt,hh,user_id'
 );
 ```
 
@@ -362,7 +362,7 @@ CREATE TABLE MyTablePk (
       dt STRING,
       hh STRING,
       PRIMARY KEY (dt, hh, user_id) NOT ENFORCED
-) ;
+);
 CREATE TABLE MyTablePkAs WITH ('primary-key' = 'dt,hh') AS SELECT * FROM MyTablePk;
 
 
@@ -453,7 +453,7 @@ CREATE TABLE MyTable (
     dt STRING,
     hh STRING,
     PRIMARY KEY (dt, hh, user_id) NOT ENFORCED
-) ;
+);
 
 CREATE TABLE MyTableLike LIKE MyTable;
 ```
