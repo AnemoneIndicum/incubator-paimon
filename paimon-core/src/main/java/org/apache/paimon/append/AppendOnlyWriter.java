@@ -147,6 +147,7 @@ public class AppendOnlyWriter implements RecordWriter<InternalRow> {
         // add new generated files
         flushedFiles.forEach(compactManager::addNewFile);
         trySyncLatestCompaction(waitForLatestCompaction);
+        // 刷写数据 并触发合并
         compactManager.triggerCompaction(forcedFullCompaction);
         newFiles.addAll(flushedFiles);
     }

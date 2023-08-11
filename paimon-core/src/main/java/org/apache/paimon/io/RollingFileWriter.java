@@ -81,7 +81,7 @@ public class RollingFileWriter<T, R> implements FileWriter<T, List<R>> {
 
             currentWriter.write(row);
             recordCount += 1;
-
+            // todo:  Determining whether rolling a new file is necessary and saving a list of file paths as previously written.
             if (rollingFile()) {
                 closeCurrentWriter();
             }

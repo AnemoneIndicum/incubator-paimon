@@ -111,7 +111,7 @@ public class StoreCompactOperator extends PrepareCommitOperator<RowData, Committ
         int bucket = record.getInt(2);
         byte[] serializedFiles = record.getBinary(3);
         List<DataFileMeta> files = dataFileMetaSerializer.deserializeList(serializedFiles);
-
+        // todo: stream model 才会触发 部分合并
         if (write.streamingMode()) {
             write.notifyNewFiles(snapshotId, partition, bucket, files);
             write.compact(partition, bucket, false);

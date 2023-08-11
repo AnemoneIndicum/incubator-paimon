@@ -119,6 +119,7 @@ public abstract class SingleFileWriter<T, R> implements FileWriter<T, R> {
     @Override
     public void abort() {
         IOUtils.closeQuietly(out);
+        // 删除所有文件
         fileIO.deleteQuietly(path);
     }
 

@@ -69,15 +69,19 @@ public class FlinkSinkBuilder {
     }
 
     public DataStreamSink<?> build() {
+        // todo: build sink
         BucketMode bucketMode = table.bucketMode();
         switch (bucketMode) {
             case FIXED:
+                // 固定 bucket 表
                 return buildForFixedBucket();
             case DYNAMIC:
+                // 动态bucket 表
                 return buildDynamicBucketSink(false);
             case GLOBAL_DYNAMIC:
                 return buildDynamicBucketSink(true);
             case UNAWARE:
+                // 未知 bucket 表
                 return buildUnawareBucketSink();
             default:
                 throw new UnsupportedOperationException("Unsupported bucket mode: " + bucketMode);

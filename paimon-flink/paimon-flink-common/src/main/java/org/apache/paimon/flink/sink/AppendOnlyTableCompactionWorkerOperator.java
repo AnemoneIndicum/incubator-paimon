@@ -102,6 +102,9 @@ public class AppendOnlyTableCompactionWorkerOperator
         }
     }
 
+    /**
+     * 执行数据压缩
+     */
     @Override
     public void processElement(StreamRecord<AppendOnlyCompactionTask> element) throws Exception {
         AppendOnlyCompactionTask task = element.getValue();

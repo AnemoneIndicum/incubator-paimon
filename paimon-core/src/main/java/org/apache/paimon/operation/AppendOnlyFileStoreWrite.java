@@ -111,6 +111,7 @@ public class AppendOnlyFileStoreWrite extends AbstractFileStoreWrite<InternalRow
         // and make restore files mutable to update
         long maxSequenceNumber = getMaxSequenceNumber(restoredFiles);
         DataFilePathFactory factory = pathFactory.createDataFilePathFactory(partition, bucket);
+        // 根据 write-only attribute 判断使用哪种 CompactManager
         CompactManager compactManager =
                 skipCompaction
                         ? new NoopCompactManager()

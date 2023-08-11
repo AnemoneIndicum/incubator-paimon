@@ -50,7 +50,7 @@ import static org.apache.paimon.flink.FlinkConnectorOptions.SINK_MANAGED_WRITER_
 import static org.apache.paimon.flink.FlinkConnectorOptions.SINK_USE_MANAGED_MEMORY;
 import static org.apache.paimon.utils.Preconditions.checkArgument;
 
-/** Abstract sink of paimon. */
+/** Abstract sink of paimon. todo: 数据写入核心口 */
 public abstract class FlinkSink<T> implements Serializable {
 
     private static final long serialVersionUID = 1L;
@@ -69,8 +69,10 @@ public abstract class FlinkSink<T> implements Serializable {
 
     private StoreSinkWrite.Provider createWriteProvider(
             CheckpointConfig checkpointConfig, boolean isStreaming) {
+        // todo: changelogProducer 的生成策略
         boolean waitCompaction;
         if (table.coreOptions().writeOnly()) {
+            // todo: write-only模式中不需要 compaction
             waitCompaction = false;
         } else {
             Options options = table.coreOptions().toConfiguration();
@@ -134,7 +136,7 @@ public abstract class FlinkSink<T> implements Serializable {
         SingleOutputStreamOperator<Committable> written =
                 doWrite(input, initialCommitUser, input.getParallelism());
 
-        // commit the committable to generate a new snapshot
+        // todo: commit the committable to generate a new snapshot
         return doCommit(written, initialCommitUser);
     }
 
