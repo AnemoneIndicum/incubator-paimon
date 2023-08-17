@@ -27,7 +27,6 @@ import org.apache.paimon.fs.local.LocalFileIO;
 import org.apache.paimon.hive.annotation.Minio;
 import org.apache.paimon.hive.runner.PaimonEmbeddedHiveRunner;
 import org.apache.paimon.s3.MinioTestContainer;
-import org.apache.paimon.table.FileStoreTable;
 
 import com.klarna.hiverunner.HiveShell;
 import com.klarna.hiverunner.annotations.HiveSQL;
@@ -64,7 +63,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
@@ -351,7 +349,10 @@ public abstract class HiveCatalogITCaseBase {
         tEnv.executeSql("CREATE TABLE t (a INT)").await();
         tEnv.executeSql("INSERT INTO t VALUES(1)").await();
         tEnv.executeSql("CREATE TABLE t1 AS SELECT * FROM t").await();
-        List<Row> result = collect("SELECT * FROM t1$schemas s");
+        List<Row> result =
+                collect(
+                        "SELECT schema_id, fields, partition_keys, "
+                                + "primary_keys, options, `comment`  FROM t1$schemas s");
         assertThat(result.toString())
                 .isEqualTo("[+I[0, [{\"id\":0,\"name\":\"a\",\"type\":\"INT\"}], [], [], {}, ]]");
         List<Row> data = collect("SELECT * FROM t1");
@@ -379,7 +380,10 @@ public abstract class HiveCatalogITCaseBase {
                         + ") PARTITIONED BY (dt, hh)");
         tEnv.executeSql("INSERT INTO t_p  SELECT 1,2,'a','2023-02-19','12'").await();
         tEnv.executeSql("CREATE TABLE t1_p WITH ('partition' = 'dt') AS SELECT * FROM t_p").await();
-        List<Row> resultPartition = collect("SELECT * FROM t1_p$schemas s");
+        List<Row> resultPartition =
+                collect(
+                        "SELECT schema_id, fields, partition_keys, "
+                                + "primary_keys, options, `comment`  FROM t1_p$schemas s");
         assertThat(resultPartition.toString())
                 .isEqualTo(
                         "[+I[0, [{\"id\":0,\"name\":\"user_id\",\"type\":\"BIGINT\"},{\"id\":1,\"name\":\"item_id\",\"type\":\"BIGINT\"},{\"id\":2,\"name\":\"behavior\",\"type\":\"STRING\"}"
@@ -745,30 +749,6 @@ public abstract class HiveCatalogITCaseBase {
     }
 
     @Test
-    public void testClearSchemaAfterUnSupportType()
-            throws InterruptedException, ExecutionException, Catalog.TableNotExistException {
-        assertThatThrownBy(
-                        () ->
-                                tEnv.executeSql(
-                                                "CREATE TABLE t001(id INT PRIMARY KEY NOT ENFORCED , d TIME)")
-                                        .await())
-                .hasRootCauseInstanceOf(UnsupportedOperationException.class)
-                .hasRootCauseMessage("Unsupported type: TIME(0)");
-        Identifier identifier = new Identifier("test_db", "t001");
-        Catalog catalog =
-                ((FlinkCatalog) tEnv.getCatalog(tEnv.getCurrentCatalog()).get()).catalog();
-        assertThat(catalog.tableExists(identifier)).isFalse();
-
-        tEnv.executeSql("CREATE TABLE  t002(id INT PRIMARY KEY NOT ENFORCED , b STRING)").await();
-        assertThatThrownBy(() -> tEnv.executeSql("ALTER TABLE t002 MODIFY b TIME").await())
-                .hasRootCauseInstanceOf(UnsupportedOperationException.class)
-                .hasRootCauseMessage("Unsupported type: TIME(0)");
-        identifier = new Identifier("test_db", "t002");
-        FileStoreTable table = (FileStoreTable) catalog.getTable(identifier);
-        assertThat(table.schema().fields().toString()).isEqualTo("[`id` INT NOT NULL, `b` STRING]");
-    }
-
-    @Test
     public void testAddPartitionsToMetastore() throws Exception {
         prepareTestAddPartitionsToMetastore();
 
@@ -849,6 +829,24 @@ public abstract class HiveCatalogITCaseBase {
                         "ptb=2b/pta=2",
                         "ptb=3a/pta=3",
                         "ptb=3b/pta=3");
+    }
+
+    @Test
+    public void testAddPartitionsToMetastoreForUnpartitionedTable() throws Exception {
+        tEnv.executeSql(
+                String.join(
+                        "\n",
+                        "CREATE TABLE t (",
+                        "    k INT,",
+                        "    v BIGINT,",
+                        "    PRIMARY KEY (k) NOT ENFORCED",
+                        ") WITH (",
+                        "    'bucket' = '2',",
+                        "    'metastore.partitioned-table' = 'true'",
+                        ")"));
+        tEnv.executeSql("INSERT INTO t VALUES (1, 10), (2, 20)").await();
+        assertThat(hiveShell.executeQuery("SELECT * FROM t ORDER BY k"))
+                .containsExactlyInAnyOrder("1\t10", "2\t20");
     }
 
     protected List<Row> collect(String sql) throws Exception {

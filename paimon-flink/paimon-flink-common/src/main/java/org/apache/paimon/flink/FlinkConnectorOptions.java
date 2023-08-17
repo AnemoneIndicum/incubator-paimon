@@ -68,6 +68,20 @@ public class FlinkConnectorOptions {
                                                             + "."))
                                     .build());
 
+    public static final ConfigOption<Integer> LOG_SYSTEM_PARTITIONS =
+            ConfigOptions.key("log.system.partitions")
+                    .intType()
+                    .defaultValue(1)
+                    .withDescription(
+                            "The number of partitions of the log system. If log system is kafka, this is kafka partitions.");
+
+    public static final ConfigOption<Integer> LOG_SYSTEM_REPLICATION =
+            ConfigOptions.key("log.system.replication")
+                    .intType()
+                    .defaultValue(1)
+                    .withDescription(
+                            "The number of replication of the log system. If log system is kafka, this is kafka replicationFactor.");
+
     public static final ConfigOption<Integer> SINK_PARALLELISM =
             ConfigOptions.key("sink.parallelism")
                     .intType()
@@ -223,6 +237,18 @@ public class FlinkConnectorOptions {
                     .defaultValue(Duration.ofSeconds(30))
                     .withDescription(
                             "If the new snapshot has not been generated when the checkpoint starts to trigger, the enumerator will block the checkpoint and wait for the new snapshot. Set the maximum waiting time to avoid infinite waiting, if timeout, the checkpoint will fail. Note that it should be set smaller than the checkpoint timeout.");
+
+    public static final ConfigOption<Boolean> LOOKUP_ASYNC =
+            ConfigOptions.key("lookup.async")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription("Whether to enable async lookup join.");
+
+    public static final ConfigOption<Integer> LOOKUP_ASYNC_THREAD_NUMBER =
+            ConfigOptions.key("lookup.async-thread-number")
+                    .intType()
+                    .defaultValue(16)
+                    .withDescription("The thread number for lookup async.");
 
     public static List<ConfigOption<?>> getOptions() {
         final Field[] fields = FlinkConnectorOptions.class.getFields();

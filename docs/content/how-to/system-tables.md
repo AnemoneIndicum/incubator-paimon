@@ -65,13 +65,13 @@ You can query the historical schemas of the table through schemas table.
 SELECT * FROM MyTable$schemas;
 
 /*
-+-----------+--------------------------------+----------------+--------------+---------+---------+
-| schema_id |                         fields | partition_keys | primary_keys | options | comment |
-+-----------+--------------------------------+----------------+--------------+---------+---------+
-|         0 | [{"id":0,"name":"word","typ... |             [] |     ["word"] |      {} |         |
-|         1 | [{"id":0,"name":"word","typ... |             [] |     ["word"] |      {} |         |
-|         2 | [{"id":0,"name":"word","typ... |             [] |     ["word"] |      {} |         |
-+-----------+--------------------------------+----------------+--------------+---------+---------+
++-----------+--------------------------------+----------------+--------------+---------+---------+-------------------------+
+| schema_id |                         fields | partition_keys | primary_keys | options | comment |       update_time       |
++-----------+--------------------------------+----------------+--------------+---------+---------+-------------------------+
+|         0 | [{"id":0,"name":"word","typ... |             [] |     ["word"] |      {} |         | 2022-10-28 11:44:20.600 |
+|         1 | [{"id":0,"name":"word","typ... |             [] |     ["word"] |      {} |         | 2022-10-27 11:44:15.600 |
+|         2 | [{"id":0,"name":"word","typ... |             [] |     ["word"] |      {} |         | 2022-10-26 11:44:10.600 |
++-----------+--------------------------------+----------------+--------------+---------+---------+-------------------------+
 3 rows in set
 */
 ```
@@ -86,7 +86,7 @@ SELECT s.snapshot_id, t.schema_id, t.fields
 
 ### Options Table
 
-You can query the table's option information which is specified from the DDL through options table. The options not shown will be the default value. You can take reference to  [Configuration].
+You can query the table's option information which is specified from the DDL through options table. The options not shown will be the default value. You can take reference to [Configuration]({{< ref "maintenance/configurations#coreoptions" >}}).
 
 ```sql
 SELECT * FROM MyTable$options;
