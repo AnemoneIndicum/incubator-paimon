@@ -52,6 +52,9 @@ CREATE TABLE schema_evolution_multiple (
 CREATE TABLE all_types_table (
     _id INT,
     pt DECIMAL(2, 1),
+    -- BIT
+    _bit1 BIT,
+    _bit BIT(64),
     -- TINYINT
     _tinyint1 TINYINT(1),
     _boolean BOOLEAN,
@@ -152,6 +155,8 @@ CREATE TABLE all_types_table (
 
 INSERT INTO all_types_table VALUES (
     1, 1.1,
+    -- BIT
+    1, B'11111000111',
     -- TINYINT
     true, true, false, 1, 2, 3,
     -- SMALLINT
@@ -207,6 +212,7 @@ INSERT INTO all_types_table VALUES (
     'a,b'
 ), (
     2, 2.2,
+    NULL, NULL,
     NULL, NULL, NULL, NULL, NULL, NULL,
     NULL, NULL, NULL,
     NULL, NULL, NULL,
@@ -274,25 +280,14 @@ CREATE TABLE test_computed_column (
     PRIMARY KEY (pk)
 );
 
+-- ################################################################################
+--  testTinyInt1Convert
+-- ################################################################################
+
 CREATE TABLE test_tinyint1_convert (
     pk INT,
-    _datetime DATETIME,
     _tinyint1 TINYINT(1),
     PRIMARY KEY (pk)
-);
-
--- ################################################################################
---  testSchemaEvolutionWithTinyint1Convert
--- ################################################################################
-
-CREATE DATABASE paimon_sync_table_tinyint;
-USE paimon_sync_table_tinyint;
-
-CREATE TABLE schema_evolution_3 (
-    pt INT comment  'primary',
-    _id INT comment  '_id',
-    v1 VARCHAR(10) comment  'v1',
-    PRIMARY KEY (_id)
 );
 
 -- ################################################################################
@@ -308,6 +303,12 @@ CREATE TABLE t1 (
     PRIMARY KEY (pk)
 );
 
+CREATE TABLE t2 (
+    pk INT,
+    _date VARCHAR(10),
+    PRIMARY KEY (pk)
+);
+
 CREATE DATABASE shard_2;
 USE shard_2;
 
@@ -317,26 +318,8 @@ CREATE TABLE t1 (
     PRIMARY KEY (pk)
 );
 
-
--- ################################################################################
---  testSyncMultipleTable
--- ################################################################################
-
-CREATE DATABASE paimon_multiple_table;
-USE paimon_multiple_table;
-
-CREATE TABLE t1 (
-    id INT,
-    name VARCHAR(10),
-    PRIMARY KEY (id)
-);
-
-INSERT INTO t1 VALUES (1, 'flink');
-
 CREATE TABLE t2 (
-    id INT,
-    name VARCHAR(10),
-    PRIMARY KEY (id)
+    pk INT,
+    _date VARCHAR(10),
+    PRIMARY KEY (pk)
 );
-
-INSERT INTO t2 VALUES (2, 'paimon');
