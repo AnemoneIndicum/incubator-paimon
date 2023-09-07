@@ -18,116 +18,160 @@
 
 package org.apache.paimon.flink.action.cdc.mongodb.strategy;
 
-import org.apache.paimon.flink.action.cdc.mongodb.JsonParserUtils;
-import org.apache.paimon.flink.action.cdc.mongodb.ModeEnum;
+import org.apache.paimon.flink.action.cdc.ComputedColumn;
+import org.apache.paimon.flink.action.cdc.mongodb.SchemaAcquisitionMode;
 import org.apache.paimon.flink.sink.cdc.RichCdcMultiplexRecord;
 import org.apache.paimon.types.DataType;
 import org.apache.paimon.types.DataTypes;
+import org.apache.paimon.utils.JsonSerdeUtil;
 
 import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.core.JsonProcessingException;
 import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.databind.JsonNode;
 import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.databind.node.ObjectNode;
 
+import com.jayway.jsonpath.JsonPath;
 import org.apache.flink.configuration.Configuration;
 
-import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
+import java.util.Optional;
 
+import static org.apache.paimon.flink.action.cdc.CdcActionCommonUtils.mapKeyCaseConvert;
+import static org.apache.paimon.flink.action.cdc.CdcActionCommonUtils.recordKeyDuplicateErrMsg;
 import static org.apache.paimon.flink.action.cdc.mongodb.MongoDBActionUtils.FIELD_NAME;
 import static org.apache.paimon.flink.action.cdc.mongodb.MongoDBActionUtils.PARSER_PATH;
 import static org.apache.paimon.flink.action.cdc.mongodb.MongoDBActionUtils.START_MODE;
-import static org.apache.paimon.utils.Preconditions.checkArgument;
 
-/** Processing strategies for different mongodb versions. */
+/** Interface for processing strategies tailored for different MongoDB versions. */
 public interface MongoVersionStrategy {
 
     ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
+    /**
+     * Extracts records from the provided JsonNode.
+     *
+     * @param root The root JsonNode containing the MongoDB record.
+     * @return A list of RichCdcMultiplexRecord extracted from the root node.
+     * @throws JsonProcessingException If there's an error during JSON processing.
+     */
     List<RichCdcMultiplexRecord> extractRecords(JsonNode root) throws JsonProcessingException;
 
+    /**
+     * Extracts primary keys from the MongoDB record.
+     *
+     * @return A list of primary keys.
+     */
     default List<String> extractPrimaryKeys() {
-        List<String> primaryKeys = new ArrayList<>();
-        primaryKeys.add("_id");
-        return primaryKeys;
+        return Collections.singletonList("_id");
     }
 
     default Map<String, String> extractRow(String record) {
-        return JsonParserUtils.extractMap(record);
+        return JsonSerdeUtil.parseJsonMap(record, String.class);
     }
 
-    default Map<String, String> keyCaseInsensitive(Map<String, String> origin) {
-        Map<String, String> keyCaseInsensitive = new HashMap<>();
-        for (Map.Entry<String, String> entry : origin.entrySet()) {
-            String fieldName = entry.getKey().toLowerCase();
-            checkArgument(
-                    !keyCaseInsensitive.containsKey(fieldName),
-                    "Duplicate key appears when converting map keys to case-insensitive form. Original map is:\n%s",
-                    origin);
-            keyCaseInsensitive.put(fieldName, entry.getValue());
-        }
-        return keyCaseInsensitive;
-    }
-
+    /**
+     * Determines the extraction mode and retrieves the row accordingly.
+     *
+     * @param jsonNode The JsonNode representing the MongoDB document.
+     * @param paimonFieldTypes A map to store the field types.
+     * @param caseSensitive Flag indicating if the extraction should be case-sensitive.
+     * @param mongodbConfig Configuration for the MongoDB connection.
+     * @return A map representing the extracted row.
+     * @throws JsonProcessingException If there's an error during JSON processing.
+     */
     default Map<String, String> getExtractRow(
             JsonNode jsonNode,
             LinkedHashMap<String, DataType> paimonFieldTypes,
             boolean caseSensitive,
+            List<ComputedColumn> computedColumns,
             Configuration mongodbConfig)
             throws JsonProcessingException {
-        ModeEnum mode = ModeEnum.valueOf(mongodbConfig.getString(START_MODE).toUpperCase());
+        SchemaAcquisitionMode mode =
+                SchemaAcquisitionMode.valueOf(mongodbConfig.getString(START_MODE).toUpperCase());
         ObjectNode objectNode = (ObjectNode) OBJECT_MAPPER.readTree(jsonNode.asText());
         JsonNode document = objectNode.set("_id", objectNode.get("_id").get("$oid"));
+        Map<String, String> row;
         switch (mode) {
             case SPECIFIED:
-                Map<String, String> specifiedRow =
-                        getSpecifiedRow(
+                row =
+                        parseFieldsFromJsonRecord(
                                 document.toString(),
                                 mongodbConfig.getString(PARSER_PATH),
                                 mongodbConfig.getString(FIELD_NAME),
+                                computedColumns,
                                 paimonFieldTypes);
-                return caseSensitive ? specifiedRow : keyCaseInsensitive(specifiedRow);
+                break;
             case DYNAMIC:
-                Map<String, String> dynamicRow =
-                        getDynamicRow(document.toString(), paimonFieldTypes);
-                return caseSensitive ? dynamicRow : keyCaseInsensitive(dynamicRow);
+                row =
+                        parseAndTypeJsonRow(
+                                document.toString(),
+                                paimonFieldTypes,
+                                computedColumns,
+                                caseSensitive);
+                break;
             default:
-                throw new RuntimeException();
+                throw new RuntimeException("Unsupported extraction mode: " + mode);
         }
+        return mapKeyCaseConvert(row, caseSensitive, recordKeyDuplicateErrMsg(row));
     }
 
-    default Map<String, String> getDynamicRow(
-            String evaluate, LinkedHashMap<String, DataType> paimonFieldTypes) {
-        Map<String, String> linkedHashMap = JsonParserUtils.extractMap(evaluate);
-        Set<String> keySet = linkedHashMap.keySet();
-        String[] columns = keySet.toArray(new String[0]);
-        for (String column : columns) {
-            paimonFieldTypes.put(column, DataTypes.STRING());
-        }
-        return extractRow(evaluate);
+    /** Parses and types a JSON row based on the given parameters. */
+    default Map<String, String> parseAndTypeJsonRow(
+            String evaluate,
+            LinkedHashMap<String, DataType> paimonFieldTypes,
+            List<ComputedColumn> computedColumns,
+            boolean caseSensitive) {
+        Map<String, String> parsedRow = JsonSerdeUtil.parseJsonMap(evaluate, String.class);
+        return processParsedData(parsedRow, paimonFieldTypes, computedColumns, caseSensitive);
     }
 
-    static Map<String, String> getSpecifiedRow(
+    /** Parses fields from a JSON record based on the given parameters. */
+    static Map<String, String> parseFieldsFromJsonRecord(
             String record,
-            String parsePath,
-            String fileName,
-            LinkedHashMap<String, DataType> paimonFieldTypes) {
-        Map<String, String> resultMap = new HashMap<>();
-        String[] columnNames = fileName.split(",");
-        String[] parseNames = parsePath.split(",");
+            String fieldPaths,
+            String fieldNames,
+            List<ComputedColumn> computedColumns,
+            LinkedHashMap<String, DataType> fieldTypes) {
+        String[] columnNames = fieldNames.split(",");
+        String[] parseNames = fieldPaths.split(",");
+        Map<String, String> parsedRow = new HashMap<>();
+
         for (int i = 0; i < parseNames.length; i++) {
-            paimonFieldTypes.put(columnNames[i], DataTypes.STRING());
-            String evaluate = JsonParserUtils.evaluate(record, "$." + parseNames[i]);
-            if (evaluate == null) {
-                resultMap.put(columnNames[i], "{}");
-            } else {
-                resultMap.put(columnNames[i], evaluate);
-            }
+            String evaluate = JsonPath.read(record, parseNames[i]);
+            parsedRow.put(columnNames[i], Optional.ofNullable(evaluate).orElse("{}"));
         }
+
+        return processParsedData(parsedRow, fieldTypes, computedColumns, false);
+    }
+
+    /** Processes the parsed data to generate the result map and update field types. */
+    static Map<String, String> processParsedData(
+            Map<String, String> parsedRow,
+            LinkedHashMap<String, DataType> fieldTypes,
+            List<ComputedColumn> computedColumns,
+            boolean caseSensitive) {
+        int initialCapacity = parsedRow.size() + computedColumns.size();
+        Map<String, String> resultMap = new HashMap<>(initialCapacity);
+
+        parsedRow.forEach(
+                (column, value) -> {
+                    String key = caseSensitive ? column : column.toLowerCase();
+                    fieldTypes.putIfAbsent(key, DataTypes.STRING());
+                    resultMap.put(key, value);
+                });
+        computedColumns.forEach(
+                computedColumn -> {
+                    String columnName = computedColumn.columnName();
+                    String fieldReference = computedColumn.fieldReference();
+                    String computedValue = computedColumn.eval(parsedRow.get(fieldReference));
+
+                    resultMap.put(columnName, computedValue);
+                    fieldTypes.put(columnName, computedColumn.columnType());
+                });
         return resultMap;
     }
 }

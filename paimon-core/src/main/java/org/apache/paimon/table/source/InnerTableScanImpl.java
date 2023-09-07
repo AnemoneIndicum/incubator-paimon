@@ -52,14 +52,14 @@ public class InnerTableScanImpl extends AbstractInnerTableScan {
     }
 
     @Override
-    public DataFilePlan plan() {
+    public TableScan.Plan plan() {
         if (startingScanner == null) {
             startingScanner = createStartingScanner(false);
         }
 
         if (hasNext) {
             hasNext = false;
-            StartingScanner.Result result = startingScanner.scan(snapshotManager, snapshotReader);
+            StartingScanner.Result result = startingScanner.scan(snapshotReader);
             return DataFilePlan.fromResult(result);
         } else {
             throw new EndOfScanException();

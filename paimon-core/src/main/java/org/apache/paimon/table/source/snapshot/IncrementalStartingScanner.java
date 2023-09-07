@@ -22,8 +22,9 @@ import org.apache.paimon.Snapshot;
 import org.apache.paimon.Snapshot.CommitKind;
 import org.apache.paimon.data.BinaryRow;
 import org.apache.paimon.io.DataFileMeta;
-import org.apache.paimon.operation.ScanKind;
 import org.apache.paimon.table.source.DataSplit;
+import org.apache.paimon.table.source.ScanMode;
+import org.apache.paimon.table.source.Split;
 import org.apache.paimon.utils.Pair;
 import org.apache.paimon.utils.SnapshotManager;
 
@@ -34,26 +35,21 @@ import java.util.List;
 import java.util.Map;
 
 /** {@link StartingScanner} for incremental changes by snapshot. */
-public class IncrementalStartingScanner implements StartingScanner {
+public class IncrementalStartingScanner extends AbstractStartingScanner {
 
-    private long start;
-    private long end;
+    private long endingSnapshotId;
 
-    public IncrementalStartingScanner(long start, long end) {
-        this.start = start;
-        this.end = end;
+    public IncrementalStartingScanner(SnapshotManager snapshotManager, long start, long end) {
+        super(snapshotManager);
+        this.startingSnapshotId = start;
+        this.endingSnapshotId = end;
     }
 
     @Override
-    public Result scan(SnapshotManager manager, SnapshotReader reader) {
-        long earliestSnapshotId = manager.earliestSnapshotId();
-        long latestSnapshotId = manager.latestSnapshotId();
-        start = (start < earliestSnapshotId) ? earliestSnapshotId - 1 : start;
-        end = (end > latestSnapshotId) ? latestSnapshotId : end;
-
+    public Result scan(SnapshotReader reader) {
         Map<Pair<BinaryRow, Integer>, List<DataFileMeta>> grouped = new HashMap<>();
-        for (long i = start + 1; i < end + 1; i++) {
-            List<DataSplit> splits = readDeltaSplits(reader, manager.snapshot(i));
+        for (long i = startingSnapshotId + 1; i < endingSnapshotId + 1; i++) {
+            List<DataSplit> splits = readDeltaSplits(reader, snapshotManager.snapshot(i));
             for (DataSplit split : splits) {
                 grouped.computeIfAbsent(
                                 Pair.of(split.partition(), split.bucket()), k -> new ArrayList<>())
@@ -69,7 +65,7 @@ public class IncrementalStartingScanner implements StartingScanner {
                     reader.splitGenerator().splitForBatch(entry.getValue())) {
                 result.add(
                         DataSplit.builder()
-                                .withSnapshot(end)
+                                .withSnapshot(endingSnapshotId)
                                 .withPartition(partition)
                                 .withBucket(bucket)
                                 .withDataFiles(files)
@@ -77,7 +73,29 @@ public class IncrementalStartingScanner implements StartingScanner {
             }
         }
 
-        return new ScannedResult(end, null, result);
+        return StartingScanner.fromPlan(
+                new SnapshotReader.Plan() {
+                    @Override
+                    public Long watermark() {
+                        return null;
+                    }
+
+                    @Override
+                    public Long snapshotId() {
+                        return endingSnapshotId;
+                    }
+
+                    @Override
+                    public ScanMode scanMode() {
+                        // TODO introduce a new mode
+                        throw new UnsupportedOperationException();
+                    }
+
+                    @Override
+                    public List<Split> splits() {
+                        return (List) result;
+                    }
+                });
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
@@ -86,6 +104,6 @@ public class IncrementalStartingScanner implements StartingScanner {
             // ignore COMPACT and OVERWRITE
             return Collections.emptyList();
         }
-        return (List) reader.withSnapshot(s).withKind(ScanKind.DELTA).read().splits();
+        return (List) reader.withSnapshot(s).withMode(ScanMode.DELTA).read().splits();
     }
 }

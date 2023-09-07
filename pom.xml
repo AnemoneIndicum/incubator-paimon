@@ -31,7 +31,7 @@ under the License.
     <artifactId>paimon-parent</artifactId>
     <groupId>org.apache.paimon</groupId>
     <name>Paimon : </name>
-    <version>0.5-SNAPSHOT</version>
+    <version>0.6-SNAPSHOT</version>
     <packaging>pom</packaging>
 
     <url>https://paimon.apache.org</url>
@@ -69,7 +69,7 @@ under the License.
     </modules>
 
     <properties>
-        <project.build.outputTimestamp>2023-05-04T05:07:22Z</project.build.outputTimestamp>
+        <project.build.outputTimestamp>2023-09-06T02:16:30Z</project.build.outputTimestamp>
         <paimon.shade.version>0.4.0-incubating</paimon.shade.version>
         <paimon.shade.jackson.version>2.14.2</paimon.shade.jackson.version>
         <paimon.shade.guava.version>30.1.1-jre</paimon.shade.guava.version>
@@ -306,11 +306,34 @@ under the License.
                 <version>2.4</version><!--$NO-MVN-MAN-VER$-->
                 <configuration>
                     <archive>
+                        <manifestEntries>
+                            <SCM-Revision>${git.commit.id}</SCM-Revision>
+                            <SCM-Branch>${git.branch}</SCM-Branch>
+                        </manifestEntries>
                         <manifest>
                             <addDefaultImplementationEntries>true</addDefaultImplementationEntries>
                             <addDefaultSpecificationEntries>true</addDefaultSpecificationEntries>
                         </manifest>
                     </archive>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>pl.project13.maven</groupId>
+                <artifactId>git-commit-id-plugin</artifactId>
+                <version>4.0.0</version>
+                <executions>
+                    <execution>
+                        <id>get-the-git-infos</id>
+                        <goals>
+                            <goal>revision</goal>
+                        </goals>
+                        <phase>validate</phase>
+                    </execution>
+                </executions>
+                <configuration>
+                    <dotGitDirectory>${project.basedir}/.git</dotGitDirectory>
+                    <failOnNoGitDirectory>false</failOnNoGitDirectory>
+                    <failOnUnableToExtractRepoInfo>false</failOnUnableToExtractRepoInfo>
                 </configuration>
             </plugin>
 
@@ -414,6 +437,7 @@ under the License.
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.0.0-M5</version>
                 <configuration>
+                    <useSystemClassLoader>false</useSystemClassLoader>
                     <forkCount>${flink.forkCount}</forkCount>
                     <reuseForks>${flink.reuseForks}</reuseForks>
                     <trimStackTrace>false</trimStackTrace>

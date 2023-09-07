@@ -26,7 +26,7 @@ under the License.
 
 # Manage Tags
 
-Paimon's snapshots can provide a easy way to query historical data. But in most scenarios, a job will generate too many
+Paimon's snapshots can provide an easy way to query historical data. But in most scenarios, a job will generate too many
 snapshots and table will expire old snapshots according to table configuration. Snapshot expiration will also delete old
 data files, and the historical data of expired snapshots cannot be queried anymore.
 
@@ -127,6 +127,14 @@ public class CreateTag {
 
 {{< /tab >}}
 
+{{< tab "Spark" >}}
+Run the following sql:
+```sql
+CALL create_tag(table => 'test.T', tag => 'test_tag', snapshot => 2);
+```
+
+{{< /tab >}}
+
 {{< /tabs >}}
 
 ## Delete Tags
@@ -164,6 +172,15 @@ public class DeleteTag {
         table.deleteTag("my-tag");
     }
 }
+```
+
+{{< /tab >}}
+
+
+{{< tab "Spark" >}}
+Run the following sql:
+```sql
+CALL delete_tag(table => 'test.T', tag => 'test_tag');
 ```
 
 {{< /tab >}}
@@ -215,6 +232,16 @@ public class RollbackTo {
         // snapshot-3 -> tag3
     }
 }
+```
+
+{{< /tab >}}
+
+{{< tab "Spark" >}}
+
+Run the following sql:
+
+```sql
+CALL rollback(table => 'test.T', version => '2');
 ```
 
 {{< /tab >}}
