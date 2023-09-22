@@ -194,6 +194,19 @@ public class CoreOptions implements Serializable {
                     .defaultValue(Duration.ofHours(1))
                     .withDescription("The maximum time of completed snapshots to retain.");
 
+    public static final ConfigOption<ExpireExecutionMode> SNAPSHOT_EXPIRE_EXECUTION_MODE =
+            key("snapshot.expire.execution-mode")
+                    .enumType(ExpireExecutionMode.class)
+                    .defaultValue(ExpireExecutionMode.SYNC)
+                    .withDescription("Specifies the execution mode of expire.");
+
+    public static final ConfigOption<Integer> SNAPSHOT_EXPIRE_LIMIT =
+            key("snapshot.expire.limit")
+                    .intType()
+                    .defaultValue(10)
+                    .withDescription(
+                            "The maximum number of snapshots allowed to expire at a time.");
+
     public static final ConfigOption<Duration> CONTINUOUS_DISCOVERY_INTERVAL =
             key("continuous.discovery-interval")
                     .durationType()
@@ -276,6 +289,13 @@ public class CoreOptions implements Serializable {
                     .noDefaultValue()
                     .withDescription(
                             "Whether the write buffer can be spillable. Enabled by default when using object storage.");
+
+    public static final ConfigOption<Boolean> WRITE_BUFFER_FOR_APPEND =
+            key("write-buffer-for-append")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "This option only works for append-only table. Whether the write use write buffer to avoid out-of-memory error.");
 
     public static final ConfigOption<MemorySize> WRITE_MANIFEST_CACHE =
             key("write-manifest-cache")
@@ -713,6 +733,14 @@ public class CoreOptions implements Serializable {
                             "Read incremental changes between start snapshot (exclusive) and end snapshot, "
                                     + "for example, '5,10' means changes between snapshot 5 and snapshot 10.");
 
+    public static final ConfigOption<IncrementalBetweenScanMode> INCREMENTAL_BETWEEN_SCAN_MODE =
+            key("incremental-between-scan-mode")
+                    .enumType(IncrementalBetweenScanMode.class)
+                    .defaultValue(IncrementalBetweenScanMode.DELTA)
+                    .withDescription(
+                            "Scan kind when Read incremental changes between start snapshot (exclusive) and end snapshot, "
+                                    + "'delta' for scan newly changed files between snapshots, 'changelog' scan changelog files between snapshots.");
+
     public static final ConfigOption<String> INCREMENTAL_BETWEEN_TIMESTAMP =
             key("incremental-between-timestamp")
                     .stringType()
@@ -968,6 +996,14 @@ public class CoreOptions implements Serializable {
         return options.get(SNAPSHOT_TIME_RETAINED);
     }
 
+    public ExpireExecutionMode snapshotExpireExecutionMode() {
+        return options.get(SNAPSHOT_EXPIRE_EXECUTION_MODE);
+    }
+
+    public int snapshotExpireLimit() {
+        return options.get(SNAPSHOT_EXPIRE_LIMIT);
+    }
+
     public int manifestMergeMinCount() {
         return options.get(MANIFEST_MERGE_MIN_COUNT);
     }
@@ -1005,6 +1041,10 @@ public class CoreOptions implements Serializable {
     public boolean writeBufferSpillable(boolean usingObjectStore, boolean isStreaming) {
         // if not streaming mode, we turn spillable on by default.
         return options.getOptional(WRITE_BUFFER_SPILLABLE).orElse(usingObjectStore || !isStreaming);
+    }
+
+    public boolean useWriteBufferForAppend() {
+        return options.get(WRITE_BUFFER_FOR_APPEND);
     }
 
     public long sortSpillBufferSize() {
@@ -1148,6 +1188,10 @@ public class CoreOptions implements Serializable {
                             + str);
         }
         return Pair.of(split[0], split[1]);
+    }
+
+    public IncrementalBetweenScanMode incrementalBetweenScanMode() {
+        return options.get(INCREMENTAL_BETWEEN_SCAN_MODE);
     }
 
     public Integer scanManifestParallelism() {
@@ -1616,6 +1660,50 @@ public class CoreOptions implements Serializable {
         }
     }
 
+    /** Specifies this scan type for incremental scan . */
+    public enum IncrementalBetweenScanMode implements DescribedEnum {
+        DELTA("delta", "Scan newly changed files between snapshots."),
+        CHANGELOG("changelog", "Scan changelog files between snapshots.");
+
+        private final String value;
+        private final String description;
+
+        IncrementalBetweenScanMode(String value, String description) {
+            this.value = value;
+            this.description = description;
+        }
+
+        @Override
+        public String toString() {
+            return value;
+        }
+
+        @Override
+        public InlineElement getDescription() {
+            return text(description);
+        }
+
+        public String getValue() {
+            return value;
+        }
+
+        @VisibleForTesting
+        public static IncrementalBetweenScanMode fromValue(String value) {
+            for (IncrementalBetweenScanMode formatType : IncrementalBetweenScanMode.values()) {
+                if (formatType.value.equals(value)) {
+                    return formatType;
+                }
+            }
+            throw new IllegalArgumentException(
+                    String.format(
+                            "Invalid format type %s, only support [%s]",
+                            value,
+                            StringUtils.join(
+                                    Arrays.stream(IncrementalBetweenScanMode.values()).iterator(),
+                                    ",")));
+        }
+    }
+
     /**
      * Set the default values of the {@link CoreOptions} via the given {@link Options}.
      *
@@ -1768,6 +1856,34 @@ public class CoreOptions implements Serializable {
         private final String description;
 
         TagCreationPeriod(String value, String description) {
+            this.value = value;
+            this.description = description;
+        }
+
+        @Override
+        public String toString() {
+            return value;
+        }
+
+        @Override
+        public InlineElement getDescription() {
+            return text(description);
+        }
+    }
+
+    /** The execution mode for expire. */
+    public enum ExpireExecutionMode implements DescribedEnum {
+        SYNC(
+                "sync",
+                "Execute expire synchronously. If there are too many files, it may take a long time and block stream processing."),
+        ASYNC(
+                "async",
+                "Execute expire asynchronously. If the generation of snapshots is greater than the deletion, there will be a backlog of files.");
+
+        private final String value;
+        private final String description;
+
+        ExpireExecutionMode(String value, String description) {
             this.value = value;
             this.description = description;
         }

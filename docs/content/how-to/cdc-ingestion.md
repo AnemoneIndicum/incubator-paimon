@@ -314,7 +314,7 @@ If a message in a Kafka topic is a change event captured from another database u
         </tr>
         <tr>
          <td><a href="https://nightlies.apache.org/flink/flink-docs-stable/docs/connectors/table/formats/maxwell/ >}}">Maxwell CDC</a></td>
-        <td>False</td>
+        <td>True</td>
         </tr>
         <tr>
          <td><a href="https://nightlies.apache.org/flink/flink-docs-stable/docs/connectors/table/formats/ogg/">OGG CDC</a></td>
@@ -324,7 +324,7 @@ If a message in a Kafka topic is a change event captured from another database u
 </table>
 
 {{< hint info >}}
-In Oracle GoldenGate, the data format synchronized to Kafka does not include field data type information. As a result, Paimon sets the data type for all fields to "String" by default.
+In Oracle GoldenGate and Maxwell, the data format synchronized to Kafka does not include field data type information. As a result, Paimon sets the data type for all fields to "String" by default.
 {{< /hint >}}
 
 ### Synchronizing Tables
@@ -450,8 +450,9 @@ Synchronization from multiple Kafka topics to Paimon database.
 ### Prepare MongoDB Bundled Jar
 
 ```
-flink-sql-connector-mongodb-*.jar
+flink-sql-connector-mongodb-cdc-*.jar
 ```
+only cdc 2.4+ is supported
 
 ### Synchronizing Tables
 
@@ -687,9 +688,10 @@ behaviors of `RENAME TABLE` and `DROP COLUMN` will be ignored, `RENAME COLUMN` w
 you can specify type mapping option `tinyint1-not-bool` (Use `--type-mapping`), then the column will be mapped to TINYINT in Paimon table.
 2. You can use type mapping option `to-nullable` (Use `--type-mapping`) to ignore all NOT NULL constraints (except primary keys).
 3. You can use type mapping option `to-string` (Use `--type-mapping`) to map all MySQL data type to STRING.
-4. MySQL BIT(1) type will be mapped to Boolean.
-5. When using Hive catalog, MySQL TIME type will be mapped to STRING.
-6. MySQL BINARY will be mapped to Paimon VARBINARY. This is because the binary value is passed as bytes in binlog, so it 
+4. You can use type mapping option `char-to-string` (Use `--type-mapping`) to map MySQL CHAR(length)/VARCHAR(length) types to STRING.
+5. MySQL BIT(1) type will be mapped to Boolean.
+6. When using Hive catalog, MySQL TIME type will be mapped to STRING.
+7. MySQL BINARY will be mapped to Paimon VARBINARY. This is because the binary value is passed as bytes in binlog, so it 
 should be mapped to byte type (BYTES or VARBINARY). We choose VARBINARY because it can retain the length information.
 
 ## FAQ
