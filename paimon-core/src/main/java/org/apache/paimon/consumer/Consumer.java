@@ -27,12 +27,16 @@ import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.annotation.JsonGet
 import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.annotation.JsonProperty;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.util.Optional;
 
 /** Consumer which contains next snapshot. */
 public class Consumer {
 
     private static final String FIELD_NEXT_SNAPSHOT = "nextSnapshot";
+
+    private static final int READ_CONSUMER_RETRY_NUM = 3;
+    private static final int READ_CONSUMER_RETRY_INTERVAL = 100;
 
     private final long nextSnapshot;
 
@@ -56,14 +60,9 @@ public class Consumer {
 
     public static Optional<Consumer> fromPath(FileIO fileIO, Path path) {
         try {
-            if (!fileIO.exists(path)) {
-                return Optional.empty();
-            }
-
-            String json = fileIO.readFileUtf8(path);
-            return Optional.of(Consumer.fromJson(json));
+            return fileIO.readOverwrittenFileUtf8(path).map(Consumer::fromJson);
         } catch (IOException e) {
-            throw new RuntimeException("Fails to read snapshot from path " + path, e);
+            throw new UncheckedIOException(e);
         }
     }
 }

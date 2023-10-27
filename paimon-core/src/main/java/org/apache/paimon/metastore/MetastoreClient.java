@@ -21,6 +21,7 @@ package org.apache.paimon.metastore;
 import org.apache.paimon.data.BinaryRow;
 
 import java.io.Serializable;
+import java.util.LinkedHashMap;
 
 /**
  * A metastore client related to a table. All methods of this interface operate on the same specific
@@ -29,6 +30,8 @@ import java.io.Serializable;
 public interface MetastoreClient extends AutoCloseable {
 
     void addPartition(BinaryRow partition) throws Exception;
+
+    void addPartition(LinkedHashMap<String, String> partitionSpec) throws Exception;
 
     /** Factory to create {@link MetastoreClient}. */
     interface Factory extends Serializable {

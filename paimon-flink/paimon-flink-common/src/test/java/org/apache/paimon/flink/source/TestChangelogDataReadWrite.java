@@ -42,7 +42,6 @@ import org.apache.paimon.schema.TableSchema;
 import org.apache.paimon.table.source.KeyValueTableRead;
 import org.apache.paimon.table.source.TableRead;
 import org.apache.paimon.table.source.ValueContentRowDataRecordIterator;
-import org.apache.paimon.table.source.ValueCountRowDataRecordIterator;
 import org.apache.paimon.types.BigIntType;
 import org.apache.paimon.types.DataField;
 import org.apache.paimon.types.IntType;
@@ -75,7 +74,7 @@ public class TestChangelogDataReadWrite {
     private static final Comparator<InternalRow> COMPARATOR =
             Comparator.comparingLong(o -> o.getLong(0));
     private static final RecordEqualiser EQUALISER =
-            (RecordEqualiser) (row1, row2) -> row1.getLong(0) == row2.getLong(0);
+            (row1, row2) -> row1.getLong(0) == row2.getLong(0);
     private static final KeyValueFieldsExtractor EXTRACTOR =
             new KeyValueFieldsExtractor() {
                 @Override
@@ -114,10 +113,6 @@ public class TestChangelogDataReadWrite {
         return createRead(ValueContentRowDataRecordIterator::new);
     }
 
-    public TableRead createReadWithValueCount() {
-        return createRead(ValueCountRowDataRecordIterator::new);
-    }
-
     private TableRead createRead(
             Function<
                             RecordReader.RecordIterator<KeyValue>,
@@ -134,7 +129,8 @@ public class TestChangelogDataReadWrite {
                         DeduplicateMergeFunction.factory(),
                         ignore -> avro,
                         pathFactory,
-                        EXTRACTOR);
+                        EXTRACTOR,
+                        new CoreOptions(new HashMap<>()));
         return new KeyValueTableRead(read) {
             @Override
             public KeyValueTableRead withFilter(Predicate predicate) {

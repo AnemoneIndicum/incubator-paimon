@@ -19,13 +19,15 @@ package org.apache.spark.sql.catalyst.plans.logical
 
 import org.apache.paimon.spark.procedure.Procedure
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, Expression}
 import org.apache.spark.sql.catalyst.util.truncatedString
 
 /** A CALL command that resolves stored procedure from SQL. */
 case class CallCommand(procedure: Procedure, args: Seq[Expression]) extends LeafCommand {
 
-  override lazy val output: Seq[Attribute] = procedure.outputType.toAttributes
+  override lazy val output: Seq[Attribute] =
+    procedure.outputType.map(
+      field => AttributeReference(field.name, field.dataType, field.nullable, field.metadata)())
 
   override def simpleString(maxFields: Int): String = {
     s"Call${truncatedString(output, "[", ", ", "]", maxFields)} ${procedure.description}"

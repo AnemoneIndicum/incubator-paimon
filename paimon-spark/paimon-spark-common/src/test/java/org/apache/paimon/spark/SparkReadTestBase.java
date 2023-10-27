@@ -164,7 +164,7 @@ public abstract class SparkReadTestBase {
     protected static void createTable(String tableName) {
         spark.sql(
                 String.format(
-                        "CREATE TABLE paimon.default.%s (a INT NOT NULL, b BIGINT, c STRING) TBLPROPERTIES ('write-mode'='change-log','file.format'='avro')",
+                        "CREATE TABLE paimon.default.%s (a INT NOT NULL, b BIGINT, c STRING) TBLPROPERTIES ('primary-key'='a', 'file.format'='avro')",
                         tableName));
     }
 
@@ -184,6 +184,8 @@ public abstract class SparkReadTestBase {
         }
         long commitIdentifier = COMMIT_IDENTIFIER.getAndIncrement();
         commit.commit(commitIdentifier, writer.prepareCommit(true, commitIdentifier));
+        writer.close();
+        commit.close();
     }
 
     protected static void writeTable(String tableName, String... values) {
@@ -196,7 +198,7 @@ public abstract class SparkReadTestBase {
     // return of 'SHOW CREATE TABLE' excluding TBLPROPERTIES
     protected String showCreateString(String table, String... fieldSpec) {
         return String.format(
-                "CREATE TABLE %s (%s)\n",
+                "CREATE TABLE paimon.default.%s (%s)\n",
                 table,
                 Arrays.stream(fieldSpec).map(s -> "\n  " + s).collect(Collectors.joining(",")));
     }

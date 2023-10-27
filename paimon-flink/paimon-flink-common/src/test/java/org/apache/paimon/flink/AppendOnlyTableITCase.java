@@ -18,7 +18,9 @@
 
 package org.apache.paimon.flink;
 
+import org.apache.paimon.CoreOptions;
 import org.apache.paimon.Snapshot;
+import org.apache.paimon.utils.BlockingIterator;
 
 import org.apache.flink.table.planner.factories.TestValuesTableFactory;
 import org.apache.flink.types.Row;
@@ -38,19 +40,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 public class AppendOnlyTableITCase extends CatalogITCaseBase {
 
     @Test
-    public void testCreateTableWithPrimaryKey() {
-        assertThatThrownBy(
-                        () ->
-                                batchSql(
-                                        "CREATE TABLE pk_table (id INT PRIMARY KEY NOT ENFORCED, data STRING) "
-                                                + "WITH ('write-mode'='append-only')"))
-                .hasRootCauseInstanceOf(RuntimeException.class)
-                .hasRootCauseMessage(
-                        "Cannot define any primary key in an append-only table. Set 'write-mode'='change-log' if still "
-                                + "want to keep the primary key definition.");
-    }
-
-    @Test
     public void testCreateUnawareBucketTableWithBucketKey() {
         assertThatThrownBy(
                         () ->
@@ -60,6 +49,18 @@ public class AppendOnlyTableITCase extends CatalogITCaseBase {
                 .hasRootCauseInstanceOf(RuntimeException.class)
                 .hasRootCauseMessage(
                         "Cannot define 'bucket-key' in unaware or dynamic bucket mode.");
+    }
+
+    @Test
+    public void testCreateUnawareBucketTableWithFullCompaction() {
+        assertThatThrownBy(
+                        () ->
+                                batchSql(
+                                        "CREATE TABLE pk_table (id INT, data STRING) "
+                                                + "WITH ('bucket' = '-1','full-compaction.delta-commits'='10')"))
+                .hasRootCauseInstanceOf(RuntimeException.class)
+                .hasRootCauseMessage(
+                        "AppendOnlyTable of unware or dynamic bucket does not support 'full-compaction.delta-commits'");
     }
 
     @Test
@@ -231,8 +232,7 @@ public class AppendOnlyTableITCase extends CatalogITCaseBase {
 
     @Test
     public void testTimestampLzType() {
-        sql(
-                "CREATE TABLE t_table (id INT, data TIMESTAMP_LTZ(3)) WITH ('write-mode'='append-only')");
+        sql("CREATE TABLE t_table (id INT, data TIMESTAMP_LTZ(3))");
         batchSql("INSERT INTO t_table VALUES (1, TIMESTAMP '2023-02-03 20:20:20')");
         assertThat(batchSql("SELECT * FROM t_table"))
                 .containsExactly(
@@ -243,12 +243,28 @@ public class AppendOnlyTableITCase extends CatalogITCaseBase {
                                         .toInstant()));
     }
 
+    @Test
+    public void testDynamicOptions() throws Exception {
+        sql("CREATE TABLE T (id INT) WITH ('write-mode'='append-only')");
+        batchSql("INSERT INTO T VALUES (1)");
+        sEnv.getConfig()
+                .getConfiguration()
+                .setString(
+                        "paimon.*.*.T." + CoreOptions.SCAN_MODE.key(),
+                        CoreOptions.StartupMode.LATEST.toString());
+        BlockingIterator<Row, Row> iterator = streamSqlBlockIter("SELECT * FROM T");
+
+        sql("INSERT INTO T VALUES (2)");
+        // Only fetch latest snapshot is, dynamic option worked
+        assertThat(iterator.collect(1)).containsExactlyInAnyOrder(Row.of(2));
+    }
+
     @Override
     protected List<String> ddl() {
         return Arrays.asList(
-                "CREATE TABLE IF NOT EXISTS append_table (id INT, data STRING) WITH ('write-mode'='append-only')",
-                "CREATE TABLE IF NOT EXISTS part_table (id INT, data STRING, dt STRING) PARTITIONED BY (dt) WITH ('write-mode'='append-only')",
-                "CREATE TABLE IF NOT EXISTS complex_table (id INT, data MAP<INT, INT>) WITH ('write-mode'='append-only')");
+                "CREATE TABLE IF NOT EXISTS append_table (id INT, data STRING)",
+                "CREATE TABLE IF NOT EXISTS part_table (id INT, data STRING, dt STRING) PARTITIONED BY (dt)",
+                "CREATE TABLE IF NOT EXISTS complex_table (id INT, data MAP<INT, INT>)");
     }
 
     private void testRejectChanges(RowKind kind) {

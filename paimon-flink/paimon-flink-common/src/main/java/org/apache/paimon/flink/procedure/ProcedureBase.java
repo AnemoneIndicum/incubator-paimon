@@ -19,7 +19,8 @@
 package org.apache.paimon.flink.procedure;
 
 import org.apache.paimon.catalog.Catalog;
-import org.apache.paimon.flink.action.Action;
+import org.apache.paimon.factories.Factory;
+import org.apache.paimon.flink.action.ActionBase;
 import org.apache.paimon.flink.utils.StreamExecutionEnvironmentUtils;
 import org.apache.paimon.utils.StringUtils;
 
@@ -41,12 +42,13 @@ import static org.apache.flink.table.api.config.TableConfigOptions.TABLE_DML_SYN
 import static org.apache.paimon.flink.action.ActionFactory.parseCommaSeparatedKeyValues;
 
 /** Base implementation for flink {@link Procedure}. */
-public class ProcedureBase implements Procedure {
+public abstract class ProcedureBase implements Procedure, Factory {
 
-    protected final Catalog catalog;
+    protected Catalog catalog;
 
-    ProcedureBase(Catalog catalog) {
+    ProcedureBase withCatalog(Catalog catalog) {
         this.catalog = catalog;
+        return this;
     }
 
     protected List<Map<String, String>> getPartitions(String... partitionStrings) {
@@ -63,16 +65,27 @@ public class ProcedureBase implements Procedure {
     }
 
     protected String[] execute(
-            ProcedureContext procedureContext, Action action, String defaultJobName)
+            ProcedureContext procedureContext, ActionBase action, String defaultJobName)
             throws Exception {
         StreamExecutionEnvironment env = procedureContext.getExecutionEnvironment();
-        action.build(env);
+        action.withStreamExecutionEnvironment(env);
+        action.build();
 
         ReadableConfig conf = StreamExecutionEnvironmentUtils.getConfiguration(env);
         String name = conf.getOptional(PipelineOptions.NAME).orElse(defaultJobName);
         JobClient jobClient = env.executeAsync(name);
+        return execute(jobClient, conf.get(TABLE_DML_SYNC));
+    }
+
+    protected String[] execute(ProcedureContext procedureContext, JobClient jobClient) {
+        StreamExecutionEnvironment env = procedureContext.getExecutionEnvironment();
+        ReadableConfig conf = StreamExecutionEnvironmentUtils.getConfiguration(env);
+        return execute(jobClient, conf.get(TABLE_DML_SYNC));
+    }
+
+    private String[] execute(JobClient jobClient, boolean dmlSync) {
         String jobId = jobClient.getJobID().toString();
-        if (conf.get(TABLE_DML_SYNC)) {
+        if (dmlSync) {
             try {
                 jobClient.getJobExecutionResult().get();
             } catch (Exception e) {

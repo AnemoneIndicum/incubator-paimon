@@ -281,6 +281,14 @@ CREATE TABLE test_computed_column (
     PRIMARY KEY (pk)
 );
 
+CREATE TABLE test_options_change (
+   pk INT,
+   _date DATE,
+   _datetime DATETIME,
+   _timestamp TIMESTAMP,
+   PRIMARY KEY (pk)
+);
+
 -- ################################################################################
 --  testSyncShard
 -- ################################################################################
@@ -310,6 +318,19 @@ CREATE TABLE t1 (
 );
 
 CREATE TABLE t2 (
+    pk INT,
+    _date VARCHAR(10),
+    PRIMARY KEY (pk)
+);
+
+-- ################################################################################
+--  testMetadataColumns
+-- ################################################################################
+
+CREATE DATABASE metadata;
+USE metadata;
+
+CREATE TABLE test_metadata_columns (
     pk INT,
     _date VARCHAR(10),
     PRIMARY KEY (pk)

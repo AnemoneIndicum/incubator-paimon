@@ -82,15 +82,27 @@ public class ConsumerActionITCase extends ActionITCaseBase {
 
         // reset consumer
         if (ThreadLocalRandom.current().nextBoolean()) {
-            new ResetConsumerAction(
-                            warehouse, database, tableName, Collections.emptyMap(), "myid", 1)
+            new ResetConsumerAction(warehouse, database, tableName, Collections.emptyMap(), "myid")
+                    .withNextSnapshotIds(1L)
                     .run();
         } else {
             callProcedure(
-                    String.format("CALL reset_consumer('%s.%s', 'myid', 1)", database, tableName));
+                    String.format(
+                            "CALL sys.reset_consumer('%s.%s', 'myid', 1)", database, tableName));
         }
         Optional<Consumer> consumer2 = consumerManager.consumer("myid");
         assertThat(consumer2).isPresent();
         assertThat(consumer2.get().nextSnapshot()).isEqualTo(1);
+
+        // delete consumer
+        if (ThreadLocalRandom.current().nextBoolean()) {
+            new ResetConsumerAction(warehouse, database, tableName, Collections.emptyMap(), "myid")
+                    .run();
+        } else {
+            callProcedure(
+                    String.format("CALL sys.reset_consumer('%s.%s', 'myid')", database, tableName));
+        }
+        Optional<Consumer> consumer3 = consumerManager.consumer("myid");
+        assertThat(consumer3).isNotPresent();
     }
 }

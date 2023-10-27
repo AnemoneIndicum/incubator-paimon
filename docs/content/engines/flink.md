@@ -39,6 +39,7 @@ Download the jar file with corresponding version.
 
 | Version    | Type | Jar                                                                                                                                                                     |
 |------------|-------|------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Flink 1.18 | Bundled Jar  | [paimon-flink-1.18-{{< version >}}.jar](https://repo.maven.apache.org/maven2/org/apache/paimon/paimon-flink-1.18/{{< version >}}/paimon-flink-1.18-{{< version >}}.jar) |
 | Flink 1.17 | Bundled Jar  | [paimon-flink-1.17-{{< version >}}.jar](https://repo.maven.apache.org/maven2/org/apache/paimon/paimon-flink-1.17/{{< version >}}/paimon-flink-1.17-{{< version >}}.jar) |
 | Flink 1.16 | Bundled Jar  | [paimon-flink-1.16-{{< version >}}.jar](https://repo.maven.apache.org/maven2/org/apache/paimon/paimon-flink-1.16/{{< version >}}/paimon-flink-1.16-{{< version >}}.jar) |
 | Flink 1.15 | Bundled Jar  | [paimon-flink-1.15-{{< version >}}.jar](https://repo.maven.apache.org/maven2/org/apache/paimon/paimon-flink-1.15/{{< version >}}/paimon-flink-1.15-{{< version >}}.jar) |
@@ -51,6 +52,7 @@ Download the jar file with corresponding version.
 
 | Version    | Type | Jar                                                                                                                                   |
 |------------|------|---------------------------------------------------------------------------------------------------------------------------------|
+| Flink 1.18 | Bundled Jar | [paimon-flink-1.18-{{< version >}}.jar](https://repository.apache.org/snapshots/org/apache/paimon/paimon-flink-1.18/{{< version >}}/) |
 | Flink 1.17 | Bundled Jar | [paimon-flink-1.17-{{< version >}}.jar](https://repository.apache.org/snapshots/org/apache/paimon/paimon-flink-1.17/{{< version >}}/) |
 | Flink 1.16 | Bundled Jar | [paimon-flink-1.16-{{< version >}}.jar](https://repository.apache.org/snapshots/org/apache/paimon/paimon-flink-1.16/{{< version >}}/) |
 | Flink 1.15 | Bundled Jar | [paimon-flink-1.15-{{< version >}}.jar](https://repository.apache.org/snapshots/org/apache/paimon/paimon-flink-1.15/{{< version >}}/) |
@@ -300,4 +302,20 @@ Users can set memory weight in SQL for Flink Managed Memory, then Flink sink ope
 ```sql
 INSERT INTO paimon_table /*+ OPTIONS('sink.use-managed-memory-allocator'='true', 'sink.managed.writer-buffer-memory'='256M') */
 SELECT * FROM ....;
+```
+## Setting dynamic options
+
+When interacting with the Paimon table, table options can be tuned without changing the options in the catalog. Paimon will extract job-level dynamic options and take effect in the current session.
+The dynamic option's key format is `paimon.${catalogName}.${dbName}.${tableName}.${config_key}`. The catalogName/dbName/tableName can be `*`, which means matching all the specific parts. 
+
+For example:
+
+```sql
+-- set scan.timestamp-millis=1697018249000 for the table mycatalog.default.T
+SET 'paimon.mycatalog.default.T.scan.timestamp-millis' = '1697018249000';
+SELECT * FROM T;
+
+-- set scan.timestamp-millis=1697018249000 for the table default.T in any catalog
+SET 'paimon.*.default.T.scan.timestamp-millis' = '1697018249000';
+SELECT * FROM T;
 ```

@@ -28,9 +28,9 @@ under the License.
 
 This documentation is a guide for using Paimon in Spark3.
 
-## Preparing Paimon Jar File
+## Preparation
 
-Paimon currently supports Spark 3.4, 3.3, 3.2 and 3.1. We recommend the latest Spark version for a better experience.
+Paimon currently supports Spark 3.5, 3.4, 3.3, 3.2 and 3.1. We recommend the latest Spark version for a better experience.
 
 Download the jar file with corresponding version.
 
@@ -38,6 +38,7 @@ Download the jar file with corresponding version.
 
 | Version   | Jar                                                                                                                                                                  |
 |-----------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Spark 3.5 | [paimon-spark-3.5-{{< version >}}.jar](https://repo.maven.apache.org/maven2/org/apache/paimon/paimon-spark-3.5/{{< version >}}/paimon-spark-3.5-{{< version >}}.jar) |
 | Spark 3.4 | [paimon-spark-3.4-{{< version >}}.jar](https://repo.maven.apache.org/maven2/org/apache/paimon/paimon-spark-3.4/{{< version >}}/paimon-spark-3.4-{{< version >}}.jar) |
 | Spark 3.3 | [paimon-spark-3.3-{{< version >}}.jar](https://repo.maven.apache.org/maven2/org/apache/paimon/paimon-spark-3.3/{{< version >}}/paimon-spark-3.3-{{< version >}}.jar) |
 | Spark 3.2 | [paimon-spark-3.2-{{< version >}}.jar](https://repo.maven.apache.org/maven2/org/apache/paimon/paimon-spark-3.2/{{< version >}}/paimon-spark-3.2-{{< version >}}.jar) |
@@ -49,6 +50,7 @@ Download the jar file with corresponding version.
 
 | Version   | Jar                                                                                                                                 |
 |-----------|-------------------------------------------------------------------------------------------------------------------------------------|
+| Spark 3.5 | [paimon-spark-3.5-{{< version >}}.jar](https://repository.apache.org/snapshots/org/apache/paimon/paimon-spark-3.5/{{< version >}}/) |
 | Spark 3.4 | [paimon-spark-3.4-{{< version >}}.jar](https://repository.apache.org/snapshots/org/apache/paimon/paimon-spark-3.4/{{< version >}}/) |
 | Spark 3.3 | [paimon-spark-3.3-{{< version >}}.jar](https://repository.apache.org/snapshots/org/apache/paimon/paimon-spark-3.3/{{< version >}}/) |
 | Spark 3.2 | [paimon-spark-3.2-{{< version >}}.jar](https://repository.apache.org/snapshots/org/apache/paimon/paimon-spark-3.2/{{< version >}}/) |
@@ -68,7 +70,7 @@ mvn clean install -DskipTests
 
 For Spark 3.3, you can find the bundled jar in `./paimon-spark/paimon-spark-3.3/target/paimon-spark-3.3-{{< version >}}.jar`.
 
-## Quick Start
+## Setup
 
 {{< hint info >}}
 
@@ -135,7 +137,7 @@ parquet, Hive tables, etc.
 
 {{< /tabs >}}
 
-**Step 3: Create a table and Write Some Records**
+## Create Table
 
 {{< tabs "Create Paimon Table" >}}
 
@@ -148,8 +150,6 @@ create table my_table (
 ) tblproperties (
     'primary-key' = 'k'
 );
-
-INSERT INTO my_table VALUES (1, 'Hi'), (2, 'Hello');
 ```
 
 {{< /tab >}}
@@ -160,33 +160,74 @@ INSERT INTO my_table VALUES (1, 'Hi'), (2, 'Hello');
 create table my_table (
     k int,
     v string
-) USING paimon tblproperties (
+) USING paimon
+tblproperties (
     'primary-key' = 'k'
 ) ;
 
-INSERT INTO my_table VALUES (1, 'Hi'), (2, 'Hello');
 ```
 
 {{< /tab >}}
 
 {{< /tabs >}}
 
-**Step 4: Query Table with SQL**
+## Insert Table
+
+{{< hint info >}}
+Paimon currently supports Spark 3.2+ for SQL write.
+{{< /hint >}}
+
+```sql
+INSERT INTO my_table VALUES (1, 'Hi'), (2, 'Hello');
+```
+
+## Query Table
+
+{{< tabs "Query Paimon Table" >}}
+
+{{< tab "SQL" >}}
 
 ```sql
 SELECT * FROM my_table;
+
 /*
 1	Hi
 2	Hello
 */
 ```
 
-**Step 5: Update the Records**
+{{< /tab >}}
+
+{{< tab "DataFrame" >}}
+
+```scala
+val dataset = spark.read.format("paimon").load("file:/tmp/paimon/default.db/my_table")
+dataset.show()
+
+/*
++---+------+
+| k |     v|
++---+------+
+|  1|    Hi|
+|  2| Hello|
++---+------+
+*/
+```
+
+{{< /tab >}}
+
+{{< /tabs >}}
+
+
+## Update Table
+
+For now, Paimon does not support `UPDATE` syntax. But we can use `INSERT INTO` syntax instead for changelog tables.
 
 ```sql
 INSERT INTO my_table VALUES (1, 'Hi Again'), (3, 'Test');
 
 SELECT * FROM my_table;
+
 /*
 1	Hi Again
 2	Hello
@@ -194,18 +235,194 @@ SELECT * FROM my_table;
 */
 ```
 
-**Step 6: Query Table with Scala API**
+## Streaming Write
 
-If you don't want to use Paimon catalog, you can also run `spark-shell` and query the table with Scala API.
+{{< hint info >}}
 
-```bash
-spark-shell ... --jars /path/to/paimon-spark-3.3-{{< version >}}.jar
-```
+Paimon currently supports Spark 3+ for streaming write.
+
+Paimon Structured Streaming only supports the two `append` and `complete` modes.
+
+{{< /hint >}}
 
 ```scala
-val dataset = spark.read.format("paimon").load("file:/tmp/paimon/default.db/my_table")
-dataset.createOrReplaceTempView("my_table")
-spark.sql("SELECT * FROM my_table").show()
+// Create a paimon table if not exists.
+spark.sql(s"""
+           |CREATE TABLE T (k INT, v STRING)
+           |TBLPROPERTIES ('primary-key'='a', 'bucket'='3')
+           |""".stripMargin)
+
+// Here we use MemoryStream to fake a streaming source.
+val inputData = MemoryStream[(Int, String)]
+val df = inputData.toDS().toDF("k", "v")
+
+// Streaming Write to paimon table.
+val stream = df
+  .writeStream
+  .outputMode("append")
+  .option("checkpointLocation", "/path/to/checkpoint")
+  .format("paimon")
+  .start("/path/to/paimon/sink/table")
+```
+
+## Streaming Read
+
+{{< hint info >}}
+
+Paimon currently supports Spark 3.3+ for streaming read.
+
+{{< /hint >}}
+
+Paimon supports rich scan mode for streaming read. There is a list:
+<table class="configuration table table-bordered">
+    <thead>
+        <tr>
+            <th class="text-left" style="width: 20%">Scan Mode</th>
+            <th class="text-left" style="width: 60%">Description</th>
+        </tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td><h5>latest</h5></td>
+            <td>For streaming sources, continuously reads latest changes without producing a snapshot at the beginning. </td>
+        </tr>
+        <tr>
+            <td><h5>latest-full</h5></td>
+            <td>For streaming sources, produces the latest snapshot on the table upon first startup, and continue to read the latest changes.</td>
+        </tr>
+        <tr>
+            <td><h5>from-timestamp</h5></td>
+            <td>For streaming sources, continuously reads changes starting from timestamp specified by "scan.timestamp-millis", without producing a snapshot at the beginning. </td>
+        </tr>
+        <tr>
+            <td><h5>from-snapshot</h5></td>
+            <td>For streaming sources, continuously reads changes starting from snapshot specified by "scan.snapshot-id", without producing a snapshot at the beginning. </td>
+        </tr>
+        <tr>
+            <td><h5>from-snapshot-full</h5></td>
+            <td>For streaming sources, produces from snapshot specified by "scan.snapshot-id" on the table upon first startup, and continuously reads changes.</td>
+        </tr>
+        <tr>
+            <td><h5>default</h5></td>
+            <td>It is equivalent to from-snapshot if "scan.snapshot-id" is specified. It is equivalent to from-timestamp if "timestamp-millis" is specified. Or, It is equivalent to latest-full.</td>
+        </tr>
+    </tbody>
+</table>
+
+A simple example with default scan mode:
+
+```scala
+// no any scan-related configs are provided, that will use latest-full scan mode.
+val query = spark.readStream
+  .format("paimon")
+  .load("/path/to/paimon/source/table")
+  .writeStream
+  .format("console")
+  .start()
+```
+
+Paimon Structured Streaming also supports a variety of streaming read modes, it can support many triggers and many read limits.
+
+These read limits are supported:
+
+<table class="configuration table table-bordered">
+    <thead>
+        <tr>
+            <th class="text-left" style="width: 20%">Key</th>
+            <th class="text-left" style="width: 15%">Default</th>
+            <th class="text-left" style="width: 10%">Type</th>
+            <th class="text-left" style="width: 55%">Description</th>
+        </tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td><h5>read.stream.maxFilesPerTrigger</h5></td>
+            <td style="word-wrap: break-word;">(none)</td>
+            <td>Integer</td>
+            <td>The maximum number of files returned in a single batch.</td>
+        </tr>
+        <tr>
+            <td><h5>read.stream.maxBytesPerTrigger</h5></td>
+            <td style="word-wrap: break-word;">(none)</td>
+            <td>Long</td>
+            <td>The maximum number of bytes returned in a single batch.</td>
+        </tr>
+        <tr>
+            <td><h5>read.stream.maxRowsPerTrigger</h5></td>
+            <td style="word-wrap: break-word;">(none)</td>
+            <td>Long</td>
+            <td>The maximum number of rows returned in a single batch.</td>
+        </tr>
+        <tr>
+            <td><h5>read.stream.minRowsPerTrigger</h5></td>
+            <td style="word-wrap: break-word;">(none)</td>
+            <td>Long</td>
+            <td>The minimum number of rows returned in a single batch, which used to create MinRowsReadLimit with read.stream.maxTriggerDelayMs together.</td>
+        </tr>
+        <tr>
+            <td><h5>read.stream.maxTriggerDelayMs</h5></td>
+            <td style="word-wrap: break-word;">(none)</td>
+            <td>Long</td>
+            <td>The maximum delay between two adjacent batches, which used to create MinRowsReadLimit with read.stream.minRowsPerTrigger together.</td>
+        </tr>
+    </tbody>
+</table>
+
+**Example: One**
+
+Use `org.apache.spark.sql.streaming.Trigger.AvailableNow()` and `maxBytesPerTrigger` defined by paimon.
+
+```scala
+// Trigger.AvailableNow()) processes all available data at the start
+// of the query in one or multiple batches, then terminates the query.
+// That set read.stream.maxBytesPerTrigger to 128M means that each
+// batch processes a maximum of 128 MB of data.
+val query = spark.readStream
+  .format("paimon")
+  .option("read.stream.maxBytesPerTrigger", "134217728")
+  .load("/path/to/paimon/source/table")
+  .writeStream
+  .format("console")
+  .trigger(Trigger.AvailableNow())
+  .start()
+```
+
+**Example: Two**
+
+Use `org.apache.spark.sql.connector.read.streaming.ReadMinRows`.
+
+```scala
+// It will not trigger a batch until there are more than 5,000 pieces of data,
+// unless the interval between the two batches is more than 300 seconds.
+val query = spark.readStream
+  .format("paimon")
+  .option("read.stream.minRowsPerTrigger", "5000")
+  .option("read.stream.maxTriggerDelayMs", "300000")
+  .load("/path/to/paimon/source/table")
+  .writeStream
+  .format("console")
+  .start()
+```
+
+Paimon Structured Streaming supports read row in the form of changelog (add rowkind column in row to represent its 
+change type) by setting `read.changelog` to true (default is false).
+
+**Example:**
+
+```scala
+// no any scan-related configs are provided, that will use latest-full scan mode.
+val query = spark.readStream
+  .format("paimon")
+  .option("read.changelog", "true")
+  .load("/path/to/paimon/source/table")
+  .writeStream
+  .format("console")
+  .start()
+
+/*
++I   1  Hi
++I   2  Hello
+*/
 ```
 
 ## Spark Type Conversion

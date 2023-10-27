@@ -34,16 +34,12 @@ import static org.apache.paimon.utils.Preconditions.checkArgument;
  * Drop partition procedure. Usage:
  *
  * <pre><code>
- *  CALL drop_partition('tableId', 'partition1', 'partition2', ...)
+ *  CALL sys.drop_partition('tableId', 'partition1', 'partition2', ...)
  * </code></pre>
  */
 public class DropPartitionProcedure extends ProcedureBase {
 
-    public static final String NAME = "drop_partition";
-
-    public DropPartitionProcedure(Catalog catalog) {
-        super(catalog);
-    }
+    public static final String IDENTIFIER = "drop_partition";
 
     public String[] call(
             ProcedureContext procedureContext, String tableId, String... partitionStrings)
@@ -57,5 +53,10 @@ public class DropPartitionProcedure extends ProcedureBase {
         commit.dropPartitions(getPartitions(partitionStrings), BatchWriteBuilder.COMMIT_IDENTIFIER);
 
         return new String[] {"Success"};
+    }
+
+    @Override
+    public String identifier() {
+        return IDENTIFIER;
     }
 }

@@ -19,13 +19,15 @@
 package org.apache.paimon.flink.procedure;
 
 import org.apache.paimon.catalog.AbstractCatalog;
-import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.Identifier;
+import org.apache.paimon.flink.action.ActionFactory;
 import org.apache.paimon.flink.action.CompactAction;
 import org.apache.paimon.flink.action.SortCompactAction;
+import org.apache.paimon.utils.StringUtils;
 
 import org.apache.flink.table.procedure.ProcedureContext;
 
+import java.util.Collections;
 import java.util.Map;
 
 /**
@@ -35,45 +37,53 @@ import java.util.Map;
  *  -- NOTE: use '' as placeholder for optional arguments
  *
  *  -- compact a table (tableId should be 'database_name.table_name')
- *  CALL compact('tableId')
+ *  CALL sys.compact('tableId')
+ *
+ *  -- compact specific partitions ('pt1=A,pt2=a;pt1=B,pt2=b', ...)
+ *  CALL sys.compact('tableId', 'pt1=A,pt2=a;pt1=B,pt2=b')
  *
  *  -- compact a table with sorting
- *  CALL compact('tableId', 'orderStrategy', 'orderByColumns')
+ *  CALL sys.compact('tableId', 'partitions', 'ORDER/ZORDER', 'col1,col2', 'sink.parallelism=6')
  *
- *  -- compact specific partitions ('pt1=A,pt2=a', 'pt1=B,pt2=b', ...)
- *  CALL compact('tableId', '', '', partition1, partition2, ...)
  * </code></pre>
  */
 public class CompactProcedure extends ProcedureBase {
 
-    public static final String NAME = "compact";
-
-    public CompactProcedure(Catalog catalog) {
-        super(catalog);
-    }
+    public static final String IDENTIFIER = "compact";
 
     public String[] call(ProcedureContext procedureContext, String tableId) throws Exception {
-        return call(procedureContext, tableId, "", "");
+        return call(procedureContext, tableId, "");
+    }
+
+    public String[] call(ProcedureContext procedureContext, String tableId, String partitions)
+            throws Exception {
+        return call(procedureContext, tableId, partitions, "", "", "");
     }
 
     public String[] call(
             ProcedureContext procedureContext,
             String tableId,
+            String partitions,
             String orderStrategy,
             String orderByColumns)
             throws Exception {
-        return call(procedureContext, tableId, orderStrategy, orderByColumns, new String[0]);
+        return call(procedureContext, tableId, partitions, orderStrategy, orderByColumns, "");
     }
 
     public String[] call(
             ProcedureContext procedureContext,
             String tableId,
+            String partitions,
             String orderStrategy,
             String orderByColumns,
-            String... partitionStrings)
+            String tableOptions)
             throws Exception {
         String warehouse = ((AbstractCatalog) catalog).warehouse();
         Map<String, String> catalogOptions = ((AbstractCatalog) catalog).options();
+        Map<String, String> tableConf =
+                StringUtils.isBlank(tableOptions)
+                        ? Collections.emptyMap()
+                        : ActionFactory.parseCommaSeparatedKeyValues(tableOptions);
         Identifier identifier = Identifier.fromString(tableId);
         CompactAction action;
         String jobName;
@@ -83,7 +93,8 @@ public class CompactProcedure extends ProcedureBase {
                             warehouse,
                             identifier.getDatabaseName(),
                             identifier.getObjectName(),
-                            catalogOptions);
+                            catalogOptions,
+                            tableConf);
             jobName = "Compact Job";
         } else if (!orderStrategy.isEmpty() && !orderByColumns.isEmpty()) {
             action =
@@ -91,7 +102,8 @@ public class CompactProcedure extends ProcedureBase {
                                     warehouse,
                                     identifier.getDatabaseName(),
                                     identifier.getObjectName(),
-                                    catalogOptions)
+                                    catalogOptions,
+                                    tableConf)
                             .withOrderStrategy(orderStrategy)
                             .withOrderColumns(orderByColumns.split(","));
             jobName = "Sort Compact Job";
@@ -100,10 +112,15 @@ public class CompactProcedure extends ProcedureBase {
                     "You must specify 'order strategy' and 'order by columns' both.");
         }
 
-        if (partitionStrings.length != 0) {
-            action.withPartitions(getPartitions(partitionStrings));
+        if (!(StringUtils.isBlank(partitions) || "ALL".equals(partitions))) {
+            action.withPartitions(getPartitions(partitions.split(";")));
         }
 
         return execute(procedureContext, action, jobName);
+    }
+
+    @Override
+    public String identifier() {
+        return IDENTIFIER;
     }
 }

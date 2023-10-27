@@ -858,7 +858,7 @@ public class MySqlSyncDatabaseActionITCase extends MySqlActionITCaseBase {
                         .includingTables("t.+")
                         .withMode(COMBINED.configString())
                         .build();
-        action.build(env);
+        action.withStreamExecutionEnvironment(env).build();
 
         if (Objects.nonNull(savepointPath)) {
             StreamGraph streamGraph = env.getStreamGraph();
@@ -1167,7 +1167,7 @@ public class MySqlSyncDatabaseActionITCase extends MySqlActionITCaseBase {
                         .ignoreIncompatible(true)
                         .withMode(COMBINED.configString())
                         .build();
-        action.build(env);
+        action.build();
 
         assertThat(action.monitoredTables())
                 .containsOnly(
@@ -1185,6 +1185,57 @@ public class MySqlSyncDatabaseActionITCase extends MySqlActionITCaseBase {
     }
 
     @Test
+    @Timeout(60)
+    public void testNewlyAddedTablesOptionsChange() throws Exception {
+        try (Statement statement = getStatement()) {
+            statement.execute("USE " + "newly_added_tables_option_schange");
+            statement.executeUpdate("INSERT INTO t1 VALUES (1, 'one')");
+            statement.executeUpdate("INSERT INTO t1 VALUES (3, 'three')");
+        }
+
+        Map<String, String> mySqlConfig = getBasicMySqlConfig();
+        mySqlConfig.put("database-name", "newly_added_tables_option_schange");
+        Map<String, String> tableConfig = new HashMap<>();
+        tableConfig.put("bucket", "1");
+        tableConfig.put("sink.parallelism", "1");
+
+        MySqlSyncDatabaseAction action1 =
+                syncDatabaseActionBuilder(mySqlConfig)
+                        .withTableConfig(tableConfig)
+                        .withMode(COMBINED.configString())
+                        .build();
+
+        JobClient jobClient = runActionWithDefaultEnv(action1);
+
+        waitingTables("t1");
+        jobClient.cancel();
+
+        tableConfig.put("sink.savepoint.auto-tag", "true");
+        tableConfig.put("tag.num-retained-max", "5");
+        tableConfig.put("tag.automatic-creation", "process-time");
+        tableConfig.put("tag.creation-period", "hourly");
+        tableConfig.put("tag.creation-delay", "600000");
+        tableConfig.put("snapshot.time-retained", "1h");
+        tableConfig.put("snapshot.num-retained.min", "5");
+        tableConfig.put("snapshot.num-retained.max", "10");
+        tableConfig.put("changelog-producer", "input");
+
+        try (Statement statement = getStatement()) {
+            statement.execute("USE " + "newly_added_tables_option_schange");
+            statement.executeUpdate("CREATE TABLE t2 (k INT, v1 VARCHAR(10), PRIMARY KEY (k))");
+            statement.executeUpdate("INSERT INTO t2 VALUES (1, 'Hi')");
+        }
+
+        MySqlSyncDatabaseAction action2 =
+                syncDatabaseActionBuilder(mySqlConfig).withTableConfig(tableConfig).build();
+        runActionWithDefaultEnv(action2);
+        waitingTables("t2");
+
+        Map<String, String> tableOptions = getFileStoreTable("t2").options();
+        assertThat(tableOptions).containsAllEntriesOf(tableConfig).containsKey("path");
+    }
+
+    @Test
     public void testCatalogAndTableConfig() {
         MySqlSyncDatabaseAction action =
                 syncDatabaseActionBuilder(getBasicMySqlConfig())
@@ -1195,6 +1246,74 @@ public class MySqlSyncDatabaseActionITCase extends MySqlActionITCaseBase {
         assertThat(action.catalogConfig()).containsEntry("catalog-key", "catalog-value");
         assertThat(action.tableConfig())
                 .containsExactlyEntriesOf(Collections.singletonMap("table-key", "table-value"));
+    }
+
+    @Test
+    @Timeout(60)
+    public void testMetadataColumns() throws Exception {
+        Map<String, String> mySqlConfig = getBasicMySqlConfig();
+        mySqlConfig.put("database-name", "metadata");
+
+        MultiTablesSinkMode mode = ThreadLocalRandom.current().nextBoolean() ? DIVIDED : COMBINED;
+        MySqlSyncDatabaseAction action =
+                syncDatabaseActionBuilder(mySqlConfig)
+                        .withTableConfig(getBasicTableConfig())
+                        .withMode(mode.configString())
+                        .withMetadataColumn(Arrays.asList("table_name", "database_name"))
+                        .build();
+        runActionWithDefaultEnv(action);
+
+        try (Statement statement = getStatement()) {
+            statement.executeUpdate("INSERT INTO metadata.t1 VALUES (1, 'db1_1')");
+            statement.executeUpdate("INSERT INTO metadata.t1 VALUES (2, 'db1_2')");
+
+            statement.executeUpdate("INSERT INTO metadata.t1 VALUES (3, 'db2_3')");
+            statement.executeUpdate("INSERT INTO metadata.t1 VALUES (4, 'db2_4')");
+
+            FileStoreTable table = getFileStoreTable("t1");
+            RowType rowType =
+                    RowType.of(
+                            new DataType[] {
+                                DataTypes.INT().notNull(),
+                                DataTypes.VARCHAR(10),
+                                DataTypes.STRING().notNull(),
+                                DataTypes.STRING().notNull()
+                            },
+                            new String[] {"k", "v1", "table_name", "database_name"});
+            waitForResult(
+                    Arrays.asList(
+                            "+I[1, db1_1, t1, metadata]",
+                            "+I[2, db1_2, t1, metadata]",
+                            "+I[3, db2_3, t1, metadata]",
+                            "+I[4, db2_4, t1, metadata]"),
+                    table,
+                    rowType,
+                    Collections.singletonList("k"));
+
+            statement.executeUpdate("INSERT INTO metadata.t2 VALUES (1, 'db1_1')");
+            statement.executeUpdate("INSERT INTO metadata.t2 VALUES (2, 'db1_2')");
+            statement.executeUpdate("INSERT INTO metadata.t2 VALUES (3, 'db1_3')");
+            statement.executeUpdate("INSERT INTO metadata.t2 VALUES (4, 'db1_4')");
+            table = getFileStoreTable("t2");
+            rowType =
+                    RowType.of(
+                            new DataType[] {
+                                DataTypes.INT().notNull(),
+                                DataTypes.VARCHAR(10),
+                                DataTypes.STRING().notNull(),
+                                DataTypes.STRING().notNull()
+                            },
+                            new String[] {"k", "v1", "table_name", "database_name"});
+            waitForResult(
+                    Arrays.asList(
+                            "+I[1, db1_1, t2, metadata]",
+                            "+I[2, db1_2, t2, metadata]",
+                            "+I[3, db1_3, t2, metadata]",
+                            "+I[4, db1_4, t2, metadata]"),
+                    table,
+                    rowType,
+                    Collections.singletonList("k"));
+        }
     }
 
     private class SyncNewTableJob implements Runnable {

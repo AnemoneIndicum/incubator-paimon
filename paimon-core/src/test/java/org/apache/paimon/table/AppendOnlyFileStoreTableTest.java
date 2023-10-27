@@ -19,7 +19,6 @@
 package org.apache.paimon.table;
 
 import org.apache.paimon.CoreOptions;
-import org.apache.paimon.WriteMode;
 import org.apache.paimon.data.BinaryRow;
 import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.data.serializer.InternalRowSerializer;
@@ -134,6 +133,7 @@ public class AppendOnlyFileStoreTableTest extends FileStoreTableTestBase {
         write.write(rowData(3, 33, 303L));
         commit.commit(2, write.prepareCommit(true, 2));
         write.close();
+        commit.close();
 
         List<Split> splits = toSplits(table.newSnapshotReader().read().dataSplits());
         int[] partitions =
@@ -163,6 +163,7 @@ public class AppendOnlyFileStoreTableTest extends FileStoreTableTestBase {
         commit.commit(2, write.prepareCommit(true, 2));
 
         write.close();
+        commit.close();
 
         List<Split> splits = toSplits(table.newSnapshotReader().read().dataSplits());
         int[] partitions =
@@ -205,6 +206,7 @@ public class AppendOnlyFileStoreTableTest extends FileStoreTableTestBase {
         assertThat(scan.plan().splits().size()).isEqualTo(3);
 
         write.close();
+        commit.close();
     }
 
     @Test
@@ -280,6 +282,8 @@ public class AppendOnlyFileStoreTableTest extends FileStoreTableTestBase {
             dataPerBucket.clear();
         }
         commit.commit(0, write.prepareCommit(true, 0));
+        write.close();
+        commit.close();
 
         int partition = random.nextInt(numOfPartition);
         List<Integer> availableBucket = new ArrayList<>(dataset.get(partition).keySet());
@@ -320,6 +324,7 @@ public class AppendOnlyFileStoreTableTest extends FileStoreTableTestBase {
                 expected.add(i);
             }
             write.close();
+            commit.close();
 
             ReadBuilder readBuilder = table.newReadBuilder();
             List<Split> splits = readBuilder.newScan().plan().splits();
@@ -342,6 +347,7 @@ public class AppendOnlyFileStoreTableTest extends FileStoreTableTestBase {
                 expected.add(i);
             }
             write.close();
+            commit.close();
 
             ReadBuilder readBuilder = table.newReadBuilder();
             List<Split> splits = readBuilder.newScan().plan().splits();
@@ -375,13 +381,13 @@ public class AppendOnlyFileStoreTableTest extends FileStoreTableTestBase {
         commit.commit(2, write.prepareCommit(true, 2));
 
         write.close();
+        commit.close();
     }
 
     @Override
     protected FileStoreTable createFileStoreTable(Consumer<Options> configure) throws Exception {
         Options conf = new Options();
         conf.set(CoreOptions.PATH, tablePath.toString());
-        conf.set(CoreOptions.WRITE_MODE, WriteMode.APPEND_ONLY);
         configure.accept(conf);
         TableSchema tableSchema =
                 SchemaUtils.forceCommit(
@@ -399,7 +405,6 @@ public class AppendOnlyFileStoreTableTest extends FileStoreTableTestBase {
     protected FileStoreTable overwriteTestFileStoreTable() throws Exception {
         Options conf = new Options();
         conf.set(CoreOptions.PATH, tablePath.toString());
-        conf.set(CoreOptions.WRITE_MODE, WriteMode.APPEND_ONLY);
         TableSchema tableSchema =
                 SchemaUtils.forceCommit(
                         new SchemaManager(LocalFileIO.create(), tablePath),
@@ -416,7 +421,6 @@ public class AppendOnlyFileStoreTableTest extends FileStoreTableTestBase {
             throws Exception {
         Options conf = new Options();
         conf.set(CoreOptions.PATH, tablePath.toString());
-        conf.set(CoreOptions.WRITE_MODE, WriteMode.APPEND_ONLY);
         conf.set(CoreOptions.BUCKET, -1);
         configure.accept(conf);
         TableSchema tableSchema =

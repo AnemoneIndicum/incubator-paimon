@@ -38,7 +38,7 @@ import static org.apache.paimon.testutils.assertj.AssertionUtils.anyCauseMatches
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** IT cases for {@link KafkaCanalSyncTableActionITCase}. */
+/** IT cases for {@link KafkaSyncTableAction}. */
 public class KafkaCanalSyncTableActionITCase extends KafkaActionITCaseBase {
 
     @Test
@@ -956,5 +956,120 @@ public class KafkaCanalSyncTableActionITCase extends KafkaActionITCaseBase {
         assertThat(action.catalogConfig()).containsEntry("catalog-key", "catalog-value");
         assertThat(action.tableConfig())
                 .containsExactlyEntriesOf(Collections.singletonMap("table-key", "table-value"));
+    }
+
+    @Test
+    @Timeout(60)
+    public void testCDCOperations() throws Exception {
+        final String topic = "event-insert";
+        createTestTopic(topic, 1, 1);
+
+        // ---------- Write the Canal json into Kafka -------------------
+        writeRecordsToKafka(topic, readLines("kafka/canal/table/event/event-row.txt"));
+
+        Map<String, String> kafkaConfig = getBasicKafkaConfig();
+        kafkaConfig.put("value.format", "canal-json");
+        kafkaConfig.put("topic", topic);
+
+        KafkaSyncTableAction action =
+                syncTableActionBuilder(kafkaConfig).withTableConfig(getBasicTableConfig()).build();
+        runActionWithDefaultEnv(action);
+
+        FileStoreTable table = getFileStoreTable(tableName);
+        List<String> primaryKeys = Collections.singletonList("_id");
+        RowType rowType =
+                RowType.of(
+                        new DataType[] {
+                            DataTypes.INT(),
+                            DataTypes.INT().notNull(),
+                            DataTypes.VARCHAR(20),
+                            DataTypes.BIGINT(),
+                            DataTypes.DECIMAL(8, 3),
+                            DataTypes.VARBINARY(10),
+                            DataTypes.FLOAT()
+                        },
+                        new String[] {"pt", "_id", "v1", "v2", "v3", "v4", "v5"});
+
+        // For the ROW operation
+        List<String> expectedRow =
+                Collections.singletonList(
+                        "+I[1, 9, nine, 90000000000, 99999.999, [110, 105, 110, 101, 46, 98, 105, 110], 9.9]");
+        waitForResult(expectedRow, table, rowType, primaryKeys);
+
+        writeRecordsToKafka(topic, readLines("kafka/canal/table/event/event-insert.txt"));
+
+        // For the INSERT operation
+        List<String> expectedInsert =
+                Arrays.asList(
+                        "+I[1, 1, one, NULL, NULL, NULL, NULL]",
+                        "+I[1, 2, two, NULL, NULL, NULL, NULL]",
+                        "+I[1, 9, nine, 90000000000, 99999.999, [110, 105, 110, 101, 46, 98, 105, 110], 9.9]",
+                        "+I[2, 4, four, NULL, NULL, NULL, NULL]");
+        waitForResult(expectedInsert, table, rowType, primaryKeys);
+
+        writeRecordsToKafka(topic, readLines("kafka/canal/table/event/event-update.txt"));
+
+        // For the UPDATE operation
+        List<String> expectedUpdate =
+                Arrays.asList(
+                        "+I[1, 1, one, NULL, NULL, NULL, NULL]",
+                        "+I[1, 2, second, NULL, NULL, NULL, NULL]",
+                        "+I[1, 9, nine, 90000000000, 99999.999, [110, 105, 110, 101, 46, 98, 105, 110], 9.9]",
+                        "+I[2, 4, four, NULL, NULL, NULL, NULL]");
+        waitForResult(expectedUpdate, table, rowType, primaryKeys);
+
+        writeRecordsToKafka(topic, readLines("kafka/canal/table/event/event-delete.txt"));
+
+        // For the DELETE operation
+        List<String> expectedDelete =
+                Arrays.asList(
+                        "+I[1, 2, second, NULL, NULL, NULL, NULL]",
+                        "+I[1, 9, nine, 90000000000, 99999.999, [110, 105, 110, 101, 46, 98, 105, 110], 9.9]",
+                        "+I[2, 4, four, NULL, NULL, NULL, NULL]");
+        waitForResult(expectedDelete, table, rowType, primaryKeys);
+    }
+
+    @Test
+    @Timeout(120)
+    public void testSyncWithInitialEmptyTopic() throws Exception {
+        String topic = "initial_empty_topic";
+        createTestTopic(topic, 1, 1);
+        createFileStoreTable(
+                RowType.of(
+                        new DataType[] {
+                            DataTypes.INT().notNull(), DataTypes.DATE(), DataTypes.INT().notNull(),
+                        },
+                        new String[] {"_id", "_date", "_year"}),
+                Collections.singletonList("_year"),
+                Arrays.asList("_id", "_year"),
+                Collections.emptyMap());
+
+        Map<String, String> kafkaConfig = getBasicKafkaConfig();
+        kafkaConfig.put("value.format", "canal-json");
+        kafkaConfig.put("topic", topic);
+        KafkaSyncTableAction action =
+                syncTableActionBuilder(kafkaConfig)
+                        .withTableConfig(getBasicTableConfig())
+                        .withComputedColumnArgs("_year=year(_date)")
+                        .build();
+        runActionWithDefaultEnv(action);
+
+        List<String> lines = readLines("kafka/canal/table/initialemptytopic/canal-data-1.txt");
+        writeRecordsToKafka(topic, lines);
+
+        RowType rowType =
+                RowType.of(
+                        new DataType[] {
+                            DataTypes.INT().notNull(),
+                            DataTypes.DATE(),
+                            DataTypes.INT().notNull(),
+                            DataTypes.VARCHAR(10)
+                        },
+                        new String[] {"_id", "_date", "_year", "v"});
+        waitForResult(
+                Collections.singletonList("+I[1, 19439, 2023, paimon]"),
+                getFileStoreTable(tableName),
+                rowType,
+                Arrays.asList("_id", "_year"));
     }
 }

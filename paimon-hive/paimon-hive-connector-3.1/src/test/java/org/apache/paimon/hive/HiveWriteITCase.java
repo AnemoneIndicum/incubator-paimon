@@ -19,7 +19,6 @@
 package org.apache.paimon.hive;
 
 import org.apache.paimon.CoreOptions;
-import org.apache.paimon.WriteMode;
 import org.apache.paimon.catalog.Identifier;
 import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.hive.mapred.PaimonOutputFormat;
@@ -140,7 +139,6 @@ public class HiveWriteITCase {
         conf.set(CatalogOptions.WAREHOUSE, path);
         conf.set(CoreOptions.BUCKET, 2);
         conf.set(CoreOptions.FILE_FORMAT, CoreOptions.FileFormatType.AVRO);
-        conf.set(CoreOptions.WRITE_MODE, WriteMode.APPEND_ONLY);
         Identifier identifier = Identifier.create(DATABASE_NAME, tableNameNotNull);
         Table table =
                 FileStoreTestUtils.createFileStoreTable(
@@ -172,6 +170,7 @@ public class HiveWriteITCase {
                                 "CREATE EXTERNAL TABLE " + tableName + " ",
                                 "STORED BY '" + PaimonStorageHandler.class.getName() + "'",
                                 "LOCATION '" + path + "'")));
+        commit.close();
         return tableName;
     }
 

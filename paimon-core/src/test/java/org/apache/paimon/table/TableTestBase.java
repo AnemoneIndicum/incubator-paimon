@@ -71,7 +71,7 @@ public abstract class TableTestBase {
     protected Path warehouse;
     protected Catalog catalog;
     protected String database;
-    @TempDir java.nio.file.Path tempPath;
+    @TempDir public java.nio.file.Path tempPath;
 
     @BeforeEach
     public void beforeEach() throws Catalog.DatabaseAlreadyExistException {
@@ -153,7 +153,9 @@ public abstract class TableTestBase {
     }
 
     protected void commitDefault(List<CommitMessage> messages) throws Exception {
-        getTableDefault().newBatchWriteBuilder().newCommit().commit(messages);
+        BatchTableCommit commit = getTableDefault().newBatchWriteBuilder().newCommit();
+        commit.commit(messages);
+        commit.close();
     }
 
     protected List<CommitMessage> writeDataDefault(int size, int times) throws Exception {
@@ -180,7 +182,6 @@ public abstract class TableTestBase {
         }
     }
 
-    // schema with all the basic types.
     protected Schema schemaDefault() {
         Schema.Builder schemaBuilder = Schema.newBuilder();
         schemaBuilder.column("f0", DataTypes.INT());

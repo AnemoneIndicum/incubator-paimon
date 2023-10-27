@@ -449,3 +449,35 @@ CREATE TABLE t3 (
     k INT,
     v2 VARCHAR(10)
 );
+
+-- ################################################################################
+--  MySqlSyncDatabaseActionITCase#testNewlyAddedTablesOptionsChange
+-- ################################################################################
+
+CREATE DATABASE newly_added_tables_option_schange;
+USE newly_added_tables_option_schange;
+
+CREATE TABLE t1 (
+   k INT,
+   v1 VARCHAR(10),
+   PRIMARY KEY (k)
+);
+
+-- ################################################################################
+--  testMetadataColumns
+-- ################################################################################
+
+CREATE DATABASE metadata;
+USE metadata;
+
+CREATE TABLE t1 (
+    k INT,
+    v1 VARCHAR(10),
+    PRIMARY KEY (k)
+);
+
+CREATE TABLE t2 (
+    k INT,
+    v1 VARCHAR(10),
+    PRIMARY KEY (k)
+);

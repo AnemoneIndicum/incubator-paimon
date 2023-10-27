@@ -71,7 +71,6 @@ public class KeyValueFileStoreRead implements FileStoreRead<KeyValue> {
     private final KeyValueFileReaderFactory.Builder readerFactoryBuilder;
     private final Comparator<InternalRow> keyComparator;
     private final MergeFunctionFactory<KeyValue> mfFactory;
-    private final boolean valueCountMode;
     private final MergeSorter mergeSorter;
 
     @Nullable private int[][] keyProjectedFields;
@@ -95,7 +94,8 @@ public class KeyValueFileStoreRead implements FileStoreRead<KeyValue> {
             MergeFunctionFactory<KeyValue> mfFactory,
             FileFormatDiscover formatDiscover,
             FileStorePathFactory pathFactory,
-            KeyValueFieldsExtractor extractor) {
+            KeyValueFieldsExtractor extractor,
+            CoreOptions options) {
         this.tableSchema = schemaManager.schema(schemaId);
         this.readerFactoryBuilder =
                 KeyValueFileReaderFactory.builder(
@@ -106,10 +106,10 @@ public class KeyValueFileStoreRead implements FileStoreRead<KeyValue> {
                         valueType,
                         formatDiscover,
                         pathFactory,
-                        extractor);
+                        extractor,
+                        options);
         this.keyComparator = keyComparator;
         this.mfFactory = mfFactory;
-        this.valueCountMode = tableSchema.trimmedPrimaryKeys().isEmpty();
         this.mergeSorter =
                 new MergeSorter(
                         CoreOptions.fromMap(tableSchema.options()), keyType, valueType, null);
@@ -173,7 +173,7 @@ public class KeyValueFileStoreRead implements FileStoreRead<KeyValue> {
         // For sections with only one run, as each key only appears once, it is OK to push down
         // value filters.
         filtersForNonOverlappedSection = allFilters;
-        filtersForOverlappedSection = valueCountMode ? allFilters : pkFilters;
+        filtersForOverlappedSection = pkFilters;
         return this;
     }
 
@@ -261,7 +261,7 @@ public class KeyValueFileStoreRead implements FileStoreRead<KeyValue> {
                         // See comments on DataFileMeta#extraFiles.
                         String fileName = changelogFile(file).orElse(file.fileName());
                         return readerFactory.createRecordReader(
-                                file.schemaId(), fileName, file.level());
+                                file.schemaId(), fileName, file.fileSize(), file.level());
                     });
         }
         return ConcatRecordReader.create(suppliers);

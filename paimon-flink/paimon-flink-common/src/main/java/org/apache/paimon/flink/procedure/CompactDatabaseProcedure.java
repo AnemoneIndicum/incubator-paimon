@@ -19,7 +19,6 @@
 package org.apache.paimon.flink.procedure;
 
 import org.apache.paimon.catalog.AbstractCatalog;
-import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.flink.action.CompactDatabaseAction;
 import org.apache.paimon.utils.StringUtils;
 
@@ -36,31 +35,27 @@ import static org.apache.paimon.flink.action.ActionFactory.parseCommaSeparatedKe
  *  -- NOTE: use '' as placeholder for optional arguments
  *
  *  -- compact all databases
- *  CALL compact_database()
+ *  CALL sys.compact_database()
  *
  *  -- compact some databases (accept regular expression)
- *  CALL compact_database('includingDatabases')
+ *  CALL sys.compact_database('includingDatabases')
  *
  *  -- set compact mode
- *  CALL compact_database('includingDatabases', 'mode')
+ *  CALL sys.compact_database('includingDatabases', 'mode')
  *
  *  -- compact some tables (accept regular expression)
- *  CALL compact_database('includingDatabases', 'mode', 'includingTables')
+ *  CALL sys.compact_database('includingDatabases', 'mode', 'includingTables')
  *
  *  -- exclude some tables (accept regular expression)
- *  CALL compact_database('includingDatabases', 'mode', 'includingTables', 'excludingTables')
+ *  CALL sys.compact_database('includingDatabases', 'mode', 'includingTables', 'excludingTables')
  *
  *  -- set table options ('k=v,...')
- *  CALL compact_database('includingDatabases', 'mode', 'includingTables', 'excludingTables', 'tableOptions')
+ *  CALL sys.compact_database('includingDatabases', 'mode', 'includingTables', 'excludingTables', 'tableOptions')
  * </code></pre>
  */
 public class CompactDatabaseProcedure extends ProcedureBase {
 
-    public static final String NAME = "compact_database";
-
-    public CompactDatabaseProcedure(Catalog catalog) {
-        super(catalog);
-    }
+    public static final String IDENTIFIER = "compact_database";
 
     public String[] call(ProcedureContext procedureContext) throws Exception {
         return call(procedureContext, "");
@@ -117,5 +112,10 @@ public class CompactDatabaseProcedure extends ProcedureBase {
         }
 
         return execute(procedureContext, action, "Compact database job");
+    }
+
+    @Override
+    public String identifier() {
+        return IDENTIFIER;
     }
 }

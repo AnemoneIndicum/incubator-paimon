@@ -19,7 +19,6 @@
 package org.apache.paimon.hive;
 
 import org.apache.paimon.CoreOptions;
-import org.apache.paimon.WriteMode;
 import org.apache.paimon.catalog.Identifier;
 import org.apache.paimon.data.BinaryString;
 import org.apache.paimon.data.Decimal;
@@ -159,7 +158,6 @@ public class HiveWriteITCase {
         conf.set(CatalogOptions.WAREHOUSE, path);
         conf.set(CoreOptions.BUCKET, 2);
         conf.set(CoreOptions.FILE_FORMAT, CoreOptions.FileFormatType.AVRO);
-        conf.set(CoreOptions.WRITE_MODE, WriteMode.APPEND_ONLY);
         Identifier identifier = Identifier.create(DATABASE_NAME, tableNameNotNull);
         Table table =
                 FileStoreTestUtils.createFileStoreTable(
@@ -182,6 +180,7 @@ public class HiveWriteITCase {
         commit.commit(commitIdentifier, write.prepareCommit(true, commitIdentifier));
         commitIdentifier++;
         write.close();
+        commit.close();
 
         String tableName = "test_table_" + (UUID.randomUUID().toString().substring(0, 4));
         hiveShell.execute(
@@ -229,7 +228,6 @@ public class HiveWriteITCase {
         conf.set(CatalogOptions.WAREHOUSE, path);
         conf.set(CoreOptions.BUCKET, 1);
         conf.set(CoreOptions.FILE_FORMAT, CoreOptions.FileFormatType.AVRO);
-        conf.set(CoreOptions.WRITE_MODE, WriteMode.CHANGE_LOG);
         Identifier identifier = Identifier.create(DATABASE_NAME, innerName);
         Table table =
                 FileStoreTestUtils.createFileStoreTable(
@@ -274,7 +272,6 @@ public class HiveWriteITCase {
         conf.set(CatalogOptions.WAREHOUSE, path);
         conf.set(CoreOptions.BUCKET, 1);
         conf.set(CoreOptions.FILE_FORMAT, CoreOptions.FileFormatType.AVRO);
-        conf.set(CoreOptions.WRITE_MODE, WriteMode.APPEND_ONLY);
         conf.set(CoreOptions.COMPACTION_MAX_FILE_NUM, maxCompact);
         Identifier identifier = Identifier.create(DATABASE_NAME, innerName);
         Table table =
@@ -646,6 +643,7 @@ public class HiveWriteITCase {
         }
         commit.commit(0, write.prepareCommit(true, 0));
         write.close();
+        commit.close();
 
         hiveShell.execute(
                 String.join(

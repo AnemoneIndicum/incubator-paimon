@@ -18,8 +18,10 @@
 
 package org.apache.paimon.flink;
 
+import org.apache.paimon.CoreOptions;
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.Identifier;
+import org.apache.paimon.data.BinaryRow;
 import org.apache.paimon.flink.procedure.ProcedureUtil;
 import org.apache.paimon.options.Options;
 import org.apache.paimon.schema.Schema;
@@ -27,6 +29,11 @@ import org.apache.paimon.schema.SchemaChange;
 import org.apache.paimon.schema.SchemaManager;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.Table;
+import org.apache.paimon.table.source.DataSplit;
+import org.apache.paimon.table.source.Split;
+import org.apache.paimon.utils.FileStorePathFactory;
+import org.apache.paimon.utils.Preconditions;
+import org.apache.paimon.utils.RowDataPartitionComputer;
 import org.apache.paimon.utils.StringUtils;
 
 import org.apache.flink.table.api.TableColumn;
@@ -66,6 +73,7 @@ import org.apache.flink.table.catalog.exceptions.PartitionNotExistException;
 import org.apache.flink.table.catalog.exceptions.ProcedureNotExistException;
 import org.apache.flink.table.catalog.exceptions.TableAlreadyExistException;
 import org.apache.flink.table.catalog.exceptions.TableNotExistException;
+import org.apache.flink.table.catalog.exceptions.TableNotPartitionedException;
 import org.apache.flink.table.catalog.stats.CatalogColumnStatistics;
 import org.apache.flink.table.catalog.stats.CatalogTableStatistics;
 import org.apache.flink.table.descriptors.DescriptorProperties;
@@ -75,10 +83,13 @@ import org.apache.flink.table.procedures.Procedure;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.RowType;
 
+import javax.annotation.Nullable;
+
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -267,8 +278,28 @@ public class FlinkCatalog extends AbstractCatalog {
                     "Creating table in default database is disabled, please specify a database name.");
         }
 
-        CatalogTable catalogTable = (CatalogTable) table;
+        Identifier identifier = toIdentifier(tablePath);
         Map<String, String> options = table.getOptions();
+        Schema paimonSchema = buildPaimonSchema(identifier, (CatalogTable) table, options);
+
+        boolean unRegisterLogSystem = false;
+        try {
+            catalog.createTable(identifier, paimonSchema, ignoreIfExists);
+        } catch (Catalog.TableAlreadyExistException e) {
+            unRegisterLogSystem = true;
+            throw new TableAlreadyExistException(getName(), tablePath);
+        } catch (Catalog.DatabaseNotExistException e) {
+            unRegisterLogSystem = true;
+            throw new DatabaseNotExistException(getName(), e.database());
+        } finally {
+            if (logStoreAutoRegister && unRegisterLogSystem) {
+                unRegisterLogSystem(identifier, options, classLoader);
+            }
+        }
+    }
+
+    protected Schema buildPaimonSchema(
+            Identifier identifier, CatalogTable catalogTable, Map<String, String> options) {
         String connector = options.get(CONNECTOR.key());
         options.remove(CONNECTOR.key());
         if (!StringUtils.isNullOrWhitespaceOnly(connector)
@@ -281,7 +312,6 @@ public class FlinkCatalog extends AbstractCatalog {
                             + " You can create TEMPORARY table instead if you want to create the table of other connector.");
         }
 
-        Identifier identifier = toIdentifier(tablePath);
         if (logStoreAutoRegister) {
             // Although catalog.createTable will copy the default options, but we need this info
             // here before create table, such as table-default.kafka.bootstrap.servers defined in
@@ -293,27 +323,14 @@ public class FlinkCatalog extends AbstractCatalog {
             options.put(REGISTER_TIMEOUT.key(), logStoreAutoRegisterTimeout.toString());
             registerLogSystem(catalog, identifier, options, classLoader);
         }
+
         // remove table path
         String specific = options.remove(PATH.key());
         if (specific != null || logStoreAutoRegister) {
             catalogTable = catalogTable.copy(options);
         }
 
-        boolean unRegisterLogSystem = false;
-        try {
-            catalog.createTable(
-                    identifier, FlinkCatalog.fromCatalogTable(catalogTable), ignoreIfExists);
-        } catch (Catalog.TableAlreadyExistException e) {
-            unRegisterLogSystem = true;
-            throw new TableAlreadyExistException(getName(), tablePath);
-        } catch (Catalog.DatabaseNotExistException e) {
-            unRegisterLogSystem = true;
-            throw new DatabaseNotExistException(getName(), e.database());
-        } finally {
-            if (logStoreAutoRegister && unRegisterLogSystem) {
-                unRegisterLogSystem(identifier, options, classLoader);
-            }
-        }
+        return fromCatalogTable(catalogTable);
     }
 
     private List<SchemaChange> toSchemaChange(TableChange change) {
@@ -720,14 +737,77 @@ public class FlinkCatalog extends AbstractCatalog {
 
     @Override
     public final List<CatalogPartitionSpec> listPartitions(ObjectPath tablePath)
-            throws CatalogException {
-        return Collections.emptyList();
+            throws TableNotExistException, TableNotPartitionedException, CatalogException {
+        return getPartitionSpecs(tablePath, null);
+    }
+
+    private List<CatalogPartitionSpec> getPartitionSpecs(
+            ObjectPath tablePath, @Nullable CatalogPartitionSpec partitionSpec)
+            throws CatalogException, TableNotPartitionedException, TableNotExistException {
+        Identifier identifier = toIdentifier(tablePath);
+        try {
+            Table table = catalog.getTable(identifier);
+            FileStoreTable fileStoreTable = (FileStoreTable) table;
+
+            if (fileStoreTable.partitionKeys() == null
+                    || fileStoreTable.partitionKeys().size() == 0) {
+                throw new TableNotPartitionedException(getName(), tablePath);
+            }
+
+            List<Split> splits = table.newReadBuilder().newScan().plan().splits();
+            List<BinaryRow> partitions =
+                    splits.stream()
+                            .map(m -> ((DataSplit) m).partition())
+                            .collect(Collectors.toList());
+            org.apache.paimon.types.RowType partitionRowType =
+                    fileStoreTable.schema().logicalPartitionType();
+
+            RowDataPartitionComputer partitionComputer =
+                    FileStorePathFactory.getPartitionComputer(
+                            partitionRowType,
+                            new CoreOptions(table.options()).partitionDefaultName());
+
+            return partitions.stream()
+                    .map(
+                            m -> {
+                                LinkedHashMap<String, String> partValues =
+                                        partitionComputer.generatePartValues(
+                                                Preconditions.checkNotNull(
+                                                        m,
+                                                        "Partition row data is null. This is unexpected."));
+                                if (partitionSpec != null
+                                        && partitionSpec.getPartitionSpec() != null) {
+                                    boolean match = true;
+                                    for (Map.Entry<String, String> specMapEntry :
+                                            partitionSpec.getPartitionSpec().entrySet()) {
+                                        String key = specMapEntry.getKey();
+                                        match =
+                                                match & partValues.containsKey(key)
+                                                        && partValues
+                                                                .get(key)
+                                                                .contains(specMapEntry.getValue());
+                                    }
+                                    if (match) {
+                                        return new CatalogPartitionSpec(partValues);
+                                    }
+
+                                    return null;
+                                } else {
+                                    return new CatalogPartitionSpec(partValues);
+                                }
+                            })
+                    .filter(Objects::nonNull)
+                    .collect(Collectors.toList());
+        } catch (Catalog.TableNotExistException e) {
+            throw new TableNotExistException(getName(), tablePath);
+        }
     }
 
     @Override
     public final List<CatalogPartitionSpec> listPartitions(
-            ObjectPath tablePath, CatalogPartitionSpec partitionSpec) throws CatalogException {
-        return Collections.emptyList();
+            ObjectPath tablePath, CatalogPartitionSpec partitionSpec)
+            throws TableNotExistException, TableNotPartitionedException, CatalogException {
+        return getPartitionSpecs(tablePath, partitionSpec);
     }
 
     @Override
@@ -891,7 +971,7 @@ public class FlinkCatalog extends AbstractCatalog {
      */
     public Procedure getProcedure(ObjectPath procedurePath)
             throws ProcedureNotExistException, CatalogException {
-        return ProcedureUtil.getProcedure(catalog, procedurePath.getObjectName())
+        return ProcedureUtil.getProcedure(catalog, procedurePath)
                 .orElseThrow(() -> new ProcedureNotExistException(name, procedurePath));
     }
 }

@@ -140,8 +140,9 @@ public class CdcActionCommonUtils {
         if (caseSensitive) {
             return column;
         }
-        checkArgument(existedFields.add(column.toLowerCase()), columnDuplicateErrMsg.apply(column));
-        return column.toLowerCase();
+        String columnLowerCase = column.toLowerCase();
+        checkArgument(existedFields.add(columnLowerCase), columnDuplicateErrMsg.apply(column));
+        return columnLowerCase;
     }
 
     public static Schema buildPaimonSchema(
@@ -150,6 +151,22 @@ public class CdcActionCommonUtils {
             List<ComputedColumn> computedColumns,
             Map<String, String> tableConfig,
             Schema sourceSchema) {
+        return buildPaimonSchema(
+                specifiedPartitionKeys,
+                specifiedPrimaryKeys,
+                computedColumns,
+                tableConfig,
+                sourceSchema,
+                new CdcMetadataConverter[] {});
+    }
+
+    public static Schema buildPaimonSchema(
+            List<String> specifiedPartitionKeys,
+            List<String> specifiedPrimaryKeys,
+            List<ComputedColumn> computedColumns,
+            Map<String, String> tableConfig,
+            Schema sourceSchema,
+            CdcMetadataConverter[] metadataConverters) {
         Schema.Builder builder = Schema.newBuilder();
 
         // options
@@ -168,6 +185,10 @@ public class CdcActionCommonUtils {
 
         for (ComputedColumn computedColumn : computedColumns) {
             builder.column(computedColumn.columnName(), computedColumn.columnType());
+        }
+
+        for (CdcMetadataConverter metadataConverter : metadataConverters) {
+            builder.column(metadataConverter.getColumnName(), metadataConverter.getDataType());
         }
 
         // primary keys

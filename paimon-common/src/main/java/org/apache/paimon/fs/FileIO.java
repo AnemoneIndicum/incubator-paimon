@@ -26,6 +26,8 @@ import org.apache.paimon.fs.local.LocalFileIO;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.concurrent.ThreadSafe;
+
 import java.io.BufferedReader;
 import java.io.FileNotFoundException;
 import java.io.IOException;
@@ -40,9 +42,9 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.ServiceLoader;
 import java.util.Set;
-import java.util.UUID;
 import java.util.stream.Collectors;
 
 import static org.apache.paimon.fs.FileIOUtils.checkAccess;
@@ -53,6 +55,7 @@ import static org.apache.paimon.fs.FileIOUtils.checkAccess;
  * @since 0.4.0
  */
 @Public
+@ThreadSafe
 public interface FileIO extends Serializable {
 
     Logger LOG = LoggerFactory.getLogger(FileIO.class);
@@ -201,7 +204,7 @@ public interface FileIO extends Serializable {
             return false;
         }
 
-        Path tmp = new Path(path.getParent(), "." + path.getName() + UUID.randomUUID());
+        Path tmp = path.createTempPath();
         boolean success = false;
         try {
             try (PositionOutputStream out = newOutputStream(tmp, false)) {
@@ -218,6 +221,43 @@ public interface FileIO extends Serializable {
         }
 
         return success;
+    }
+
+    /**
+     * Overwrite file by content atomically, different {@link FileIO}s have different atomic
+     * implementations.
+     */
+    default void overwriteFileUtf8(Path path, String content) throws IOException {
+        try (PositionOutputStream out = newOutputStream(path, true)) {
+            OutputStreamWriter writer = new OutputStreamWriter(out, StandardCharsets.UTF_8);
+            writer.write(content);
+            writer.flush();
+        }
+    }
+
+    /** Read file from {@link #overwriteFileUtf8} file. */
+    default Optional<String> readOverwrittenFileUtf8(Path path) throws IOException {
+        int retryNumber = 0;
+        IOException exception = null;
+        while (retryNumber++ < 5) {
+            try {
+                if (!exists(path)) {
+                    return Optional.empty();
+                }
+
+                return Optional.of(readFileUtf8(path));
+            } catch (IOException e) {
+                if (e.getClass()
+                        .getName()
+                        .endsWith("org.apache.hadoop.fs.s3a.RemoteFileChangedException")) {
+                    exception = e;
+                } else {
+                    throw e;
+                }
+            }
+        }
+
+        throw exception;
     }
 
     // -------------------------------------------------------------------------

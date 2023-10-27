@@ -32,9 +32,11 @@ import org.apache.paimon.table.FileStoreTableFactory;
 import org.apache.paimon.table.sink.CommitMessage;
 import org.apache.paimon.table.sink.StreamTableCommit;
 import org.apache.paimon.table.sink.StreamTableWrite;
+import org.apache.paimon.table.sink.TableCommitImpl;
 import org.apache.paimon.types.RowType;
 import org.apache.paimon.types.VarCharType;
 
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -92,6 +94,29 @@ public class PartitionExpireTest {
                                                 "")))
                 .hasMessageContaining(
                         "Can not set 'partition.expiration-time' for non-partitioned table");
+    }
+
+    @Test
+    public void testIllegalPartition() throws Exception {
+        SchemaManager schemaManager = new SchemaManager(LocalFileIO.create(), path);
+        schemaManager.createTable(
+                new Schema(
+                        RowType.of(VarCharType.STRING_TYPE, VarCharType.STRING_TYPE).getFields(),
+                        Collections.singletonList("f0"),
+                        Collections.emptyList(),
+                        Collections.emptyMap(),
+                        ""));
+        table = FileStoreTableFactory.create(LocalFileIO.create(), path);
+        write("20230101", "11");
+        write("abcd", "12");
+        write("20230101", "12");
+        write("20230103", "31");
+        write("20230103", "32");
+        write("20230105", "51");
+        PartitionExpire expire = newExpire();
+        expire.setLastCheck(date(1));
+        Assertions.assertDoesNotThrow(() -> expire.expire(date(8), Long.MAX_VALUE));
+        assertThat(read()).containsExactlyInAnyOrder("abcd:12");
     }
 
     @Test
@@ -183,12 +208,14 @@ public class PartitionExpireTest {
         options.put(PARTITION_EXPIRATION_CHECK_INTERVAL.key(), "5 s");
         options.put(PARTITION_TIMESTAMP_FORMATTER.key(), "yyyyMMdd");
         table = table.copy(options);
+        commit.close();
         commit = table.newCommit(commitUser);
         commit.commit(successCommits - 2, commitMessages.get(successCommits - 2));
         notCommitted.remove((long) (successCommits - 2));
         Thread.sleep(5000);
         commit.commit(successCommits - 1, commitMessages.get(successCommits - 1));
         notCommitted.remove((long) (successCommits - 1));
+        commit.close();
 
         // check whether partition expire is triggered
         Snapshot snapshot = table.snapshotManager().latestSnapshot();
@@ -217,8 +244,10 @@ public class PartitionExpireTest {
         StreamTableWrite write =
                 table.copy(Collections.singletonMap(WRITE_ONLY.key(), "true")).newWrite("");
         write.write(GenericRow.of(BinaryString.fromString(f0), BinaryString.fromString(f1)));
-        table.newCommit("").commit(0, write.prepareCommit(true, 0));
+        TableCommitImpl commit = table.newCommit("");
+        commit.commit(0, write.prepareCommit(true, 0));
         write.close();
+        commit.close();
     }
 
     private PartitionExpire newExpire() {

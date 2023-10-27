@@ -23,11 +23,13 @@ import org.apache.paimon.types.DataType;
 import org.apache.paimon.types.DataTypes;
 import org.apache.paimon.types.RowType;
 
+import org.apache.flink.core.execution.JobClient;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -165,6 +167,43 @@ public class MongoDBSyncTableActionITCase extends MongoDBActionITCaseBase {
 
     @Test
     @Timeout(60)
+    public void testOptionsChange() throws Exception {
+        Map<String, String> tableConfig = new HashMap<>();
+        tableConfig.put("bucket", "1");
+        tableConfig.put("sink.parallelism", "1");
+        String inventory = createRecordsToMongoDB("inventory-1", "table");
+        Map<String, String> mongodbConfig = getBasicMongoDBConfig();
+        mongodbConfig.put("database", inventory);
+        mongodbConfig.put("collection", "products");
+        mongodbConfig.put("field.name", "_id,name,description");
+        mongodbConfig.put("parser.path", "$._id,$.name,$.description");
+        mongodbConfig.put("schema.start.mode", "specified");
+
+        MongoDBSyncTableAction action1 =
+                syncTableActionBuilder(mongodbConfig).withTableConfig(tableConfig).build();
+        JobClient jobClient = runActionWithDefaultEnv(action1);
+        waitingTables(tableName);
+        jobClient.cancel();
+
+        tableConfig.put("sink.savepoint.auto-tag", "true");
+        tableConfig.put("tag.num-retained-max", "5");
+        tableConfig.put("tag.automatic-creation", "process-time");
+        tableConfig.put("tag.creation-period", "hourly");
+        tableConfig.put("tag.creation-delay", "600000");
+        tableConfig.put("snapshot.time-retained", "1h");
+        tableConfig.put("snapshot.num-retained.min", "5");
+        tableConfig.put("snapshot.num-retained.max", "10");
+        tableConfig.put("changelog-producer", "input");
+
+        MongoDBSyncTableAction action2 =
+                syncTableActionBuilder(mongodbConfig).withTableConfig(tableConfig).build();
+        runActionWithDefaultEnv(action2);
+        Map<String, String> dynamicOptions = action2.fileStoreTable().options();
+        assertThat(dynamicOptions).containsAllEntriesOf(tableConfig);
+    }
+
+    @Test
+    @Timeout(60)
     public void testComputedColumn() throws Exception {
         writeRecordsToMongoDB("test-table-1", database, "table/computedcolumn");
         Map<String, String> mongodbConfig = getBasicMongoDBConfig();
@@ -253,5 +292,41 @@ public class MongoDBSyncTableActionITCase extends MongoDBActionITCaseBase {
                         "+I[100000000000000000000101, scooter, Updated scooter description, 4]",
                         "+I[100000000000000000000102, new car battery, New 12V car battery, 9]");
         waitForResult(expectedDelete, table, rowType, primaryKeys);
+    }
+
+    @Test
+    @Timeout(60)
+    public void testDefaultId() throws Exception {
+        writeRecordsToMongoDB("defaultId-1", database, "table/defaultid");
+
+        Map<String, String> mongodbConfig = getBasicMongoDBConfig();
+        mongodbConfig.put("database", database);
+        mongodbConfig.put("collection", "defaultId");
+        mongodbConfig.put("default.id.generation", "false");
+
+        MongoDBSyncTableAction action =
+                syncTableActionBuilder(mongodbConfig)
+                        .withTableConfig(getBasicTableConfig())
+                        .build();
+        runActionWithDefaultEnv(action);
+
+        FileStoreTable table = getFileStoreTable(tableName);
+        List<String> primaryKeys = Collections.singletonList("_id");
+        RowType rowType =
+                RowType.of(
+                        new DataType[] {
+                            DataTypes.STRING().notNull(),
+                            DataTypes.STRING(),
+                            DataTypes.STRING(),
+                            DataTypes.STRING()
+                        },
+                        new String[] {"_id", "name", "description", "weight"});
+
+        List<String> expectedInsert =
+                Arrays.asList(
+                        "+I[100000000000000000000101, scooter, Small 2-wheel scooter, 3.14]",
+                        "+I[100000000000000000000102, car battery, 12V car battery, 8.1]",
+                        "+I[100000000000000000000103, 12-pack drill bits, 12-pack of drill bits with sizes ranging from #40 to #3, 0.8]");
+        waitForResult(expectedInsert, table, rowType, primaryKeys);
     }
 }

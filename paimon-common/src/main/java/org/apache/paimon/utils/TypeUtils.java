@@ -33,6 +33,7 @@ import org.apache.paimon.types.VarCharType;
 
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.List;
@@ -45,10 +46,29 @@ import static org.apache.paimon.types.DataTypeFamily.CHARACTER_STRING;
 /** Type related helper functions. */
 public class TypeUtils {
 
+    public static RowType concat(RowType left, RowType right) {
+        RowType.Builder builder = RowType.builder();
+        List<DataField> fields = new ArrayList<>(left.getFields());
+        fields.addAll(right.getFields());
+        fields.forEach(
+                dataField ->
+                        builder.field(dataField.name(), dataField.type(), dataField.description()));
+        return builder.build();
+    }
+
     public static RowType project(RowType inputType, int[] mapping) {
         List<DataField> fields = inputType.getFields();
         return new RowType(
                 Arrays.stream(mapping).mapToObj(fields::get).collect(Collectors.toList()));
+    }
+
+    public static RowType project(RowType inputType, List<String> names) {
+        List<DataField> fields = inputType.getFields();
+        List<String> fieldNames = fields.stream().map(DataField::name).collect(Collectors.toList());
+        return new RowType(
+                names.stream()
+                        .map(k -> fields.get(fieldNames.indexOf(k)))
+                        .collect(Collectors.toList()));
     }
 
     public static Object castFromString(String s, DataType type) {

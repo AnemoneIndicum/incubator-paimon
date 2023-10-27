@@ -20,6 +20,8 @@ package org.apache.paimon.memory;
 
 import org.apache.paimon.annotation.Public;
 
+import javax.annotation.Nullable;
+
 /**
  * Interface describing entities that can provide memory segments.
  *
@@ -33,5 +35,6 @@ public interface MemorySegmentSource {
      *
      * @return The next memory segment, or null, if none is available.
      */
+    @Nullable
     MemorySegment nextSegment();
 }

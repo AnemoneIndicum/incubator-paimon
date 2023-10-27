@@ -117,10 +117,10 @@ under the License.
             <td>The discovery interval of continuous reading.</td>
         </tr>
         <tr>
-            <td><h5>cross-partition-upsert.bootstrap-min-partition</h5></td>
-            <td style="word-wrap: break-word;">(none)</td>
-            <td>String</td>
-            <td>The min partition bootstrap of rocksdb index for cross partition upsert (primary keys not contain all partition fields), bootstrap will only read the partitions above it, and the smaller partitions will not be read into the index. This can reduce job startup time and excessive initialization of index, but please note that this may also cause data duplication.</td>
+            <td><h5>cross-partition-upsert.bootstrap-parallelism</h5></td>
+            <td style="word-wrap: break-word;">10</td>
+            <td>Integer</td>
+            <td>The parallelism for bootstrap in a single task for cross partition upsert.</td>
         </tr>
         <tr>
             <td><h5>cross-partition-upsert.index-ttl</h5></td>
@@ -145,6 +145,12 @@ under the License.
             <td style="word-wrap: break-word;">true</td>
             <td>Boolean</td>
             <td>Whether only overwrite dynamic partition when overwriting a partitioned table with dynamic partition columns. Works only when the table has partition keys.</td>
+        </tr>
+        <tr>
+            <td><h5>file-reader-async-threshold</h5></td>
+            <td style="word-wrap: break-word;">10 mb</td>
+            <td>MemorySize</td>
+            <td>The threshold for read file async.</td>
         </tr>
         <tr>
             <td><h5>file.compression</h5></td>
@@ -298,6 +304,18 @@ Mainly to resolve data skew on primary keys. We recommend starting with 64 mb wh
             <td>Whether to create this table as a partitioned table in metastore.
 For example, if you want to list all partitions of a Paimon table in Hive, you need to create this table as a partitioned table in Hive metastore.
 This config option does not affect the default filesystem metastore.</td>
+        </tr>
+        <tr>
+            <td><h5>metastore.tag-to-partition</h5></td>
+            <td style="word-wrap: break-word;">(none)</td>
+            <td>String</td>
+            <td>Whether to create this table as a partitioned table for mapping non-partitioned table tags in metastore. This allows the Hive engine to view this table in a partitioned table view and use partitioning field to read specific partitions (specific tags).</td>
+        </tr>
+        <tr>
+            <td><h5>metastore.tag-to-partition.preview</h5></td>
+            <td style="word-wrap: break-word;">none</td>
+            <td><p>Enum</p></td>
+            <td>Whether to preview tag of generated snapshots in metastore. This allows the Hive engine to query specific tag before creation.<br /><br />Possible values:<ul><li>"none": No automatically created tags.</li><li>"process-time": Based on the time of the machine, create TAG once the processing time passes period time plus delay.</li><li>"watermark": Based on the watermark of the input, create TAG once the watermark passes period time plus delay.</li></ul></td>
         </tr>
         <tr>
             <td><h5>num-levels</h5></td>
@@ -474,6 +492,18 @@ This config option does not affect the default filesystem metastore.</td>
             <td>The time zone to parse the long watermark value to TIMESTAMP value. The default value is 'UTC', which means the watermark is defined on TIMESTAMP column or not defined. If the watermark is defined on TIMESTAMP_LTZ column, the time zone of watermark is user configured time zone, the value should be the user configured local time zone. The option value is either a full name such as 'America/Los_Angeles', or a custom timezone id such as 'GMT-08:00'.</td>
         </tr>
         <tr>
+            <td><h5>snapshot.expire.execution-mode</h5></td>
+            <td style="word-wrap: break-word;">sync</td>
+            <td><p>Enum</p></td>
+            <td>Specifies the execution mode of expire.<br /><br />Possible values:<ul><li>"sync": Execute expire synchronously. If there are too many files, it may take a long time and block stream processing.</li><li>"async": Execute expire asynchronously. If the generation of snapshots is greater than the deletion, there will be a backlog of files.</li></ul></td>
+        </tr>
+        <tr>
+            <td><h5>snapshot.expire.limit</h5></td>
+            <td style="word-wrap: break-word;">10</td>
+            <td>Integer</td>
+            <td>The maximum number of snapshots allowed to expire at a time.</td>
+        </tr>
+        <tr>
             <td><h5>snapshot.num-retained.max</h5></td>
             <td style="word-wrap: break-word;">2147483647</td>
             <td>Integer</td>
@@ -490,19 +520,6 @@ This config option does not affect the default filesystem metastore.</td>
             <td style="word-wrap: break-word;">1 h</td>
             <td>Duration</td>
             <td>The maximum time of completed snapshots to retain.</td>
-        </tr>
-        <tr>
-            <td><h5>snapshot.expire.execution-mode</h5></td>
-            <td style="word-wrap: break-word;">sync</td>
-            <td>Enum</td>
-            <td>Specifies the execution mode of expire.<br /><br />Possible values:<ul><li>"sync": Execute expire synchronously. If there are too many files, it may take a long time and block stream processing.</li><li>"async": Execute expire asynchronously. If the generation of snapshots is greater than the deletion, there will be a backlog of files.</li></ul></td>
-        </tr>
-        </tr>
-        <tr>
-            <td><h5>snapshot.expire.limit</h5></td>
-            <td style="word-wrap: break-word;">10</td>
-            <td>Integer</td>
-            <td>The maximum number of snapshots allowed to expire at a time.</td>
         </tr>
         <tr>
             <td><h5>sort-engine</h5></td>
@@ -553,6 +570,18 @@ This config option does not affect the default filesystem metastore.</td>
             <td>Whether to create tag automatically. And how to generate tags.<br /><br />Possible values:<ul><li>"none": No automatically created tags.</li><li>"process-time": Based on the time of the machine, create TAG once the processing time passes period time plus delay.</li><li>"watermark": Based on the watermark of the input, create TAG once the watermark passes period time plus delay.</li></ul></td>
         </tr>
         <tr>
+            <td><h5>tag.callback.#.param</h5></td>
+            <td style="word-wrap: break-word;">(none)</td>
+            <td>String</td>
+            <td>Parameter string for the constructor of class #. Callback class should parse the parameter by itself.</td>
+        </tr>
+        <tr>
+            <td><h5>tag.callbacks</h5></td>
+            <td style="word-wrap: break-word;">(none)</td>
+            <td>String</td>
+            <td>A list of commit callback classes to be called after a successful tag. Class names are connected with comma (example: com.test.CallbackA,com.sample.CallbackB).</td>
+        </tr>
+        <tr>
             <td><h5>tag.creation-delay</h5></td>
             <td style="word-wrap: break-word;">0 ms</td>
             <td>Duration</td>
@@ -601,16 +630,16 @@ This config option does not affect the default filesystem metastore.</td>
             <td>Cache size for reading manifest files for write initialization.</td>
         </tr>
         <tr>
-            <td><h5>write-mode</h5></td>
-            <td style="word-wrap: break-word;">auto</td>
-            <td><p>Enum</p></td>
-            <td>Specify the write mode for table.<br /><br />Possible values:<ul><li>"auto": The change-log for table with primary key, append-only for table without primary key.</li><li>"append-only": The table can only accept append-only insert operations. Neither data deduplication nor any primary key constraints will be done when inserting rows into paimon.</li><li>"change-log": The table can accept insert/delete/update operations.</li></ul></td>
-        </tr>
-        <tr>
             <td><h5>write-only</h5></td>
             <td style="word-wrap: break-word;">false</td>
             <td>Boolean</td>
             <td>If set to true, compactions and snapshot expiration will be skipped. This option is used along with dedicated compact jobs.</td>
+        </tr>
+        <tr>
+            <td><h5>zorder.var-length-contribution</h5></td>
+            <td style="word-wrap: break-word;">8</td>
+            <td>Integer</td>
+            <td>The bytes of types (CHAR, VARCHAR, BINARY, VARBINARY) devote to the zorder sort.</td>
         </tr>
     </tbody>
 </table>

@@ -30,6 +30,6 @@ public interface FollowUpScanner {
     Plan scan(long snapshotId, SnapshotReader snapshotReader);
 
     default Plan getOverwriteChangesPlan(long snapshotId, SnapshotReader snapshotReader) {
-        return snapshotReader.withSnapshot(snapshotId).readOverwrittenChanges();
+        return snapshotReader.withSnapshot(snapshotId).readChanges();
     }
 }

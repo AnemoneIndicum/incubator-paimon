@@ -30,7 +30,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 
-/** {@link ChannelComputer} for {@link CdcRecord}. */
+/** {@link ChannelComputer} for {@link CdcMultiplexRecord}. */
 public class CdcMultiplexRecordChannelComputer implements ChannelComputer<CdcMultiplexRecord> {
 
     private static final Logger LOG =
@@ -43,9 +43,12 @@ public class CdcMultiplexRecordChannelComputer implements ChannelComputer<CdcMul
 
     private Map<Identifier, CdcRecordChannelComputer> channelComputers;
     private Catalog catalog;
+    private final Map<String, String> dynamicOptions;
 
-    public CdcMultiplexRecordChannelComputer(Catalog.Loader catalogLoader) {
+    public CdcMultiplexRecordChannelComputer(
+            Catalog.Loader catalogLoader, Map<String, String> dynamicOptions) {
         this.catalogLoader = catalogLoader;
+        this.dynamicOptions = dynamicOptions;
     }
 
     @Override
@@ -73,6 +76,7 @@ public class CdcMultiplexRecordChannelComputer implements ChannelComputer<CdcMul
                     FileStoreTable table;
                     try {
                         table = (FileStoreTable) catalog.getTable(id);
+                        table.copy(dynamicOptions);
                     } catch (Catalog.TableNotExistException e) {
                         LOG.error("Failed to get table " + id.getFullName());
                         return null;
@@ -86,6 +90,6 @@ public class CdcMultiplexRecordChannelComputer implements ChannelComputer<CdcMul
 
     @Override
     public String toString() {
-        return "shuffle by table";
+        return "shuffle by bucket";
     }
 }

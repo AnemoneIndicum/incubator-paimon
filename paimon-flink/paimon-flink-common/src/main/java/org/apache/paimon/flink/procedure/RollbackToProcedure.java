@@ -25,23 +25,19 @@ import org.apache.paimon.table.Table;
 import org.apache.flink.table.procedure.ProcedureContext;
 
 /**
- * Drop partition procedure. Usage:
+ * Rollback procedure. Usage:
  *
  * <pre><code>
  *  -- rollback to a snapshot
- *  CALL rollback_to('tableId', snapshotId)
+ *  CALL sys.rollback_to('tableId', snapshotId)
  *
  *  -- rollback to a tag
- *  CALL rollback_to('tableId', 'tagName')
+ *  CALL sys.rollback_to('tableId', 'tagName')
  * </code></pre>
  */
 public class RollbackToProcedure extends ProcedureBase {
 
-    public static final String NAME = "rollback_to";
-
-    public RollbackToProcedure(Catalog catalog) {
-        super(catalog);
-    }
+    public static final String IDENTIFIER = "rollback_to";
 
     public String[] call(ProcedureContext procedureContext, String tableId, long snapshotId)
             throws Catalog.TableNotExistException {
@@ -57,5 +53,10 @@ public class RollbackToProcedure extends ProcedureBase {
         table.rollbackTo(tagName);
 
         return new String[] {"Success"};
+    }
+
+    @Override
+    public String identifier() {
+        return IDENTIFIER;
     }
 }

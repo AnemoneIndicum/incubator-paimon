@@ -34,7 +34,6 @@ import com.ververica.cdc.connectors.mongodb.source.MongoDBSource;
 import com.ververica.cdc.connectors.mongodb.source.config.MongoDBSourceOptions;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -72,6 +71,7 @@ public class MongoDBSyncTableAction extends ActionBase {
     private final String database;
     private final String table;
     private final Configuration mongodbConfig;
+    private FileStoreTable fileStoreTable;
     private List<String> partitionKeys = new ArrayList<>();
     private Map<String, String> tableConfig = new HashMap<>();
     private List<String> computedColumnArgs = new ArrayList<>();
@@ -108,7 +108,7 @@ public class MongoDBSyncTableAction extends ActionBase {
     }
 
     @Override
-    public void build(StreamExecutionEnvironment env) throws Exception {
+    public void build() throws Exception {
         checkArgument(
                 mongodbConfig.contains(MongoDBSourceOptions.COLLECTION),
                 String.format(
@@ -131,10 +131,9 @@ public class MongoDBSyncTableAction extends ActionBase {
         Schema mongodbSchema = MongodbSchemaUtils.getMongodbSchema(mongodbConfig, caseSensitive);
         catalog.createDatabase(database, true);
         List<ComputedColumn> computedColumns =
-                buildComputedColumns(computedColumnArgs, mongodbSchema);
+                buildComputedColumns(computedColumnArgs, mongodbSchema.fields());
 
         Identifier identifier = new Identifier(database, table);
-        FileStoreTable table;
         Schema fromMongodb =
                 buildPaimonSchema(
                         partitionKeys,
@@ -144,11 +143,12 @@ public class MongoDBSyncTableAction extends ActionBase {
                         mongodbSchema);
         // Check if table exists before trying to get or create it
         if (catalog.tableExists(identifier)) {
-            table = (FileStoreTable) catalog.getTable(identifier);
-            assertSchemaCompatible(table.schema(), fromMongodb.fields());
+            fileStoreTable = (FileStoreTable) catalog.getTable(identifier);
+            fileStoreTable = fileStoreTable.copy(tableConfig);
+            assertSchemaCompatible(fileStoreTable.schema(), fromMongodb.fields());
         } else {
             catalog.createTable(identifier, fromMongodb, false);
-            table = (FileStoreTable) catalog.getTable(identifier);
+            fileStoreTable = (FileStoreTable) catalog.getTable(identifier);
         }
 
         EventParser.Factory<RichCdcMultiplexRecord> parserFactory =
@@ -167,7 +167,7 @@ public class MongoDBSyncTableAction extends ActionBase {
                                                         computedColumns,
                                                         mongodbConfig)))
                         .withParserFactory(parserFactory)
-                        .withTable(table)
+                        .withTable(fileStoreTable)
                         .withIdentifier(identifier)
                         .withCatalogLoader(catalogLoader());
         String sinkParallelism = tableConfig.get(FlinkConnectorOptions.SINK_PARALLELISM.key());
@@ -202,14 +202,18 @@ public class MongoDBSyncTableAction extends ActionBase {
         return tableConfig;
     }
 
+    @VisibleForTesting
+    public FileStoreTable fileStoreTable() {
+        return fileStoreTable;
+    }
+
     // ------------------------------------------------------------------------
     //  Flink run methods
     // ------------------------------------------------------------------------
 
     @Override
     public void run() throws Exception {
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        build(env);
+        build();
         execute(env, String.format("MongoDB-Paimon Database Sync: %s", database));
     }
 }

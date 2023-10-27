@@ -24,6 +24,7 @@
 package org.apache.paimon.flink.action.cdc.mysql;
 
 import org.apache.paimon.catalog.Identifier;
+import org.apache.paimon.flink.action.cdc.CdcMetadataConverter;
 import org.apache.paimon.flink.action.cdc.ComputedColumn;
 import org.apache.paimon.flink.action.cdc.TableNameConverter;
 import org.apache.paimon.flink.action.cdc.TypeMapping;
@@ -35,6 +36,7 @@ import org.apache.paimon.schema.Schema;
 import org.apache.paimon.types.DataField;
 import org.apache.paimon.types.RowKind;
 import org.apache.paimon.utils.DateTimeUtils;
+import org.apache.paimon.utils.JsonSerdeUtil;
 import org.apache.paimon.utils.Preconditions;
 import org.apache.paimon.utils.StringUtils;
 
@@ -79,6 +81,7 @@ import java.util.regex.Pattern;
 import static org.apache.paimon.flink.action.cdc.CdcActionCommonUtils.mapKeyCaseConvert;
 import static org.apache.paimon.flink.action.cdc.CdcActionCommonUtils.recordKeyDuplicateErrMsg;
 import static org.apache.paimon.flink.action.cdc.TypeMapping.TypeMappingMode.TO_STRING;
+import static org.apache.paimon.utils.JsonSerdeUtil.isNull;
 
 /** {@link EventParser} for MySQL Debezium JSON. */
 public class MySqlDebeziumJsonEventParser implements EventParser<String> {
@@ -102,12 +105,14 @@ public class MySqlDebeziumJsonEventParser implements EventParser<String> {
     // NOTE: current table name is not converted by tableNameConverter
     private String currentTable;
     private boolean shouldSynchronizeCurrentTable;
+    private final CdcMetadataConverter[] metadataConverters;
 
     public MySqlDebeziumJsonEventParser(
             ZoneId serverTimeZone,
             boolean caseSensitive,
             List<ComputedColumn> computedColumns,
-            TypeMapping typeMapping) {
+            TypeMapping typeMapping,
+            CdcMetadataConverter[] metadataConverters) {
         this(
                 serverTimeZone,
                 caseSensitive,
@@ -116,7 +121,8 @@ public class MySqlDebeziumJsonEventParser implements EventParser<String> {
                 new MySqlTableSchemaBuilder(new HashMap<>(), caseSensitive, typeMapping),
                 null,
                 null,
-                typeMapping);
+                typeMapping,
+                metadataConverters);
     }
 
     public MySqlDebeziumJsonEventParser(
@@ -126,7 +132,8 @@ public class MySqlDebeziumJsonEventParser implements EventParser<String> {
             NewTableSchemaBuilder<TableChanges.TableChange> schemaBuilder,
             @Nullable Pattern includingPattern,
             @Nullable Pattern excludingPattern,
-            TypeMapping typeMapping) {
+            TypeMapping typeMapping,
+            CdcMetadataConverter[] metadataConverters) {
         this(
                 serverTimeZone,
                 caseSensitive,
@@ -135,7 +142,8 @@ public class MySqlDebeziumJsonEventParser implements EventParser<String> {
                 schemaBuilder,
                 includingPattern,
                 excludingPattern,
-                typeMapping);
+                typeMapping,
+                metadataConverters);
     }
 
     public MySqlDebeziumJsonEventParser(
@@ -146,7 +154,8 @@ public class MySqlDebeziumJsonEventParser implements EventParser<String> {
             NewTableSchemaBuilder<TableChanges.TableChange> schemaBuilder,
             @Nullable Pattern includingPattern,
             @Nullable Pattern excludingPattern,
-            TypeMapping typeMapping) {
+            TypeMapping typeMapping,
+            CdcMetadataConverter[] metadataConverters) {
         this.serverTimeZone = serverTimeZone;
         this.caseSensitive = caseSensitive;
         this.computedColumns = computedColumns;
@@ -155,6 +164,7 @@ public class MySqlDebeziumJsonEventParser implements EventParser<String> {
         this.includingPattern = includingPattern;
         this.excludingPattern = excludingPattern;
         this.typeMapping = typeMapping;
+        this.metadataConverters = metadataConverters;
     }
 
     @Override
@@ -301,7 +311,7 @@ public class MySqlDebeziumJsonEventParser implements EventParser<String> {
             String fieldName = field.getKey();
             String mySqlType = field.getValue().type();
             JsonNode objectValue = recordRow.get(fieldName);
-            if (objectValue == null || objectValue.isNull()) {
+            if (isNull(objectValue)) {
                 continue;
             }
 
@@ -414,6 +424,10 @@ public class MySqlDebeziumJsonEventParser implements EventParser<String> {
             resultMap.put(
                     computedColumn.columnName(),
                     computedColumn.eval(resultMap.get(computedColumn.fieldReference())));
+        }
+
+        for (CdcMetadataConverter metadataConverter : metadataConverters) {
+            resultMap.putAll(metadataConverter.read(JsonSerdeUtil.toTree(root.payload())));
         }
 
         return resultMap;

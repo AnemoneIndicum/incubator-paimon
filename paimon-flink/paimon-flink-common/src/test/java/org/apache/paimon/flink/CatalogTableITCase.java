@@ -29,6 +29,7 @@ import org.apache.paimon.types.IntType;
 import org.apache.paimon.utils.BlockingIterator;
 
 import org.apache.commons.lang3.StringUtils;
+import org.apache.flink.table.catalog.exceptions.TableNotPartitionedException;
 import org.apache.flink.types.Row;
 import org.junit.jupiter.api.Test;
 
@@ -393,37 +394,59 @@ public class CatalogTableITCase extends CatalogITCaseBase {
     @Test
     public void testConflictOption() {
         assertThatThrownBy(
-                        () ->
-                                sql(
-                                        "CREATE TABLE T (a INT) WITH ('write-mode' = 'append-only', 'changelog-producer' = 'input')"))
-                .getRootCause()
-                .isInstanceOf(UnsupportedOperationException.class)
-                .hasMessage(
-                        "Can not set the write-mode to append-only and changelog-producer at the same time.");
-
-        sql("CREATE TABLE T (a INT) WITH ('write-mode' = 'append-only')");
-        assertThatThrownBy(() -> sql("ALTER TABLE T SET ('changelog-producer'='input')"))
-                .getRootCause()
-                .isInstanceOf(UnsupportedOperationException.class)
-                .hasMessage(
-                        "Can not set the write-mode to append-only and changelog-producer at the same time.");
-    }
-
-    @Test
-    public void testChangelogProducerOnAppendOnlyTable() {
-        assertThatThrownBy(
                         () -> sql("CREATE TABLE T (a INT) WITH ('changelog-producer' = 'input')"))
                 .getRootCause()
                 .isInstanceOf(UnsupportedOperationException.class)
-                .hasMessage(
-                        "Can not set changelog-producer on table without primary keys, please define primary keys.");
+                .hasMessageContaining(
+                        "Can not set changelog-producer on table without primary keys");
 
         sql("CREATE TABLE T (a INT)");
         assertThatThrownBy(() -> sql("ALTER TABLE T SET ('changelog-producer'='input')"))
                 .getRootCause()
                 .isInstanceOf(UnsupportedOperationException.class)
-                .hasMessage(
-                        "Can not set changelog-producer on table without primary keys, please define primary keys.");
+                .hasMessageContaining(
+                        "Can not set changelog-producer on table without primary keys");
+    }
+
+    @Test
+    public void testShowPartitions() {
+        sql(
+                "CREATE TABLE NoPartitionTable (\n"
+                        + "    user_id BIGINT,\n"
+                        + "    item_id BIGINT,\n"
+                        + "    behavior STRING,\n"
+                        + "    dt STRING,\n"
+                        + "    hh STRING,\n"
+                        + "    PRIMARY KEY (dt, hh, user_id) NOT ENFORCED\n"
+                        + ")");
+        assertThatThrownBy(() -> sql("SHOW PARTITIONS NoPartitionTable"))
+                .getRootCause()
+                .isInstanceOf(TableNotPartitionedException.class)
+                .hasMessage("Table default.NoPartitionTable in catalog PAIMON is not partitioned.");
+
+        sql(
+                "CREATE TABLE PartitionTable (\n"
+                        + "    user_id BIGINT,\n"
+                        + "    item_id BIGINT,\n"
+                        + "    behavior STRING,\n"
+                        + "    dt STRING,\n"
+                        + "    hh STRING,\n"
+                        + "    PRIMARY KEY (dt, hh, user_id) NOT ENFORCED\n"
+                        + ") PARTITIONED BY (dt, hh)");
+        sql("INSERT INTO PartitionTable select 1,1,'a','2020-01-01','10'");
+        sql("INSERT INTO PartitionTable select 2,2,'b','2020-01-02','11'");
+        sql("INSERT INTO PartitionTable select 3,3,'c','2020-01-03','11'");
+        List<Row> result = sql("SHOW PARTITIONS PartitionTable");
+        assertThat(result.toString())
+                .isEqualTo(
+                        "[+I[dt=2020-01-01/hh=10], +I[dt=2020-01-02/hh=11], +I[dt=2020-01-03/hh=11]]");
+
+        result = sql("SHOW PARTITIONS PartitionTable partition (hh='11')");
+        assertThat(result.toString())
+                .isEqualTo("[+I[dt=2020-01-02/hh=11], +I[dt=2020-01-03/hh=11]]");
+
+        result = sql("SHOW PARTITIONS PartitionTable partition (dt='2020-01-02', hh='11')");
+        assertThat(result.toString()).isEqualTo("[+I[dt=2020-01-02/hh=11]]");
     }
 
     @Test
@@ -447,21 +470,13 @@ public class CatalogTableITCase extends CatalogITCaseBase {
     @Test
     public void testFilesTable() throws Exception {
         sql(
-                "CREATE TABLE T_VALUE_COUNT (a INT, p INT, b BIGINT, c STRING) "
-                        + "PARTITIONED BY (p) "
-                        + "WITH ('write-mode'='change-log')"); // change log with value count table
-        assertFilesTable("T_VALUE_COUNT");
-
-        sql(
                 "CREATE TABLE T_WITH_KEY (a INT, p INT, b BIGINT, c STRING, PRIMARY KEY (a, p) NOT ENFORCED) "
-                        + "PARTITIONED BY (p) "
-                        + "WITH ('write-mode'='change-log')"); // change log with key table
+                        + "PARTITIONED BY (p) ");
         assertFilesTable("T_WITH_KEY");
 
         sql(
                 "CREATE TABLE T_APPEND_ONLY (a INT, p INT, b BIGINT, c STRING) "
-                        + "PARTITIONED BY (p) "
-                        + "WITH ('write-mode'='append-only')"); // append only table
+                        + "PARTITIONED BY (p)");
         assertFilesTable("T_APPEND_ONLY");
     }
 
@@ -634,21 +649,13 @@ public class CatalogTableITCase extends CatalogITCaseBase {
     @Test
     public void testPartitionsTable() throws Exception {
         sql(
-                "CREATE TABLE T_VALUE_COUNT (a INT, p INT, b BIGINT, c STRING) "
-                        + "PARTITIONED BY (p) "
-                        + "WITH ('write-mode'='change-log')"); // change log with value count table
-        assertFilesTable("T_VALUE_COUNT");
-
-        sql(
                 "CREATE TABLE T_WITH_KEY (a INT, p INT, b BIGINT, c STRING, PRIMARY KEY (a, p) NOT ENFORCED) "
-                        + "PARTITIONED BY (p) "
-                        + "WITH ('write-mode'='change-log')"); // change log with key table
+                        + "PARTITIONED BY (p)");
         assertFilesTable("T_WITH_KEY");
 
         sql(
                 "CREATE TABLE T_APPEND_ONLY (a INT, p INT, b BIGINT, c STRING) "
-                        + "PARTITIONED BY (p) "
-                        + "WITH ('write-mode'='append-only')"); // append only table
+                        + "PARTITIONED BY (p)");
         assertPartitionsTable("T_APPEND_ONLY");
     }
 

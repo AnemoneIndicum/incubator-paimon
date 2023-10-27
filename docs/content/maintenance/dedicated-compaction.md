@@ -112,7 +112,7 @@ Example: compact table
     --catalog-conf s3.secret-key=*****
 ```
 
-You can use `-D execution.runtime-mode=batch` to control batch or streaming mode. If you submit a batch job, all
+You can use `-D execution.runtime-mode=batch` or `-yD execution.runtime-mode=batch` (for the ON-YARN scenario) to control batch or streaming mode. If you submit a batch job, all
 current table files will be compacted. If you submit a streaming job, the job will continuously monitor new changes
 to the table and perform compactions as needed.
 
@@ -218,3 +218,29 @@ For more usage of the compact-database action, see
 {{< /tab >}}
 
 {{< /tabs >}}
+
+## Sort Compact
+
+If your table is configured with [dynamic bucket]({{< ref "concepts/primary-key-table#dynamic-bucket" >}})
+or [append table]({{< ref "concepts/append-only-table#append-for-scalable-table" >}}) ,
+you can trigger a compact with specified column sort to speed up queries.
+
+```bash  
+<FLINK_HOME>/bin/flink run \
+    -D execution.runtime-mode=batch \
+    /path/to/paimon-flink-action-{{< version >}}.jar \
+    compact \
+    --warehouse <warehouse-path> \
+    --database <database-name> \ 
+    --table <table-name> \
+    --order-strategy <orderType> \
+    --order-by <col1,col2,...>
+    [--partition <partition-name>] \
+    [--catalog-conf <paimon-catalog-conf> [--catalog-conf <paimon-catalog-conf> ...]] \
+    [--table-conf <paimon-table-dynamic-conf> [--table-conf <paimon-table-dynamic-conf>] ...]
+```
+There are two new configuration in `Sort Compact`
+{{< generated/sort-compact >}}
+
+The sort parallelism is the same as the sink parallelism, you can dynamically specify it by add conf `--table-conf sink.parallelism=<value>`.
+

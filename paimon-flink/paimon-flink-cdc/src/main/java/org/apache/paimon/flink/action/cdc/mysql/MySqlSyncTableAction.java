@@ -25,6 +25,7 @@ import org.apache.paimon.flink.FlinkConnectorOptions;
 import org.apache.paimon.flink.action.Action;
 import org.apache.paimon.flink.action.ActionBase;
 import org.apache.paimon.flink.action.cdc.CdcActionCommonUtils;
+import org.apache.paimon.flink.action.cdc.CdcMetadataConverter;
 import org.apache.paimon.flink.action.cdc.ComputedColumn;
 import org.apache.paimon.flink.action.cdc.TypeMapping;
 import org.apache.paimon.flink.action.cdc.mysql.schema.MySqlSchemasInfo;
@@ -38,7 +39,6 @@ import com.ververica.cdc.connectors.mysql.source.MySqlSource;
 import com.ververica.cdc.connectors.mysql.source.config.MySqlSourceOptions;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 
 import java.time.ZoneId;
 import java.util.ArrayList;
@@ -50,6 +50,7 @@ import java.util.Map;
 import java.util.function.Predicate;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static org.apache.paimon.flink.action.cdc.ComputedColumnUtils.buildComputedColumns;
 import static org.apache.paimon.utils.Preconditions.checkArgument;
@@ -90,12 +91,14 @@ public class MySqlSyncTableAction extends ActionBase {
     private final String database;
     private final String table;
     private final Configuration mySqlConfig;
+    private FileStoreTable fileStoreTable;
 
     private List<String> partitionKeys = new ArrayList<>();
     private List<String> primaryKeys = new ArrayList<>();
 
     private Map<String, String> tableConfig = new HashMap<>();
     private List<String> computedColumnArgs = new ArrayList<>();
+    private List<String> metadataColumn = new ArrayList<>();
     private TypeMapping typeMapping = TypeMapping.defaultMapping();
 
     public MySqlSyncTableAction(
@@ -143,8 +146,13 @@ public class MySqlSyncTableAction extends ActionBase {
         return this;
     }
 
+    public MySqlSyncTableAction withMetadataKeys(List<String> metadataKeys) {
+        this.metadataColumn = metadataKeys;
+        return this;
+    }
+
     @Override
-    public void build(StreamExecutionEnvironment env) throws Exception {
+    public void build() throws Exception {
         checkArgument(
                 mySqlConfig.contains(MySqlSourceOptions.TABLE_NAME),
                 String.format(
@@ -169,34 +177,48 @@ public class MySqlSyncTableAction extends ActionBase {
 
         MySqlTableInfo tableInfo = mySqlSchemasInfo.mergeAll();
         Identifier identifier = new Identifier(database, table);
-        FileStoreTable table;
         List<ComputedColumn> computedColumns =
-                buildComputedColumns(computedColumnArgs, tableInfo.schema());
+                buildComputedColumns(computedColumnArgs, tableInfo.schema().fields());
+
+        CdcMetadataConverter[] metadataConverters =
+                metadataColumn.stream()
+                        .map(
+                                key ->
+                                        Stream.of(MySqlMetadataProcessor.values())
+                                                .filter(m -> m.getKey().equals(key))
+                                                .findFirst()
+                                                .orElseThrow(IllegalStateException::new))
+                        .map(MySqlMetadataProcessor::getConverter)
+                        .toArray(CdcMetadataConverter[]::new);
+
         Schema fromMySql =
                 CdcActionCommonUtils.buildPaimonSchema(
                         partitionKeys,
                         primaryKeys,
                         computedColumns,
                         tableConfig,
-                        tableInfo.schema());
+                        tableInfo.schema(),
+                        metadataConverters);
         try {
-            table = (FileStoreTable) catalog.getTable(identifier);
+            fileStoreTable = (FileStoreTable) catalog.getTable(identifier);
+            fileStoreTable = fileStoreTable.copy(tableConfig);
             if (computedColumns.size() > 0) {
                 List<String> computedFields =
                         computedColumns.stream()
                                 .map(ComputedColumn::columnName)
                                 .collect(Collectors.toList());
-                List<String> fieldNames = table.schema().fieldNames();
+                List<String> fieldNames = fileStoreTable.schema().fieldNames();
                 checkArgument(
                         new HashSet<>(fieldNames).containsAll(computedFields),
                         " Exists Table should contain all computed columns %s, but are %s.",
                         computedFields,
                         fieldNames);
             }
-            CdcActionCommonUtils.assertSchemaCompatible(table.schema(), fromMySql.fields());
+            CdcActionCommonUtils.assertSchemaCompatible(
+                    fileStoreTable.schema(), fromMySql.fields());
         } catch (Catalog.TableNotExistException e) {
             catalog.createTable(identifier, fromMySql, false);
-            table = (FileStoreTable) catalog.getTable(identifier);
+            fileStoreTable = (FileStoreTable) catalog.getTable(identifier);
         }
 
         String tableList =
@@ -211,7 +233,11 @@ public class MySqlSyncTableAction extends ActionBase {
         EventParser.Factory<String> parserFactory =
                 () ->
                         new MySqlDebeziumJsonEventParser(
-                                zoneId, caseSensitive, computedColumns, typeMapping);
+                                zoneId,
+                                caseSensitive,
+                                computedColumns,
+                                typeMapping,
+                                metadataConverters);
 
         CdcSinkBuilder<String> sinkBuilder =
                 new CdcSinkBuilder<String>()
@@ -219,7 +245,7 @@ public class MySqlSyncTableAction extends ActionBase {
                                 env.fromSource(
                                         source, WatermarkStrategy.noWatermarks(), "MySQL Source"))
                         .withParserFactory(parserFactory)
-                        .withTable(table)
+                        .withTable(fileStoreTable)
                         .withIdentifier(identifier)
                         .withCatalogLoader(catalogLoader());
         String sinkParallelism = tableConfig.get(FlinkConnectorOptions.SINK_PARALLELISM.key());
@@ -283,14 +309,18 @@ public class MySqlSyncTableAction extends ActionBase {
         return tableConfig;
     }
 
+    @VisibleForTesting
+    public FileStoreTable fileStoreTable() {
+        return fileStoreTable;
+    }
+
     // ------------------------------------------------------------------------
     //  Flink run methods
     // ------------------------------------------------------------------------
 
     @Override
     public void run() throws Exception {
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        build(env);
+        build();
         execute(env, String.format("MySQL-Paimon Table Sync: %s.%s", database, table));
     }
 }

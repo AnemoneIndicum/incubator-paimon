@@ -25,14 +25,12 @@ import org.apache.paimon.flink.sorter.TableSorter;
 import org.apache.paimon.flink.source.FlinkSourceBuilder;
 import org.apache.paimon.predicate.Predicate;
 import org.apache.paimon.predicate.PredicateBuilder;
-import org.apache.paimon.table.AppendOnlyFileStoreTable;
 import org.apache.paimon.table.BucketMode;
 import org.apache.paimon.table.FileStoreTable;
 
 import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.configuration.ExecutionOptions;
 import org.apache.flink.streaming.api.datastream.DataStream;
-import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.catalog.ObjectIdentifier;
 import org.apache.flink.table.data.RowData;
 import org.slf4j.Logger;
@@ -44,8 +42,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
-
-import static org.apache.paimon.utils.Preconditions.checkArgument;
 
 /** Compact with sort action. */
 public class SortCompactAction extends CompactAction {
@@ -59,23 +55,21 @@ public class SortCompactAction extends CompactAction {
             String warehouse,
             String database,
             String tableName,
-            Map<String, String> catalogConfig) {
-        super(warehouse, database, tableName, catalogConfig);
+            Map<String, String> catalogConfig,
+            Map<String, String> tableConf) {
+        super(warehouse, database, tableName, catalogConfig, tableConf);
 
-        checkArgument(
-                table instanceof AppendOnlyFileStoreTable,
-                "Only sort compaction works with append-only table for now.");
         table = table.copy(Collections.singletonMap(CoreOptions.WRITE_ONLY.key(), "true"));
     }
 
     @Override
     public void run() throws Exception {
-        build(env);
+        build();
         execute(env, "Sort Compact Job");
     }
 
     @Override
-    public void build(StreamExecutionEnvironment env) {
+    public void build() {
         // only support batch sort yet
         if (env.getConfiguration().get(ExecutionOptions.RUNTIME_MODE)
                 != RuntimeExecutionMode.BATCH) {
@@ -84,10 +78,9 @@ public class SortCompactAction extends CompactAction {
             env.setRuntimeMode(RuntimeExecutionMode.BATCH);
         }
         FileStoreTable fileStoreTable = (FileStoreTable) table;
-        if (!(fileStoreTable instanceof AppendOnlyFileStoreTable)) {
-            throw new IllegalArgumentException("Sort Compact only supports append-only table yet");
-        }
-        if (fileStoreTable.bucketMode() != BucketMode.UNAWARE) {
+
+        if (fileStoreTable.bucketMode() != BucketMode.UNAWARE
+                && fileStoreTable.bucketMode() != BucketMode.DYNAMIC) {
             throw new IllegalArgumentException("Sort Compact only supports bucket=-1 yet.");
         }
         Map<String, String> tableConfig = fileStoreTable.options();
@@ -119,8 +112,7 @@ public class SortCompactAction extends CompactAction {
 
         new FlinkSinkBuilder(fileStoreTable)
                 .withInput(sorter.sort())
-                // This should use empty map to tag it on overwrite action, otherwise there is no
-                // overwrite action.
+                .forCompact(true)
                 .withOverwritePartition(new HashMap<>())
                 .build();
     }
