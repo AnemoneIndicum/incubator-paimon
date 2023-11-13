@@ -211,7 +211,8 @@ public abstract class MessageQueueSyncTableActionBase extends ActionBase {
                                                 source,
                                                 WatermarkStrategy.noWatermarks(),
                                                 sourceName())
-                                        .flatMap(recordParser))
+                                        .flatMap(recordParser)
+                                        .name("Parse"))
                         .withParserFactory(parserFactory)
                         .withTable(fileStoreTable)
                         .withIdentifier(identifier)
@@ -273,6 +274,6 @@ public abstract class MessageQueueSyncTableActionBase extends ActionBase {
     @Override
     public void run() throws Exception {
         build();
-        env.execute(jobName());
+        execute(jobName());
     }
 }

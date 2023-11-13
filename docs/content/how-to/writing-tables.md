@@ -232,12 +232,20 @@ INSERT OVERWRITE MyTable SELECT ...
 
 {{< tabs "truncate-tables-syntax" >}}
 
-{{< tab "Flink" >}}
+{{< tab "Flink 1.17-" >}}
 
 You can use `INSERT OVERWRITE` to purge tables by inserting empty value.
 
 ```sql
 INSERT OVERWRITE MyTable /*+ OPTIONS('dynamic-partition-overwrite'='false') */ SELECT * FROM MyTable WHERE false;
+```
+
+{{< /tab >}}
+
+{{< tab "Flink 1.18" >}}
+
+```sql
+TRUNCATE TABLE MyTable;
 ```
 
 {{< /tab >}}
@@ -430,8 +438,18 @@ DELETE FROM MyTable WHERE currency = 'UNKNOWN';
 {{< /tab >}}
 
 {{< tab "Spark" >}}
+{{< hint info >}}
+Important table properties setting:
+1. Only primary key tables support this feature.
+2. If the table has primary keys, [MergeEngine]({{< ref "concepts/primary-key-table#merge-engines" >}}) needs to be [deduplicate]({{< ref "concepts/primary-key-table#deduplicate" >}}) to support this feature.
+   {{< /hint >}}
 
-Spark `DELETE` currently supports only a single point execution, for deleting small amounts of data.
+To enable delete needs these configs below:
+
+```text
+--conf spark.sql.catalog.spark_catalog=org.apache.paimon.spark.SparkGenericCatalog
+--conf spark.sql.extensions=org.apache.paimon.spark.extensions.PaimonSparkSessionExtensions
+```
 
 ```sql
 DELETE FROM MyTable WHERE currency = 'UNKNOWN';

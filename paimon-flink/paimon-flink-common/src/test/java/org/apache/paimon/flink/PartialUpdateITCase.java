@@ -24,6 +24,7 @@ import org.apache.flink.table.api.config.ExecutionConfigOptions;
 import org.apache.flink.types.Row;
 import org.apache.flink.types.RowKind;
 import org.apache.flink.util.CloseableIterator;
+import org.assertj.core.api.Assertions;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 
@@ -200,5 +201,71 @@ public class PartialUpdateITCase extends CatalogITCaseBase {
 
         assertThat(sql("SELECT a, b FROM SG")).containsExactlyInAnyOrder(Row.of(4, 4));
         assertThat(sql("SELECT c, d FROM SG")).containsExactlyInAnyOrder(Row.of(5, null));
+    }
+
+    @Test
+    public void testInvalidSequenceGroup() {
+        Assertions.assertThatThrownBy(
+                        () ->
+                                sql(
+                                        "CREATE TABLE SG ("
+                                                + "k INT, a INT, b INT, g_1 INT, c INT, d INT, g_2 INT, PRIMARY KEY (k) NOT ENFORCED)"
+                                                + " WITH ("
+                                                + "'merge-engine'='partial-update', "
+                                                + "'fields.g_0.sequence-group'='a,b', "
+                                                + "'fields.g_2.sequence-group'='c,d');"))
+                .hasRootCauseMessage(
+                        "The sequence field group: g_0 can not be found in table schema.");
+
+        Assertions.assertThatThrownBy(
+                        () ->
+                                sql(
+                                        "CREATE TABLE SG ("
+                                                + "k INT, a INT, b INT, g_1 INT, c INT, d INT, g_2 INT, PRIMARY KEY (k) NOT ENFORCED)"
+                                                + " WITH ("
+                                                + "'merge-engine'='partial-update', "
+                                                + "'fields.g_1.sequence-group'='a1,b', "
+                                                + "'fields.g_2.sequence-group'='c,d');"))
+                .hasRootCauseMessage("Field a1 can not be found in table schema.");
+
+        Assertions.assertThatThrownBy(
+                        () ->
+                                sql(
+                                        "CREATE TABLE SG ("
+                                                + "k INT, a INT, b INT, g_1 INT, c INT, d INT, g_2 INT, PRIMARY KEY (k) NOT ENFORCED)"
+                                                + " WITH ("
+                                                + "'merge-engine'='partial-update', "
+                                                + "'fields.g_1.sequence-group'='a,b', "
+                                                + "'fields.g_2.sequence-group'='a,d');"))
+                .hasRootCauseMessage(
+                        "Field a is defined repeatedly by multiple groups: [fields.g_1.sequence-group, fields.g_2.sequence-group].");
+    }
+
+    @Test
+    public void testProjectPushDownWithLookupChangelogProducer() {
+        sql(
+                "CREATE TABLE IF NOT EXISTS T_P ("
+                        + "j INT, k INT, a INT, b INT, c STRING, PRIMARY KEY (j,k) NOT ENFORCED)"
+                        + " WITH ('merge-engine'='partial-update', 'changelog-producer' = 'lookup', "
+                        + "'fields.a.sequence-group'='j', 'fields.b.sequence-group'='c');");
+        batchSql("INSERT INTO T_P VALUES (1, 1, 1, 1, '1')");
+        assertThat(sql("SELECT k, c FROM T_P")).containsExactlyInAnyOrder(Row.of(1, "1"));
+    }
+
+    @Test
+    public void testLocalMerge() {
+        sql(
+                "CREATE TABLE T1 ("
+                        + "k INT,"
+                        + "v INT,"
+                        + "d INT,"
+                        + "PRIMARY KEY (k, d) NOT ENFORCED) PARTITIONED BY (d) "
+                        + " WITH ('merge-engine'='partial-update', "
+                        + "'local-merge-buffer-size'='1m'"
+                        + ");");
+
+        sql("INSERT INTO T1 VALUES (1, CAST(NULL AS INT), 1), (2, 1, 1), (1, 2, 1)");
+        assertThat(batchSql("SELECT * FROM T1"))
+                .containsExactlyInAnyOrder(Row.of(1, 2, 1), Row.of(2, 1, 1));
     }
 }

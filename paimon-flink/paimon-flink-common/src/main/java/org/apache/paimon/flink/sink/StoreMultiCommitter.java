@@ -27,6 +27,7 @@ import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.sink.CommitMessage;
 
 import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.metrics.groups.OperatorMetricGroup;
 
 import javax.annotation.Nullable;
 
@@ -49,7 +50,7 @@ public class StoreMultiCommitter
 
     private final Catalog catalog;
     private final String commitUser;
-    @Nullable private final CommitterMetrics metrics;
+    @Nullable private final OperatorMetricGroup flinkMetricGroup;
 
     // To make the commit behavior consistent with that of Committer,
     //    StoreMultiCommitter manages multiple committers which are
@@ -60,26 +61,34 @@ public class StoreMultiCommitter
     private final boolean isCompactJob;
 
     public StoreMultiCommitter(
-            Catalog.Loader catalogLoader, String commitUser, @Nullable CommitterMetrics metrics) {
-        this(catalogLoader, commitUser, metrics, false);
+            Catalog.Loader catalogLoader,
+            String commitUser,
+            @Nullable OperatorMetricGroup flinkMetricGroup) {
+        this(catalogLoader, commitUser, flinkMetricGroup, false);
     }
 
     public StoreMultiCommitter(
             Catalog.Loader catalogLoader,
             String commitUser,
-            @Nullable CommitterMetrics metrics,
+            @Nullable OperatorMetricGroup flinkMetricGroup,
             boolean isCompactJob) {
         this.catalog = catalogLoader.load();
         this.commitUser = commitUser;
-        this.metrics = metrics;
+        this.flinkMetricGroup = flinkMetricGroup;
         this.tableCommitters = new HashMap<>();
         this.isCompactJob = isCompactJob;
     }
 
     @Override
+    public boolean forceCreatingSnapshot() {
+        return true;
+    }
+
+    @Override
     public WrappedManifestCommittable combine(
             long checkpointId, long watermark, List<MultiTableCommittable> committables) {
-        WrappedManifestCommittable wrappedManifestCommittable = new WrappedManifestCommittable();
+        WrappedManifestCommittable wrappedManifestCommittable =
+                new WrappedManifestCommittable(checkpointId, watermark);
         for (MultiTableCommittable committable : committables) {
 
             ManifestCommittable manifestCommittable =
@@ -106,15 +115,29 @@ public class StoreMultiCommitter
     @Override
     public void commit(List<WrappedManifestCommittable> committables)
             throws IOException, InterruptedException {
+        if (committables.isEmpty()) {
+            return;
+        }
 
         // key by table id
         Map<Identifier, List<ManifestCommittable>> committableMap = groupByTable(committables);
+        committableMap.keySet().forEach(this::getStoreCommitter);
 
-        for (Map.Entry<Identifier, List<ManifestCommittable>> entry : committableMap.entrySet()) {
-            Identifier tableId = entry.getKey();
-            List<ManifestCommittable> committableList = entry.getValue();
-            StoreCommitter committer = getStoreCommitter(tableId);
-            committer.commit(committableList);
+        long checkpointId = committables.get(0).checkpointId();
+        long watermark = committables.get(0).watermark();
+        for (Map.Entry<Identifier, StoreCommitter> entry : tableCommitters.entrySet()) {
+            List<ManifestCommittable> committableList = committableMap.get(entry.getKey());
+            StoreCommitter committer = entry.getValue();
+            if (committableList != null) {
+                committer.commit(committableList);
+            } else {
+                // try best to commit empty snapshot, but tableCommitters may not contain all tables
+                if (committer.forceCreatingSnapshot()) {
+                    ManifestCommittable combine =
+                            committer.combine(checkpointId, watermark, Collections.emptyList());
+                    committer.commit(Collections.singletonList(combine));
+                }
+            }
         }
     }
 
@@ -135,7 +158,7 @@ public class StoreMultiCommitter
                 .flatMap(
                         wrapped -> {
                             Map<Identifier, ManifestCommittable> manifestCommittables =
-                                    wrapped.getManifestCommittables();
+                                    wrapped.manifestCommittables();
                             return manifestCommittables.entrySet().stream()
                                     .map(entry -> Tuple2.of(entry.getKey(), entry.getValue()));
                         })
@@ -175,7 +198,8 @@ public class StoreMultiCommitter
             }
             committer =
                     new StoreCommitter(
-                            table.newCommit(commitUser).ignoreEmptyCommit(isCompactJob), metrics);
+                            table.newCommit(commitUser).ignoreEmptyCommit(isCompactJob),
+                            flinkMetricGroup);
             tableCommitters.put(tableId, committer);
         }
 

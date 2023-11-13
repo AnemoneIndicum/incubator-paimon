@@ -19,7 +19,7 @@
 
 package org.apache.paimon.flink.sink;
 
-import org.apache.flink.metrics.groups.OperatorIOMetricGroup;
+import org.apache.flink.metrics.groups.OperatorMetricGroup;
 
 import java.io.IOException;
 import java.io.Serializable;
@@ -34,6 +34,8 @@ import java.util.Map;
  * <p>The {@code Committer} runs with parallelism equal to 1.
  */
 public interface Committer<CommitT, GlobalCommitT> extends AutoCloseable {
+
+    boolean forceCreatingSnapshot();
 
     /** Compute an aggregated committable from a list of committables. */
     GlobalCommitT combine(long checkpointId, long watermark, List<CommitT> committables)
@@ -54,6 +56,6 @@ public interface Committer<CommitT, GlobalCommitT> extends AutoCloseable {
     interface Factory<CommitT, GlobalCommitT> extends Serializable {
 
         Committer<CommitT, GlobalCommitT> create(
-                String commitUser, OperatorIOMetricGroup metricGroup);
+                String commitUser, OperatorMetricGroup metricGroup);
     }
 }

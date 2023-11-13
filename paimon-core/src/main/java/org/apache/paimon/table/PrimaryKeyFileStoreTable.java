@@ -86,7 +86,7 @@ public class PrimaryKeyFileStoreTable extends AbstractFileStoreTable {
                     PrimaryKeyTableUtils.PrimaryKeyFieldsExtractor.EXTRACTOR;
 
             MergeFunctionFactory<KeyValue> mfFactory =
-                    PrimaryKeyTableUtils.createMergeFunctionFactory(tableSchema);
+                    PrimaryKeyTableUtils.createMergeFunctionFactory(tableSchema, extractor);
             if (options.changelogProducer() == ChangelogProducer.LOOKUP) {
                 mfFactory =
                         LookupMergeFunction.wrap(
@@ -106,7 +106,8 @@ public class PrimaryKeyFileStoreTable extends AbstractFileStoreTable {
                             new RowType(extractor.keyFields(tableSchema)),
                             rowType,
                             extractor,
-                            mfFactory);
+                            mfFactory,
+                            name());
         }
         return lazyStore;
     }

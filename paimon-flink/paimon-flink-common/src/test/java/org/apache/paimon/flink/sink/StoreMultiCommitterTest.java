@@ -18,14 +18,17 @@
 
 package org.apache.paimon.flink.sink;
 
+import org.apache.paimon.CoreOptions;
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.CatalogContext;
 import org.apache.paimon.catalog.CatalogFactory;
 import org.apache.paimon.catalog.Identifier;
+import org.apache.paimon.data.BinaryRow;
 import org.apache.paimon.data.BinaryString;
 import org.apache.paimon.data.GenericRow;
 import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.flink.VersionedSerializerWrapper;
+import org.apache.paimon.flink.utils.MetricUtils;
 import org.apache.paimon.fs.Path;
 import org.apache.paimon.fs.local.LocalFileIO;
 import org.apache.paimon.manifest.WrappedManifestCommittable;
@@ -49,6 +52,8 @@ import org.apache.paimon.utils.TraceableFileIO;
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.metrics.MetricGroup;
+import org.apache.flink.metrics.groups.OperatorMetricGroup;
 import org.apache.flink.runtime.checkpoint.OperatorSubtaskState;
 import org.apache.flink.runtime.state.StateInitializationContext;
 import org.apache.flink.runtime.state.StateSnapshotContext;
@@ -62,24 +67,26 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 
 class StoreMultiCommitterTest {
+
     private String initialCommitUser;
     private Path warehouse;
     private Catalog.Loader catalogLoader;
     private Catalog catalog;
-    private String databaseName;
     private Identifier firstTable;
     private Identifier secondTable;
     private Path firstTablePath;
     private Path secondTablePath;
     @TempDir public java.nio.file.Path tempDir;
 
-    private void createTestTables(Catalog catalog, Tuple2<Identifier, Schema>... tableSpecs)
+    @SafeVarargs
+    private final void createTestTables(Catalog catalog, Tuple2<Identifier, Schema>... tableSpecs)
             throws Exception {
         for (Tuple2<Identifier, Schema> spec : tableSpecs) {
             catalog.createTable(spec.f0, spec.f1, false);
@@ -90,7 +97,7 @@ class StoreMultiCommitterTest {
     public void beforeEach() throws Exception {
         initialCommitUser = UUID.randomUUID().toString();
         warehouse = new Path(TraceableFileIO.SCHEME + "://" + tempDir.toString());
-        databaseName = "test_db";
+        String databaseName = "test_db";
         firstTable = Identifier.create(databaseName, "test_table1");
         secondTable = Identifier.create(databaseName, "test_table2");
 
@@ -108,21 +115,24 @@ class StoreMultiCommitterTest {
                             DataTypes.INT(), DataTypes.DOUBLE(), DataTypes.VARCHAR(5),
                         },
                         new String[] {"a", "b", "c"});
-        Options conf = new Options();
 
+        Options firstOptions = new Options();
+        firstOptions.set(
+                CoreOptions.TAG_AUTOMATIC_CREATION, CoreOptions.TagCreationMode.PROCESS_TIME);
         Schema firstTableSchema =
                 new Schema(
                         rowType1.getFields(),
                         Collections.emptyList(),
                         Collections.emptyList(),
-                        conf.toMap(),
+                        firstOptions.toMap(),
                         "");
+
         Schema secondTableSchema =
                 new Schema(
                         rowType2.getFields(),
                         Collections.emptyList(),
                         Collections.emptyList(),
-                        conf.toMap(),
+                        Collections.emptyMap(),
                         "");
         createTestTables(
                 catalog,
@@ -136,6 +146,7 @@ class StoreMultiCommitterTest {
     //  Recoverable operator tests
     // ------------------------------------------------------------------------
 
+    @SuppressWarnings("CatchMayIgnoreException")
     @Test
     public void testFailIntentionallyAfterRestore() throws Exception {
         FileStoreTable table = (FileStoreTable) catalog.getTable(firstTable);
@@ -200,7 +211,7 @@ class StoreMultiCommitterTest {
 
         // test restore and fail for second table
         // checkpoint is completed but not notified, so no snapshot is committed
-        snapshot = testHarness.snapshot(1, timestamp++);
+        snapshot = testHarness.snapshot(1, timestamp);
         assertThat(table.snapshotManager().latestSnapshotId()).isNull();
         testHarness.close();
 
@@ -392,7 +403,7 @@ class StoreMultiCommitterTest {
                             secondTable, new Committable(2, Committable.Kind.FILE, committable)),
                     timestamp++);
         }
-        testHarness.snapshot(3, timestamp++);
+        testHarness.snapshot(3, timestamp);
         testHarness.notifyOfCompletedCheckpoint(3);
 
         write1.close();
@@ -433,7 +444,8 @@ class StoreMultiCommitterTest {
         testHarness.processWatermark(new Watermark(1024));
         testHarness.snapshot(cpId, timestamp++);
         testHarness.notifyOfCompletedCheckpoint(cpId);
-        assertThat(table1.snapshotManager().latestSnapshot().watermark()).isEqualTo(1024L);
+        assertThat(Objects.requireNonNull(table1.snapshotManager().latestSnapshot()).watermark())
+                .isEqualTo(1024L);
         assertThat(table2.snapshotManager().latestSnapshot()).isNull();
 
         // write to both tables on second watermark
@@ -449,11 +461,155 @@ class StoreMultiCommitterTest {
                                 write1.prepareCommit(true, cpId).get(0))),
                 timestamp++);
         testHarness.processWatermark(new Watermark(2048));
-        testHarness.snapshot(cpId, timestamp++);
+        testHarness.snapshot(cpId, timestamp);
         testHarness.notifyOfCompletedCheckpoint(cpId);
         testHarness.close();
-        assertThat(table1.snapshotManager().latestSnapshot().watermark()).isEqualTo(2048L);
-        assertThat(table1.snapshotManager().latestSnapshot().watermark()).isEqualTo(2048L);
+        assertThat(Objects.requireNonNull(table1.snapshotManager().latestSnapshot()).watermark())
+                .isEqualTo(2048L);
+        assertThat(Objects.requireNonNull(table1.snapshotManager().latestSnapshot()).watermark())
+                .isEqualTo(2048L);
+    }
+
+    @Test
+    public void testEmptyCommit() throws Exception {
+        // table1: TagCreationMode.PROCESS_TIME
+        FileStoreTable table1 = (FileStoreTable) catalog.getTable(firstTable);
+        FileStoreTable table2 = (FileStoreTable) catalog.getTable(secondTable);
+
+        StreamTableWrite write1 =
+                table1.newStreamWriteBuilder().withCommitUser(initialCommitUser).newWrite();
+
+        StreamTableWrite write2 =
+                table2.newStreamWriteBuilder().withCommitUser(initialCommitUser).newWrite();
+
+        OneInputStreamOperatorTestHarness<MultiTableCommittable, MultiTableCommittable>
+                testHarness = createRecoverableTestHarness();
+        testHarness.open();
+
+        // write to both tables
+        long timestamp = 0;
+        long cpId = 1;
+        write1.write(GenericRow.of(1, 20L));
+        write2.write(GenericRow.of(1, 20.0, BinaryString.fromString("s2")));
+        testHarness.processElement(
+                getMultiTableCommittable(
+                        firstTable,
+                        new Committable(
+                                cpId,
+                                Committable.Kind.FILE,
+                                write1.prepareCommit(true, cpId).get(0))),
+                timestamp++);
+        testHarness.processElement(
+                getMultiTableCommittable(
+                        secondTable,
+                        new Committable(
+                                cpId,
+                                Committable.Kind.FILE,
+                                write2.prepareCommit(true, cpId).get(0))),
+                timestamp++);
+        testHarness.processWatermark(new Watermark(2048));
+        testHarness.snapshot(cpId, timestamp++);
+        testHarness.notifyOfCompletedCheckpoint(cpId);
+        assertThat(Objects.requireNonNull(table1.snapshotManager().latestSnapshot()).watermark())
+                .isEqualTo(2048L);
+        assertThat(Objects.requireNonNull(table2.snapshotManager().latestSnapshot()).watermark())
+                .isEqualTo(2048L);
+
+        cpId++;
+        testHarness.snapshot(cpId, timestamp);
+        testHarness.notifyOfCompletedCheckpoint(cpId);
+        assertThat(Objects.requireNonNull(table1.snapshotManager().latestSnapshot()).id())
+                .isEqualTo(1);
+        assertThat(Objects.requireNonNull(table2.snapshotManager().latestSnapshot()).id())
+                .isEqualTo(1);
+
+        testHarness.close();
+    }
+
+    // ------------------------------------------------------------------------
+    //  Metrics tests
+    // ------------------------------------------------------------------------
+
+    @Test
+    public void testCommitMetrics() throws Exception {
+        FileStoreTable table1 = (FileStoreTable) catalog.getTable(firstTable);
+        FileStoreTable table2 = (FileStoreTable) catalog.getTable(secondTable);
+
+        StreamTableWrite write1 =
+                table1.newStreamWriteBuilder().withCommitUser(initialCommitUser).newWrite();
+        StreamTableWrite write2 =
+                table2.newStreamWriteBuilder().withCommitUser(initialCommitUser).newWrite();
+
+        OneInputStreamOperatorTestHarness<MultiTableCommittable, MultiTableCommittable>
+                testHarness = createRecoverableTestHarness();
+        testHarness.open();
+        long timestamp = 0;
+        long cpId = 1;
+
+        write1.write(GenericRow.of(1, 10L));
+        write2.write(GenericRow.of(1, 1.1, BinaryString.fromString("AAA")));
+        write2.compact(BinaryRow.EMPTY_ROW, 0, false);
+        write2.write(GenericRow.of(1, 1.2, BinaryString.fromString("aaa")));
+        write2.compact(BinaryRow.EMPTY_ROW, 0, false);
+        write2.write(GenericRow.of(2, 2.1, BinaryString.fromString("BBB")));
+        write2.compact(BinaryRow.EMPTY_ROW, 0, true);
+        testHarness.processElement(
+                getMultiTableCommittable(
+                        firstTable,
+                        new Committable(
+                                cpId,
+                                Committable.Kind.FILE,
+                                write1.prepareCommit(true, cpId).get(0))),
+                timestamp++);
+        testHarness.processElement(
+                getMultiTableCommittable(
+                        secondTable,
+                        new Committable(
+                                cpId,
+                                Committable.Kind.FILE,
+                                write2.prepareCommit(true, cpId).get(0))),
+                timestamp++);
+        testHarness.snapshot(cpId, timestamp);
+        testHarness.notifyOfCompletedCheckpoint(cpId);
+
+        OperatorMetricGroup operatorMetricGroup =
+                testHarness.getOperator().getRuntimeContext().getMetricGroup();
+        MetricGroup commitMetricGroup1 =
+                operatorMetricGroup
+                        .addGroup("paimon")
+                        .addGroup("table", table1.name())
+                        .addGroup("commit");
+        MetricGroup commitMetricGroup2 =
+                operatorMetricGroup
+                        .addGroup("paimon")
+                        .addGroup("table", table2.name())
+                        .addGroup("commit");
+
+        assertThat(MetricUtils.getGauge(commitMetricGroup1, "lastTableFilesAdded").getValue())
+                .isEqualTo(1L);
+        assertThat(MetricUtils.getGauge(commitMetricGroup1, "lastTableFilesDeleted").getValue())
+                .isEqualTo(0L);
+        assertThat(MetricUtils.getGauge(commitMetricGroup1, "lastTableFilesAppended").getValue())
+                .isEqualTo(1L);
+        assertThat(
+                        MetricUtils.getGauge(commitMetricGroup1, "lastTableFilesCommitCompacted")
+                                .getValue())
+                .isEqualTo(0L);
+
+        assertThat(MetricUtils.getGauge(commitMetricGroup2, "lastTableFilesAdded").getValue())
+                .isEqualTo(4L);
+        assertThat(MetricUtils.getGauge(commitMetricGroup2, "lastTableFilesDeleted").getValue())
+                .isEqualTo(3L);
+        assertThat(MetricUtils.getGauge(commitMetricGroup2, "lastTableFilesAppended").getValue())
+                .isEqualTo(3L);
+        assertThat(
+                        MetricUtils.getGauge(commitMetricGroup2, "lastTableFilesCommitCompacted")
+                                .getValue())
+                .isEqualTo(4L);
+
+        testHarness.close();
+        write1.close();
+        write2.close();
     }
 
     // ------------------------------------------------------------------------
@@ -468,9 +624,7 @@ class StoreMultiCommitterTest {
                         initialCommitUser,
                         (user, metricGroup) ->
                                 new StoreMultiCommitter(
-                                        catalogLoader,
-                                        initialCommitUser,
-                                        new CommitterMetrics(metricGroup)),
+                                        catalogLoader, initialCommitUser, metricGroup),
                         new RestoreAndFailCommittableStateManager<>(
                                 () ->
                                         new VersionedSerializerWrapper<>(
@@ -486,9 +640,7 @@ class StoreMultiCommitterTest {
                         initialCommitUser,
                         (user, metricGroup) ->
                                 new StoreMultiCommitter(
-                                        catalogLoader,
-                                        initialCommitUser,
-                                        new CommitterMetrics(metricGroup)),
+                                        catalogLoader, initialCommitUser, metricGroup),
                         new CommittableStateManager<WrappedManifestCommittable>() {
                             @Override
                             public void initializeState(

@@ -165,7 +165,8 @@ public class MongoDBSyncTableAction extends ActionBase {
                                                 new MongoDBRecordParser(
                                                         caseSensitive,
                                                         computedColumns,
-                                                        mongodbConfig)))
+                                                        mongodbConfig))
+                                        .name("Parse"))
                         .withParserFactory(parserFactory)
                         .withTable(fileStoreTable)
                         .withIdentifier(identifier)
@@ -214,6 +215,6 @@ public class MongoDBSyncTableAction extends ActionBase {
     @Override
     public void run() throws Exception {
         build();
-        execute(env, String.format("MongoDB-Paimon Database Sync: %s", database));
+        execute(String.format("MongoDB-Paimon Database Sync: %s", database));
     }
 }

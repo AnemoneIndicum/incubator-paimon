@@ -152,7 +152,8 @@ public class MongoDBSyncDatabaseAction extends ActionBase {
         new FlinkCdcSyncDatabaseSinkBuilder<RichCdcMultiplexRecord>()
                 .withInput(
                         env.fromSource(source, WatermarkStrategy.noWatermarks(), "MongoDB Source")
-                                .flatMap(new MongoDBRecordParser(caseSensitive, mongodbConfig)))
+                                .flatMap(new MongoDBRecordParser(caseSensitive, mongodbConfig))
+                                .name("Parse"))
                 .withParserFactory(parserFactory)
                 .withCatalogLoader(catalogLoader())
                 .withDatabase(database)
@@ -191,6 +192,6 @@ public class MongoDBSyncDatabaseAction extends ActionBase {
     @Override
     public void run() throws Exception {
         build();
-        env.execute(String.format("MongoDB-Paimon Database Sync: %s", database));
+        execute(String.format("MongoDB-Paimon Database Sync: %s", database));
     }
 }
