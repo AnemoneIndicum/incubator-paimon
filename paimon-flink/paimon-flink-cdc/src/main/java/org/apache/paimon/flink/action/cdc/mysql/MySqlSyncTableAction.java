@@ -19,6 +19,7 @@
 package org.apache.paimon.flink.action.cdc.mysql;
 
 import org.apache.paimon.annotation.VisibleForTesting;
+import org.apache.paimon.catalog.AbstractCatalog;
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.Identifier;
 import org.apache.paimon.flink.FlinkConnectorOptions;
@@ -51,7 +52,6 @@ import java.util.Map;
 import java.util.function.Predicate;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 import static org.apache.paimon.flink.action.cdc.ComputedColumnUtils.buildComputedColumns;
 import static org.apache.paimon.utils.Preconditions.checkArgument;
@@ -99,7 +99,7 @@ public class MySqlSyncTableAction extends ActionBase {
 
     private Map<String, String> tableConfig = new HashMap<>();
     private List<String> computedColumnArgs = new ArrayList<>();
-    private List<String> metadataColumn = new ArrayList<>();
+    private List<String> metadataColumns = new ArrayList<>();
     private TypeMapping typeMapping = TypeMapping.defaultMapping();
 
     public MySqlSyncTableAction(
@@ -149,8 +149,8 @@ public class MySqlSyncTableAction extends ActionBase {
         return this;
     }
 
-    public MySqlSyncTableAction withMetadataKeys(List<String> metadataKeys) {
-        this.metadataColumn = metadataKeys;
+    public MySqlSyncTableAction withMetadataColumns(List<String> metadataColumns) {
+        this.metadataColumns = metadataColumns;
         return this;
     }
 
@@ -163,9 +163,7 @@ public class MySqlSyncTableAction extends ActionBase {
 
         boolean caseSensitive = catalog.caseSensitive();
 
-        if (!caseSensitive) {
-            validateCaseInsensitive();
-        }
+        validateCaseInsensitive(caseSensitive);
 
         MySqlSchemasInfo mySqlSchemasInfo =
                 MySqlActionUtils.getMySqlTableInfos(
@@ -183,15 +181,9 @@ public class MySqlSyncTableAction extends ActionBase {
         List<ComputedColumn> computedColumns =
                 buildComputedColumns(computedColumnArgs, tableInfo.schema().fields());
 
-        CdcMetadataConverter[] metadataConverters =
-                metadataColumn.stream()
-                        .map(
-                                key ->
-                                        Stream.of(MySqlMetadataProcessor.values())
-                                                .filter(m -> m.getKey().equals(key))
-                                                .findFirst()
-                                                .orElseThrow(IllegalStateException::new))
-                        .map(MySqlMetadataProcessor::getConverter)
+        CdcMetadataConverter<?>[] metadataConverters =
+                metadataColumns.stream()
+                        .map(MySqlMetadataProcessor::converter)
                         .toArray(CdcMetadataConverter[]::new);
 
         Schema fromMySql =
@@ -201,7 +193,8 @@ public class MySqlSyncTableAction extends ActionBase {
                         computedColumns,
                         tableConfig,
                         tableInfo.schema(),
-                        metadataConverters);
+                        metadataConverters,
+                        true);
         try {
             fileStoreTable = (FileStoreTable) catalog.getTable(identifier);
             fileStoreTable = fileStoreTable.copy(tableConfig);
@@ -262,31 +255,11 @@ public class MySqlSyncTableAction extends ActionBase {
         sinkBuilder.build();
     }
 
-    private void validateCaseInsensitive() {
-        checkArgument(
-                database.equals(database.toLowerCase()),
-                String.format(
-                        "Database name [%s] cannot contain upper case in case-insensitive catalog.",
-                        database));
-        checkArgument(
-                table.equals(table.toLowerCase()),
-                String.format(
-                        "Table name [%s] cannot contain upper case in case-insensitive catalog.",
-                        table));
-        for (String part : partitionKeys) {
-            checkArgument(
-                    part.equals(part.toLowerCase()),
-                    String.format(
-                            "Partition keys [%s] cannot contain upper case in case-insensitive catalog.",
-                            partitionKeys));
-        }
-        for (String pk : primaryKeys) {
-            checkArgument(
-                    pk.equals(pk.toLowerCase()),
-                    String.format(
-                            "Primary keys [%s] cannot contain upper case in case-insensitive catalog.",
-                            primaryKeys));
-        }
+    private void validateCaseInsensitive(boolean caseSensitive) {
+        AbstractCatalog.validateCaseInsensitive(caseSensitive, "Database", database);
+        AbstractCatalog.validateCaseInsensitive(caseSensitive, "Table", table);
+        AbstractCatalog.validateCaseInsensitive(caseSensitive, "Partition keys", partitionKeys);
+        AbstractCatalog.validateCaseInsensitive(caseSensitive, "Primary keys", primaryKeys);
     }
 
     private void validateMySqlTableInfos(MySqlSchemasInfo mySqlSchemasInfo) {

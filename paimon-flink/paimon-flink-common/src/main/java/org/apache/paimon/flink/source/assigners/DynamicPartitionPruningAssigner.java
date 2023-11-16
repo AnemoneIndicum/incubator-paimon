@@ -24,13 +24,17 @@ import org.apache.paimon.flink.FlinkRowData;
 import org.apache.paimon.flink.source.FileStoreSourceSplit;
 import org.apache.paimon.table.source.DataSplit;
 
+import org.apache.flink.api.connector.source.SourceEvent;
 import org.apache.flink.table.connector.source.DynamicFilteringData;
+import org.apache.flink.table.connector.source.DynamicFilteringEvent;
+import org.slf4j.Logger;
 
 import javax.annotation.Nullable;
 
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
 import java.util.stream.Collectors;
 
 /** Assigner to perform dynamic partition pruning by given {@link DynamicFilteringData}. */
@@ -81,6 +85,28 @@ public class DynamicPartitionPruningAssigner implements SplitAssigner {
         return innerAssigner.remainingSplits().stream()
                 .filter(this::filter)
                 .collect(Collectors.toList());
+    }
+
+    public static SplitAssigner createDynamicPartitionPruningAssignerIfNeeded(
+            int subtaskId,
+            SplitAssigner oriAssigner,
+            Projection partitionRowProjection,
+            SourceEvent sourceEvent,
+            Logger logger) {
+        DynamicFilteringData dynamicFilteringData = ((DynamicFilteringEvent) sourceEvent).getData();
+        logger.info(
+                "Received DynamicFilteringEvent: {}, is filtering: {}.",
+                subtaskId,
+                dynamicFilteringData.isFiltering());
+        return dynamicFilteringData.isFiltering()
+                ? new DynamicPartitionPruningAssigner(
+                        oriAssigner, partitionRowProjection, dynamicFilteringData)
+                : oriAssigner;
+    }
+
+    @Override
+    public Optional<Long> getNextSnapshotId(int subtask) {
+        return innerAssigner.getNextSnapshotId(subtask);
     }
 
     private boolean filter(FileStoreSourceSplit sourceSplit) {
