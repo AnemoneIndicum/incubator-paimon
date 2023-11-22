@@ -296,6 +296,12 @@ public class AuditLogTable implements DataTable, ReadonlyTable {
         }
 
         @Override
+        public InnerTableScan withMetricsRegistry(MetricRegistry metricsRegistry) {
+            batchScan.withMetricsRegistry(metricsRegistry);
+            return this;
+        }
+
+        @Override
         public Plan plan() {
             return batchScan.plan();
         }
@@ -360,6 +366,12 @@ public class AuditLogTable implements DataTable, ReadonlyTable {
         @Override
         public void notifyCheckpointComplete(@Nullable Long nextSnapshot) {
             streamScan.notifyCheckpointComplete(nextSnapshot);
+        }
+
+        @Override
+        public InnerStreamTableScan withMetricsRegistry(MetricRegistry metricsRegistry) {
+            streamScan.withMetricsRegistry(metricsRegistry);
+            return this;
         }
     }
 

@@ -38,13 +38,19 @@ A bucket is the smallest storage unit for reads and writes, each bucket director
 
 ### Fixed Bucket
 
-Configure a bucket greater than 0, rescaling buckets can only be done through offline processes,
-see [Rescale Bucket]({{< ref "/maintenance/rescale-bucket" >}}). A too large number of buckets leads to too many
-small files, and a too small number of buckets leads to poor write performance.
+Configure a bucket greater than 0, using Fixed Bucket mode, according to `Math.abs(key_hashcode % numBuckets)` to compute
+the bucket of record.
+
+Rescaling buckets can only be done through offline processes, see [Rescale Bucket]({{< ref "/maintenance/rescale-bucket" >}}).
+A too large number of buckets leads to too many small files, and a too small number of buckets leads to poor write performance.
 
 ### Dynamic Bucket
 
-Configure `'bucket' = '-1'`, Paimon dynamically maintains the index, automatic expansion of the number of buckets.
+Configure `'bucket' = '-1'`. The keys that arrive first will fall into the old buckets, and the new keys will fall into
+the new buckets, the distribution of buckets and keys depends on the order in which the data arrives. Paimon maintains
+an index to determine which key corresponds to which bucket.
+
+Paimon will automatically expand the number of buckets.
 
 - Option1: `'dynamic-bucket.target-row-num'`: controls the target row number for one bucket.
 - Option2: `'dynamic-bucket.assigner-parallelism'`: Parallelism of assigner operator, controls the number of initialized bucket.
@@ -190,12 +196,12 @@ CREATE TABLE T (
      'fields.a.sequence-group' = 'b',
      'fields.b.aggregate-function' = 'first_value',
      'fields.c.sequence-group' = 'd',
-     'fields.d.aggregate-function' = 'sum',
+     'fields.d.aggregate-function' = 'sum'
  );
-INSERT INTO T VALUES (1, 1, 1, null, null);
-INSERT INTO T VALUES (1, null, null, 1, 1);
-INSERT INTO T VALUES (1, 2, 2, null, null);
-INSERT INTO T VALUES (1, null, null, 2, 2);
+INSERT INTO T VALUES (1, 1, 1, CAST(NULL AS INT), CAST(NULL AS INT));
+INSERT INTO T VALUES (1, CAST(NULL AS INT), CAST(NULL AS INT), 1, 1);
+INSERT INTO T VALUES (1, 2, 2, CAST(NULL AS INT), CAST(NULL AS INT));
+INSERT INTO T VALUES (1, CAST(NULL AS INT), CAST(NULL AS INT), 2, 2);
 
 
 SELECT * FROM T; -- output 1, 2, 1, 2, 3
@@ -215,8 +221,8 @@ CREATE TABLE T (
 ) WITH (
      'merge-engine'='partial-update'
      );
-INSERT INTO T VALUES (1, 1,null,null);
-INSERT INTO T VALUES (1, null,null,1);
+INSERT INTO T VALUES (1, 1, CAST(NULL AS INT), CAST(NULL AS INT));
+INSERT INTO T VALUES (1, CAST(NULL AS INT), CAST(NULL AS INT), 1);
 
 SELECT * FROM T; -- output 1, 1, null, 1
 ```
@@ -234,8 +240,8 @@ CREATE TABLE T (
     'fields.b.default-value'='0'
 );
 
-INSERT INTO T VALUES (1, 1,null,null);
-INSERT INTO T VALUES (1, null,null,1);
+INSERT INTO T VALUES (1, 1, CAST(NULL AS INT), CAST(NULL AS INT));
+INSERT INTO T VALUES (1, CAST(NULL AS INT), CAST(NULL AS INT), 1);
 
 SELECT * FROM T; -- output 1, 1, 0, 1
 ```
@@ -280,7 +286,7 @@ Current supported aggregate functions and data types are:
 * `last_value` / `last_non_null_value`: support all data types.
 * `listagg`: supports STRING data type.
 * `bool_and` / `bool_or`: support BOOLEAN data type.
-* `first_value`: support all data types.
+* `first_value` / `first_not_null_value`: support all data types.
 
 Only `sum` supports retraction (`UPDATE_BEFORE` and `DELETE`), others aggregate functions do not support retraction.
 If you allow some functions to ignore retraction messages, you can configure:
@@ -300,9 +306,12 @@ This is an experimental feature.
 By specifying `'merge-engine' = 'first-row'`, users can keep the first row of the same primary key. It differs from the
 `deduplicate` merge engine that in the `first-row` merge engine, it will generate insert only changelog. 
 
+{{< hint info >}}
 1. `first-row` merge engine must be used together with `lookup` [changelog producer]({{< ref "concepts/primary-key-table#changelog-producers" >}}).
 2. You can not specify `sequence.field`.
-3. Not accept `DELETE` and `UPDATE_BEFORE` message.
+3. Not accept `DELETE` and `UPDATE_BEFORE` message. You can config `first-row.ignore-delete` to ignore these two kinds records.
+{{< /hint >}}
+
 
 This is of great help in replacing log deduplication in streaming computation.
 
