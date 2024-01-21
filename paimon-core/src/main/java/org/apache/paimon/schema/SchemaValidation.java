@@ -51,6 +51,7 @@ import static org.apache.paimon.CoreOptions.FIELDS_PREFIX;
 import static org.apache.paimon.CoreOptions.FULL_COMPACTION_DELTA_COMMITS;
 import static org.apache.paimon.CoreOptions.INCREMENTAL_BETWEEN;
 import static org.apache.paimon.CoreOptions.INCREMENTAL_BETWEEN_TIMESTAMP;
+import static org.apache.paimon.CoreOptions.SCAN_FILE_CREATION_TIME_MILLIS;
 import static org.apache.paimon.CoreOptions.SCAN_MODE;
 import static org.apache.paimon.CoreOptions.SCAN_SNAPSHOT_ID;
 import static org.apache.paimon.CoreOptions.SCAN_TAG_NAME;
@@ -78,7 +79,8 @@ public class SchemaValidation {
      * @param schema the schema to be validated
      */
     public static void validateTableSchema(TableSchema schema) {
-        validatePrimaryKeysType(schema.fields(), schema.primaryKeys());
+        validateOnlyContainPrimitiveType(schema.fields(), schema.primaryKeys(), "primary key");
+        validateOnlyContainPrimitiveType(schema.fields(), schema.partitionKeys(), "partition");
 
         CoreOptions options = new CoreOptions(schema.options());
 
@@ -169,6 +171,15 @@ public class SchemaValidation {
                                 schema.fieldNames().contains(field),
                                 "Nonexistent sequence field: '%s'",
                                 field));
+
+        Optional<String> rowkindField = options.rowkindField();
+        rowkindField.ifPresent(
+                field ->
+                        checkArgument(
+                                schema.fieldNames().contains(field),
+                                "Nonexistent rowkind field: '%s'",
+                                field));
+
         sequenceField.ifPresent(
                 field ->
                         checkArgument(
@@ -189,30 +200,43 @@ public class SchemaValidation {
             }
         }
 
-        if (schema.crossPartitionUpdate() && options.bucket() != -1) {
-            throw new IllegalArgumentException(
-                    String.format(
-                            "You should use dynamic bucket (bucket = -1) mode in cross partition update case "
-                                    + "(Primary key constraint %s not include all partition fields %s).",
-                            schema.primaryKeys(), schema.partitionKeys()));
+        if (schema.crossPartitionUpdate()) {
+            if (options.bucket() != -1) {
+                throw new IllegalArgumentException(
+                        String.format(
+                                "You should use dynamic bucket (bucket = -1) mode in cross partition update case "
+                                        + "(Primary key constraint %s not include all partition fields %s).",
+                                schema.primaryKeys(), schema.partitionKeys()));
+            }
+
+            if (sequenceField.isPresent()) {
+                throw new IllegalArgumentException(
+                        String.format(
+                                "You can not use sequence.field in cross partition update case "
+                                        + "(Primary key constraint %s not include all partition fields %s).",
+                                schema.primaryKeys(), schema.partitionKeys()));
+            }
         }
     }
 
-    private static void validatePrimaryKeysType(List<DataField> fields, List<String> primaryKeys) {
-        if (!primaryKeys.isEmpty()) {
+    private static void validateOnlyContainPrimitiveType(
+            List<DataField> fields, List<String> fieldNames, String errorMessageIntro) {
+        if (!fieldNames.isEmpty()) {
             Map<String, DataField> rowFields = new HashMap<>();
             for (DataField rowField : fields) {
                 rowFields.put(rowField.name(), rowField);
             }
-            for (String primaryKeyName : primaryKeys) {
-                DataField rowField = rowFields.get(primaryKeyName);
+            for (String fieldName : fieldNames) {
+                DataField rowField = rowFields.get(fieldName);
                 DataType dataType = rowField.type();
                 if (PRIMARY_KEY_UNSUPPORTED_LOGICAL_TYPES.stream()
                         .anyMatch(c -> c.isInstance(dataType))) {
                     throw new UnsupportedOperationException(
                             String.format(
-                                    "The type %s in primary key field %s is unsupported",
-                                    dataType.getClass().getSimpleName(), primaryKeyName));
+                                    "The type %s in %s field %s is unsupported",
+                                    dataType.getClass().getSimpleName(),
+                                    errorMessageIntro,
+                                    fieldName));
                 }
             }
         }
@@ -226,6 +250,7 @@ public class SchemaValidation {
                     options,
                     Arrays.asList(
                             SCAN_SNAPSHOT_ID,
+                            SCAN_FILE_CREATION_TIME_MILLIS,
                             SCAN_TAG_NAME,
                             INCREMENTAL_BETWEEN_TIMESTAMP,
                             INCREMENTAL_BETWEEN),
@@ -237,6 +262,7 @@ public class SchemaValidation {
                     options,
                     Arrays.asList(
                             SCAN_TIMESTAMP_MILLIS,
+                            SCAN_FILE_CREATION_TIME_MILLIS,
                             INCREMENTAL_BETWEEN_TIMESTAMP,
                             INCREMENTAL_BETWEEN),
                     Arrays.asList(SCAN_SNAPSHOT_ID, SCAN_TAG_NAME));
@@ -248,7 +274,11 @@ public class SchemaValidation {
                     INCREMENTAL_BETWEEN_TIMESTAMP);
             checkOptionsConflict(
                     options,
-                    Arrays.asList(SCAN_SNAPSHOT_ID, SCAN_TIMESTAMP_MILLIS, SCAN_TAG_NAME),
+                    Arrays.asList(
+                            SCAN_SNAPSHOT_ID,
+                            SCAN_TIMESTAMP_MILLIS,
+                            SCAN_FILE_CREATION_TIME_MILLIS,
+                            SCAN_TAG_NAME),
                     Arrays.asList(INCREMENTAL_BETWEEN, INCREMENTAL_BETWEEN_TIMESTAMP));
         } else if (options.startupMode() == CoreOptions.StartupMode.FROM_SNAPSHOT_FULL) {
             checkOptionExistInMode(options, SCAN_SNAPSHOT_ID, options.startupMode());
@@ -256,12 +286,29 @@ public class SchemaValidation {
                     options,
                     Arrays.asList(
                             SCAN_TIMESTAMP_MILLIS,
+                            SCAN_FILE_CREATION_TIME_MILLIS,
                             SCAN_TAG_NAME,
                             INCREMENTAL_BETWEEN_TIMESTAMP,
                             INCREMENTAL_BETWEEN),
                     Collections.singletonList(SCAN_SNAPSHOT_ID));
+        } else if (options.startupMode() == CoreOptions.StartupMode.FROM_FILE_CREATION_TIME) {
+            checkOptionExistInMode(
+                    options,
+                    SCAN_FILE_CREATION_TIME_MILLIS,
+                    CoreOptions.StartupMode.FROM_FILE_CREATION_TIME);
+            checkOptionsConflict(
+                    options,
+                    Arrays.asList(
+                            SCAN_SNAPSHOT_ID,
+                            SCAN_TIMESTAMP_MILLIS,
+                            SCAN_TAG_NAME,
+                            INCREMENTAL_BETWEEN_TIMESTAMP,
+                            INCREMENTAL_BETWEEN),
+                    Collections.singletonList(SCAN_FILE_CREATION_TIME_MILLIS));
         } else {
             checkOptionNotExistInMode(options, SCAN_TIMESTAMP_MILLIS, options.startupMode());
+            checkOptionNotExistInMode(
+                    options, SCAN_FILE_CREATION_TIME_MILLIS, options.startupMode());
             checkOptionNotExistInMode(options, SCAN_SNAPSHOT_ID, options.startupMode());
             checkOptionNotExistInMode(options, SCAN_TAG_NAME, options.startupMode());
             checkOptionNotExistInMode(
@@ -361,9 +408,7 @@ public class SchemaValidation {
                         .collect(Collectors.toSet());
         if (!illegalGroup.isEmpty()) {
             throw new IllegalArgumentException(
-                    String.format(
-                            "Should not defined aggregation function on sequence group: "
-                                    + illegalGroup));
+                    "Should not defined aggregation function on sequence group: " + illegalGroup);
         }
     }
 

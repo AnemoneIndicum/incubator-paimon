@@ -18,7 +18,6 @@
 
 package org.apache.paimon;
 
-import org.apache.paimon.annotation.VisibleForTesting;
 import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.index.HashIndexFile;
@@ -26,13 +25,20 @@ import org.apache.paimon.index.IndexFileHandler;
 import org.apache.paimon.manifest.IndexManifestFile;
 import org.apache.paimon.manifest.ManifestFile;
 import org.apache.paimon.manifest.ManifestList;
+import org.apache.paimon.metastore.AddPartitionTagCallback;
+import org.apache.paimon.metastore.MetastoreClient;
 import org.apache.paimon.operation.FileStoreCommitImpl;
-import org.apache.paimon.operation.FileStoreExpireImpl;
 import org.apache.paimon.operation.PartitionExpire;
 import org.apache.paimon.operation.SnapshotDeletion;
 import org.apache.paimon.operation.TagDeletion;
 import org.apache.paimon.options.MemorySize;
 import org.apache.paimon.schema.SchemaManager;
+import org.apache.paimon.service.ServiceManager;
+import org.apache.paimon.stats.StatsFile;
+import org.apache.paimon.stats.StatsFileHandler;
+import org.apache.paimon.table.CatalogEnvironment;
+import org.apache.paimon.table.sink.CallbackUtils;
+import org.apache.paimon.table.sink.TagCallback;
 import org.apache.paimon.tag.TagAutoCreation;
 import org.apache.paimon.types.RowType;
 import org.apache.paimon.utils.FileStorePathFactory;
@@ -43,7 +49,9 @@ import org.apache.paimon.utils.TagManager;
 import javax.annotation.Nullable;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.List;
 
 /**
  * Base {@link FileStore} implementation.
@@ -57,6 +65,7 @@ public abstract class AbstractFileStore<T> implements FileStore<T> {
     protected final long schemaId;
     protected final CoreOptions options;
     protected final RowType partitionType;
+    private final CatalogEnvironment catalogEnvironment;
 
     @Nullable private final SegmentsCache<String> writeManifestCache;
 
@@ -65,12 +74,14 @@ public abstract class AbstractFileStore<T> implements FileStore<T> {
             SchemaManager schemaManager,
             long schemaId,
             CoreOptions options,
-            RowType partitionType) {
+            RowType partitionType,
+            CatalogEnvironment catalogEnvironment) {
         this.fileIO = fileIO;
         this.schemaManager = schemaManager;
         this.schemaId = schemaId;
         this.options = options;
         this.partitionType = partitionType;
+        this.catalogEnvironment = catalogEnvironment;
         MemorySize writeManifestCache = options.writeManifestCache();
         this.writeManifestCache =
                 writeManifestCache.getBytes() == 0
@@ -92,7 +103,7 @@ public abstract class AbstractFileStore<T> implements FileStore<T> {
         return new SnapshotManager(fileIO, options.path());
     }
 
-    @VisibleForTesting
+    @Override
     public ManifestFile.Factory manifestFileFactory() {
         return manifestFileFactory(false);
     }
@@ -108,7 +119,7 @@ public abstract class AbstractFileStore<T> implements FileStore<T> {
                 forWrite ? writeManifestCache : null);
     }
 
-    @VisibleForTesting
+    @Override
     public ManifestList.Factory manifestListFactory() {
         return manifestListFactory(false);
     }
@@ -131,6 +142,14 @@ public abstract class AbstractFileStore<T> implements FileStore<T> {
                 snapshotManager(),
                 indexManifestFileFactory().create(),
                 new HashIndexFile(fileIO, pathFactory().indexFileFactory()));
+    }
+
+    @Override
+    public StatsFileHandler newStatsFileHandler() {
+        return new StatsFileHandler(
+                snapshotManager(),
+                schemaManager,
+                new StatsFile(fileIO, pathFactory().statsFileFactory()));
     }
 
     @Override
@@ -166,19 +185,8 @@ public abstract class AbstractFileStore<T> implements FileStore<T> {
                 options.manifestFullCompactionThresholdSize(),
                 options.manifestMergeMinCount(),
                 partitionType.getFieldCount() > 0 && options.dynamicPartitionOverwrite(),
-                newKeyComparator());
-    }
-
-    @Override
-    public FileStoreExpireImpl newExpire() {
-        return new FileStoreExpireImpl(
-                options.snapshotNumRetainMin(),
-                options.snapshotNumRetainMax(),
-                options.snapshotTimeRetain().toMillis(),
-                snapshotManager(),
-                newSnapshotDeletion(),
-                newTagManager(),
-                options.snapshotExpireLimit());
+                newKeyComparator(),
+                newStatsFileHandler());
     }
 
     @Override
@@ -230,6 +238,28 @@ public abstract class AbstractFileStore<T> implements FileStore<T> {
     @Nullable
     public TagAutoCreation newTagCreationManager() {
         return TagAutoCreation.create(
-                options, snapshotManager(), newTagManager(), newTagDeletion());
+                options,
+                snapshotManager(),
+                newTagManager(),
+                newTagDeletion(),
+                createTagCallbacks());
+    }
+
+    @Override
+    public List<TagCallback> createTagCallbacks() {
+        List<TagCallback> callbacks = new ArrayList<>(CallbackUtils.loadTagCallbacks(options));
+        String partitionField = options.tagToPartitionField();
+        MetastoreClient.Factory metastoreClientFactory =
+                catalogEnvironment.metastoreClientFactory();
+        if (partitionField != null && metastoreClientFactory != null) {
+            callbacks.add(
+                    new AddPartitionTagCallback(metastoreClientFactory.create(), partitionField));
+        }
+        return callbacks;
+    }
+
+    @Override
+    public ServiceManager newServiceManager() {
+        return new ServiceManager(fileIO, options.path());
     }
 }

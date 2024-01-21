@@ -50,6 +50,7 @@ import org.apache.paimon.types.DataField;
 import org.apache.paimon.types.RowKind;
 import org.apache.paimon.types.RowType;
 import org.apache.paimon.types.VarCharType;
+import org.apache.paimon.utils.BranchManager;
 import org.apache.paimon.utils.Filter;
 import org.apache.paimon.utils.ProjectedRow;
 import org.apache.paimon.utils.SnapshotManager;
@@ -161,6 +162,11 @@ public class AuditLogTable implements DataTable, ReadonlyTable {
     }
 
     @Override
+    public BranchManager branchManager() {
+        return dataTable.branchManager();
+    }
+
+    @Override
     public InnerTableRead newRead() {
         return new AuditLogRead(dataTable.newRead());
     }
@@ -233,13 +239,21 @@ public class AuditLogTable implements DataTable, ReadonlyTable {
             return this;
         }
 
+        @Override
         public SnapshotReader withMode(ScanMode scanMode) {
             snapshotReader.withMode(scanMode);
             return this;
         }
 
+        @Override
         public SnapshotReader withLevelFilter(Filter<Integer> levelFilter) {
             snapshotReader.withLevelFilter(levelFilter);
+            return this;
+        }
+
+        @Override
+        public SnapshotReader withDataFileTimeMills(long dataFileTimeMills) {
+            snapshotReader.withDataFileTimeMills(dataFileTimeMills);
             return this;
         }
 

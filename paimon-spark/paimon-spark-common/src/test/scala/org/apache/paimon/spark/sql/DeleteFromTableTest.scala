@@ -19,8 +19,8 @@ package org.apache.paimon.spark.sql
 
 import org.apache.paimon.CoreOptions
 import org.apache.paimon.spark.PaimonSparkTestBase
+import org.apache.paimon.spark.catalyst.analysis.Delete
 
-import org.apache.spark.sql.catalyst.analysis.Delete
 import org.assertj.core.api.Assertions.{assertThat, assertThatThrownBy}
 
 class DeleteFromTableTest extends PaimonSparkTestBase {
@@ -33,7 +33,7 @@ class DeleteFromTableTest extends PaimonSparkTestBase {
     spark.sql("INSERT INTO T VALUES (1, 'a', '11'), (2, 'b', '22')")
 
     assertThatThrownBy(() => spark.sql("DELETE FROM T WHERE name = 'a'"))
-      .isInstanceOf(classOf[UnsupportedOperationException]);
+      .isInstanceOf(classOf[UnsupportedOperationException])
   }
 
   CoreOptions.MergeEngine.values().foreach {

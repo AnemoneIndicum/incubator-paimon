@@ -47,7 +47,6 @@ import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import javax.annotation.Nullable;
 
 import java.io.Serializable;
-import java.util.Map;
 import java.util.UUID;
 
 import static org.apache.paimon.flink.sink.FlinkSink.assertStreamingConfiguration;
@@ -78,7 +77,7 @@ public class FlinkCdcMultiTableSink implements Serializable {
 
     private StoreSinkWrite.WithWriteBufferProvider createWriteProvider() {
         // for now, no compaction for multiplexed sink
-        return (table, commitUser, state, ioManager, memoryPoolFactory) ->
+        return (table, commitUser, state, ioManager, memoryPoolFactory, metricGroup) ->
                 new StoreSinkWriteImpl(
                         table,
                         commitUser,
@@ -87,25 +86,24 @@ public class FlinkCdcMultiTableSink implements Serializable {
                         isOverwrite,
                         false,
                         true,
-                        memoryPoolFactory);
+                        memoryPoolFactory,
+                        metricGroup);
     }
 
-    public DataStreamSink<?> sinkFrom(
-            DataStream<CdcMultiplexRecord> input, Map<String, String> dynamicOptions) {
+    public DataStreamSink<?> sinkFrom(DataStream<CdcMultiplexRecord> input) {
         // This commitUser is valid only for new jobs.
         // After the job starts, this commitUser will be recorded into the states of write and
         // commit operators.
         // When the job restarts, commitUser will be recovered from states and this value is
         // ignored.
         String initialCommitUser = UUID.randomUUID().toString();
-        return sinkFrom(input, initialCommitUser, createWriteProvider(), dynamicOptions);
+        return sinkFrom(input, initialCommitUser, createWriteProvider());
     }
 
     public DataStreamSink<?> sinkFrom(
             DataStream<CdcMultiplexRecord> input,
             String commitUser,
-            StoreSinkWrite.WithWriteBufferProvider sinkProvider,
-            Map<String, String> dynamicOptions) {
+            StoreSinkWrite.WithWriteBufferProvider sinkProvider) {
         StreamExecutionEnvironment env = input.getExecutionEnvironment();
         assertStreamingConfiguration(env);
         MultiTableCommittableTypeInfo typeInfo = new MultiTableCommittableTypeInfo();
@@ -113,7 +111,7 @@ public class FlinkCdcMultiTableSink implements Serializable {
                 input.transform(
                                 WRITER_NAME,
                                 typeInfo,
-                                createWriteOperator(sinkProvider, commitUser, dynamicOptions))
+                                createWriteOperator(sinkProvider, commitUser))
                         .setParallelism(input.getParallelism());
 
         // shuffle committables by table
@@ -143,11 +141,9 @@ public class FlinkCdcMultiTableSink implements Serializable {
     }
 
     protected OneInputStreamOperator<CdcMultiplexRecord, MultiTableCommittable> createWriteOperator(
-            StoreSinkWrite.WithWriteBufferProvider writeProvider,
-            String commitUser,
-            Map<String, String> dynamicOptions) {
+            StoreSinkWrite.WithWriteBufferProvider writeProvider, String commitUser) {
         return new CdcRecordStoreMultiWriteOperator(
-                catalogLoader, writeProvider, commitUser, new Options(), dynamicOptions);
+                catalogLoader, writeProvider, commitUser, new Options());
     }
 
     // Table committers are dynamically created at runtime

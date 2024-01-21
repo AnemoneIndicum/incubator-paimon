@@ -27,6 +27,7 @@ import org.apache.paimon.flink.sink.cdc.RichCdcMultiplexRecord;
 import org.apache.paimon.types.DataType;
 import org.apache.paimon.types.RowKind;
 import org.apache.paimon.utils.DateTimeUtils;
+import org.apache.paimon.utils.JsonSerdeUtil;
 import org.apache.paimon.utils.Preconditions;
 import org.apache.paimon.utils.StringUtils;
 
@@ -102,14 +103,6 @@ public class MySqlRecordParser implements FlatMapFunction<String, RichCdcMultipl
     private final CdcMetadataConverter[] metadataConverters;
 
     private final Set<String> nonPkTables = new HashSet<>();
-
-    public MySqlRecordParser(
-            Configuration mySqlConfig,
-            boolean caseSensitive,
-            TypeMapping typeMapping,
-            CdcMetadataConverter[] metadataConverters) {
-        this(mySqlConfig, caseSensitive, Collections.emptyList(), typeMapping, metadataConverters);
-    }
 
     public MySqlRecordParser(
             Configuration mySqlConfig,
@@ -240,7 +233,7 @@ public class MySqlRecordParser implements FlatMapFunction<String, RichCdcMultipl
     }
 
     private Map<String, String> extractRow(JsonNode recordRow) {
-        if (recordRow == null) {
+        if (JsonSerdeUtil.isNull(recordRow)) {
             return new HashMap<>();
         }
 

@@ -48,6 +48,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 import static org.apache.paimon.fs.FileIOUtils.checkAccess;
+import static org.apache.paimon.utils.Preconditions.checkArgument;
 
 /**
  * File IO to read and write file.
@@ -179,6 +180,14 @@ public interface FileIO extends Serializable {
         return getFileStatus(path).isDir();
     }
 
+    default void checkOrMkdirs(Path path) throws IOException {
+        if (exists(path)) {
+            checkArgument(isDir(path), "The path '%s' should be a directory.", path);
+        } else {
+            mkdirs(path);
+        }
+    }
+
     /** Read file to UTF_8 decoding. */
     default String readFileUtf8(Path path) throws IOException {
         try (SeekableInputStream in = newInputStream(path)) {
@@ -233,6 +242,17 @@ public interface FileIO extends Serializable {
             writer.write(content);
             writer.flush();
         }
+    }
+
+    /**
+     * Read file to UTF_8 decoding, then write content to one file atomically, initially writes to
+     * temp hidden file and only renames to the target file once temp file is closed.
+     *
+     * @return false if targetPath file exists
+     */
+    default boolean copyFileUtf8(Path sourcePath, Path targetPath) throws IOException {
+        String content = readFileUtf8(sourcePath);
+        return writeFileUtf8(targetPath, content);
     }
 
     /** Read file from {@link #overwriteFileUtf8} file. */

@@ -62,15 +62,14 @@ public abstract class TableSorter {
     public abstract Dataset<Row> sort(Dataset<Row> input);
 
     public static TableSorter getSorter(
-            FileStoreTable table, String sortStrategy, List<String> orderColumns) {
-        switch (OrderType.of(sortStrategy)) {
+            FileStoreTable table, TableSorter.OrderType orderType, List<String> orderColumns) {
+        switch (orderType) {
             case ORDER:
                 return new OrderSorter(table, orderColumns);
             case ZORDER:
                 return new ZorderSorter(table, orderColumns);
             case HILBERT:
-                // todo support hilbert curve
-                throw new IllegalArgumentException("Not supported yet.");
+                return new HilbertSorter(table, orderColumns);
             case NONE:
                 return new TableSorter(table, orderColumns) {
                     @Override
@@ -79,7 +78,7 @@ public abstract class TableSorter {
                     }
                 };
             default:
-                throw new IllegalArgumentException("cannot match order type: " + sortStrategy);
+                throw new IllegalArgumentException("cannot match order type: " + orderType);
         }
     }
 

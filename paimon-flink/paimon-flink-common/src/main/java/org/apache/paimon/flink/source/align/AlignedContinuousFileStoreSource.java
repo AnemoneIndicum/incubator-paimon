@@ -68,12 +68,12 @@ public class AlignedContinuousFileStoreSource extends ContinuousFileStoreSource 
         return new AlignedSourceReader(
                 context,
                 readBuilder.newRead(),
+                sourceReaderMetrics,
                 ioManager,
                 limit,
                 new FutureCompletingBlockingQueue<>(
                         context.getConfiguration()
-                                .getInteger(SourceReaderOptions.ELEMENT_QUEUE_CAPACITY)),
-                sourceReaderMetrics);
+                                .getInteger(SourceReaderOptions.ELEMENT_QUEUE_CAPACITY)));
     }
 
     @Override
@@ -90,6 +90,7 @@ public class AlignedContinuousFileStoreSource extends ContinuousFileStoreSource 
                 options.get(CoreOptions.CONTINUOUS_DISCOVERY_INTERVAL).toMillis(),
                 scan,
                 bucketMode,
-                options.get(FlinkConnectorOptions.SOURCE_CHECKPOINT_ALIGN_TIMEOUT).toMillis());
+                options.get(FlinkConnectorOptions.SOURCE_CHECKPOINT_ALIGN_TIMEOUT).toMillis(),
+                options.get(CoreOptions.SCAN_MAX_SPLITS_PER_TASK));
     }
 }

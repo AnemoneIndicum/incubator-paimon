@@ -45,7 +45,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import static org.apache.paimon.flink.action.cdc.TypeMapping.TypeMappingMode.BIGINT_UNSIGNED_TO_BIGINT;
 import static org.apache.paimon.flink.action.cdc.TypeMapping.TypeMappingMode.CHAR_TO_STRING;
+import static org.apache.paimon.flink.action.cdc.TypeMapping.TypeMappingMode.LONGTEXT_TO_BYTES;
 import static org.apache.paimon.flink.action.cdc.TypeMapping.TypeMappingMode.TINYINT1_NOT_BOOL;
 import static org.apache.paimon.flink.action.cdc.TypeMapping.TypeMappingMode.TO_STRING;
 
@@ -206,7 +208,9 @@ public class MySqlTypeUtils {
             case BIGINT_UNSIGNED:
             case BIGINT_UNSIGNED_ZEROFILL:
             case SERIAL:
-                return DataTypes.DECIMAL(20, 0);
+                return typeMapping.containsMode(BIGINT_UNSIGNED_TO_BIGINT)
+                        ? DataTypes.BIGINT()
+                        : DataTypes.DECIMAL(20, 0);
             case FLOAT:
             case FLOAT_UNSIGNED:
             case FLOAT_UNSIGNED_ZEROFILL:
@@ -272,7 +276,6 @@ public class MySqlTypeUtils {
             case TINYTEXT:
             case TEXT:
             case MEDIUMTEXT:
-            case LONGTEXT:
             case JSON:
             case ENUM:
             case GEOMETRY:
@@ -291,6 +294,10 @@ public class MySqlTypeUtils {
                 return length == null || length == 0
                         ? DataTypes.VARBINARY(VarBinaryType.DEFAULT_LENGTH)
                         : DataTypes.VARBINARY(length);
+            case LONGTEXT:
+                return typeMapping.containsMode(LONGTEXT_TO_BYTES)
+                        ? DataTypes.BYTES()
+                        : DataTypes.STRING();
             case TINYBLOB:
             case BLOB:
             case MEDIUMBLOB:

@@ -64,6 +64,10 @@ public class CoreOptions implements Serializable {
 
     public static final String IGNORE_RETRACT = "ignore-retract";
 
+    public static final String NESTED_KEY = "nested-key";
+
+    public static final String DISTINCT = "distinct";
+
     public static final ConfigOption<Integer> BUCKET =
             key("bucket")
                     .intType()
@@ -140,7 +144,7 @@ public class CoreOptions implements Serializable {
                     .stringType()
                     .noDefaultValue()
                     .withDescription(
-                            "Default file compression format, can be overridden by "
+                            "Default file compression format, orc is lz4 and parquet is snappy. It can be overridden by "
                                     + FILE_COMPRESSION_PER_LEVEL.key());
 
     public static final ConfigOption<FileFormatType> MANIFEST_FORMAT =
@@ -211,11 +215,28 @@ public class CoreOptions implements Serializable {
                     .withDescription(
                             "The maximum number of snapshots allowed to expire at a time.");
 
+    public static final ConfigOption<Boolean> SNAPSHOT_EXPIRE_CLEAN_EMPTY_DIRECTORIES =
+            key("snapshot.expire.clean-empty-directories")
+                    .booleanType()
+                    .defaultValue(true)
+                    .withDescription(
+                            "Whether to try to clean empty directories when expiring snapshots. "
+                                    + "Note that trying to clean directories might throw exceptions in filesystem, "
+                                    + "but in most cases it won't cause problems.");
+
     public static final ConfigOption<Duration> CONTINUOUS_DISCOVERY_INTERVAL =
             key("continuous.discovery-interval")
                     .durationType()
                     .defaultValue(Duration.ofSeconds(10))
                     .withDescription("The discovery interval of continuous reading.");
+
+    public static final ConfigOption<Integer> SCAN_MAX_SPLITS_PER_TASK =
+            key("scan.max-splits-per-task")
+                    .intType()
+                    .defaultValue(10)
+                    .withDescription(
+                            "Max split size should be cached for one task while scanning. "
+                                    + "If splits size cached in enumerator are greater than tasks size multiply by this value, scanner will pause scanning.");
 
     @Immutable
     public static final ConfigOption<MergeEngine> MERGE_ENGINE =
@@ -223,6 +244,12 @@ public class CoreOptions implements Serializable {
                     .enumType(MergeEngine.class)
                     .defaultValue(MergeEngine.DEDUPLICATE)
                     .withDescription("Specify the merge engine for table with primary key.");
+
+    public static final ConfigOption<Boolean> DEDUPLICATE_IGNORE_DELETE =
+            key("deduplicate.ignore-delete")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription("Whether to ignore delete records in deduplicate mode.");
 
     public static final ConfigOption<Boolean> PARTIAL_UPDATE_IGNORE_DELETE =
             key("partial-update.ignore-delete")
@@ -300,6 +327,13 @@ public class CoreOptions implements Serializable {
                     .withDescription(
                             "This option only works for append-only table. Whether the write use write buffer to avoid out-of-memory error.");
 
+    public static final ConfigOption<Integer> WRITE_MAX_WRITERS_TO_SPILL =
+            key("write-max-writers-to-spill")
+                    .intType()
+                    .defaultValue(5)
+                    .withDescription(
+                            "When in batch append inserting, if the writer number is greater than this option, we open the buffer cache and spill function to avoid out-of-memory. ");
+
     public static final ConfigOption<MemorySize> WRITE_MANIFEST_CACHE =
             key("write-manifest-cache")
                     .memoryType()
@@ -374,6 +408,14 @@ public class CoreOptions implements Serializable {
                                     + "size is 1% smaller than the next sorted run's size, then include next sorted run "
                                     + "into this candidate set.");
 
+    public static final ConfigOption<Duration> COMPACTION_OPTIMIZATION_INTERVAL =
+            key("compaction.optimization-interval")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Implying how often to perform an optimization compaction, this configuration is used to "
+                                    + "ensure the query timeliness of the read-optimized system table.");
+
     public static final ConfigOption<Integer> COMPACTION_MIN_FILE_NUM =
             key("compaction.min.file-num")
                     .intType()
@@ -419,6 +461,15 @@ public class CoreOptions implements Serializable {
                             "The field that generates the sequence number for primary key table,"
                                     + " the sequence number determines which data is the most recent.");
 
+    @Immutable
+    public static final ConfigOption<String> ROWKIND_FIELD =
+            key("rowkind.field")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The field that generates the row kind for primary key table,"
+                                    + " the row kind determines which data is '+I', '-U', '+U' or '-D'.");
+
     public static final ConfigOption<String> SEQUENCE_AUTO_PADDING =
             key("sequence.auto-padding")
                     .stringType()
@@ -452,7 +503,17 @@ public class CoreOptions implements Serializable {
                     .noDefaultValue()
                     .withDeprecatedKeys("log.scan.timestamp-millis")
                     .withDescription(
-                            "Optional timestamp used in case of \"from-timestamp\" scan mode.");
+                            "Optional timestamp used in case of \"from-timestamp\" scan mode. "
+                                    + "If there is no snapshot earlier than this time, the earliest snapshot will be chosen.");
+
+    public static final ConfigOption<Long> SCAN_FILE_CREATION_TIME_MILLIS =
+            key("scan.file-creation-time-millis")
+                    .longType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "After configuring this time, only the data files created after this time will be read. "
+                                    + "It is independent of snapshots, but it is imprecise filtering (depending on whether "
+                                    + "or not compaction occurs).");
 
     public static final ConfigOption<Long> SCAN_SNAPSHOT_ID =
             key("scan.snapshot-id")
@@ -467,6 +528,15 @@ public class CoreOptions implements Serializable {
                     .noDefaultValue()
                     .withDescription(
                             "Optional tag name used in case of \"from-snapshot\" scan mode.");
+
+    @ExcludeFromDocumentation("Internal use only")
+    public static final ConfigOption<String> SCAN_VERSION =
+            key("scan.version")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Specify the time travel version string used in 'VERSION AS OF' syntax. "
+                                    + "We will use tag when both tag and snapshot of that version exist.");
 
     public static final ConfigOption<Long> SCAN_BOUNDED_WATERMARK =
             key("scan.bounded.watermark")
@@ -723,6 +793,13 @@ public class CoreOptions implements Serializable {
                     .defaultValue(ConsumerMode.EXACTLY_ONCE)
                     .withDescription("Specify the consumer consistency mode for table.");
 
+    public static final ConfigOption<Boolean> CONSUMER_IGNORE_PROGRESS =
+            key("consumer.ignore-progress")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Whether to ignore consumer progress for the newly started job.");
+
     public static final ConfigOption<Long> DYNAMIC_BUCKET_TARGET_ROW_NUM =
             key("dynamic-bucket.target-row-num")
                     .longType()
@@ -730,6 +807,13 @@ public class CoreOptions implements Serializable {
                     .withDescription(
                             "If the bucket is -1, for primary key table, is dynamic bucket mode, "
                                     + "this option controls the target row number for one bucket.");
+
+    public static final ConfigOption<Integer> DYNAMIC_BUCKET_INITIAL_BUCKETS =
+            key("dynamic-bucket.initial-buckets")
+                    .intType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Initial buckets for a partition in assigner operator for dynamic bucket mode.");
 
     public static final ConfigOption<Integer> DYNAMIC_BUCKET_ASSIGNER_PARALLELISM =
             key("dynamic-bucket.assigner-parallelism")
@@ -875,6 +959,12 @@ public class CoreOptions implements Serializable {
                     .withDescription(
                             "How long is the delay after the period ends before creating a tag."
                                     + " This can allow some late data to enter the Tag.");
+
+    public static final ConfigOption<TagPeriodFormatter> TAG_PERIOD_FORMATTER =
+            key("tag.period-formatter")
+                    .enumType(TagPeriodFormatter.class)
+                    .defaultValue(TagPeriodFormatter.WITH_DASHES)
+                    .withDescription("The date format for tag periods.");
 
     public static final ConfigOption<Integer> TAG_NUM_RETAINED_MAX =
             key("tag.num-retained-max")
@@ -1053,6 +1143,25 @@ public class CoreOptions implements Serializable {
                         .defaultValue(false));
     }
 
+    public List<String> fieldNestedUpdateAggNestedKey(String fieldName) {
+        String keyString =
+                options.get(
+                        key(FIELDS_PREFIX + "." + fieldName + "." + NESTED_KEY)
+                                .stringType()
+                                .noDefaultValue());
+        if (keyString == null) {
+            return Collections.emptyList();
+        }
+        return Arrays.asList(keyString.split(","));
+    }
+
+    public boolean fieldCollectAggDistinct(String fieldName) {
+        return options.get(
+                key(FIELDS_PREFIX + "." + fieldName + "." + DISTINCT)
+                        .booleanType()
+                        .defaultValue(false));
+    }
+
     public String fileCompression() {
         return options.get(FILE_COMPRESSION);
     }
@@ -1079,6 +1188,10 @@ public class CoreOptions implements Serializable {
 
     public int snapshotExpireLimit() {
         return options.get(SNAPSHOT_EXPIRE_LIMIT);
+    }
+
+    public boolean snapshotExpireCleanEmptyDirectories() {
+        return options.get(SNAPSHOT_EXPIRE_CLEAN_EMPTY_DIRECTORIES);
     }
 
     public int manifestMergeMinCount() {
@@ -1124,12 +1237,20 @@ public class CoreOptions implements Serializable {
         return options.get(WRITE_BUFFER_FOR_APPEND);
     }
 
+    public int writeMaxWritersToSpill() {
+        return options.get(WRITE_MAX_WRITERS_TO_SPILL);
+    }
+
     public long sortSpillBufferSize() {
         return options.get(SORT_SPILL_BUFFER_SIZE).getBytes();
     }
 
     public Duration continuousDiscoveryInterval() {
         return options.get(CONTINUOUS_DISCOVERY_INTERVAL);
+    }
+
+    public int scanSplitMaxPerTask() {
+        return options.get(SCAN_MAX_SPLITS_PER_TASK);
     }
 
     public int localSortMaxNumFileHandles() {
@@ -1153,6 +1274,11 @@ public class CoreOptions implements Serializable {
 
     public int numSortedRunCompactionTrigger() {
         return options.get(NUM_SORTED_RUNS_COMPACTION_TRIGGER);
+    }
+
+    @Nullable
+    public Duration optimizedCompactionInterval() {
+        return options.get(COMPACTION_OPTIMIZATION_INTERVAL);
     }
 
     public int numSortedRunStopTrigger() {
@@ -1217,8 +1343,11 @@ public class CoreOptions implements Serializable {
             if (options.getOptional(SCAN_TIMESTAMP_MILLIS).isPresent()) {
                 return StartupMode.FROM_TIMESTAMP;
             } else if (options.getOptional(SCAN_SNAPSHOT_ID).isPresent()
-                    || options.getOptional(SCAN_TAG_NAME).isPresent()) {
+                    || options.getOptional(SCAN_TAG_NAME).isPresent()
+                    || options.getOptional(SCAN_VERSION).isPresent()) {
                 return StartupMode.FROM_SNAPSHOT;
+            } else if (options.getOptional(SCAN_FILE_CREATION_TIME_MILLIS).isPresent()) {
+                return StartupMode.FROM_FILE_CREATION_TIME;
             } else if (options.getOptional(INCREMENTAL_BETWEEN).isPresent()
                     || options.getOptional(INCREMENTAL_BETWEEN_TIMESTAMP).isPresent()) {
                 return StartupMode.INCREMENTAL;
@@ -1236,6 +1365,10 @@ public class CoreOptions implements Serializable {
         return options.get(SCAN_TIMESTAMP_MILLIS);
     }
 
+    public Long scanFileCreationTimeMills() {
+        return options.get(SCAN_FILE_CREATION_TIME_MILLIS);
+    }
+
     public Long scanBoundedWatermark() {
         return options.get(SCAN_BOUNDED_WATERMARK);
     }
@@ -1246,6 +1379,10 @@ public class CoreOptions implements Serializable {
 
     public String scanTagName() {
         return options.get(SCAN_TAG_NAME);
+    }
+
+    public String scanVersion() {
+        return options.get(SCAN_VERSION);
     }
 
     public Pair<String, String> incrementalBetween() {
@@ -1275,12 +1412,20 @@ public class CoreOptions implements Serializable {
         return options.get(SCAN_MANIFEST_PARALLELISM);
     }
 
+    public Integer dynamicBucketInitialBuckets() {
+        return options.get(DYNAMIC_BUCKET_INITIAL_BUCKETS);
+    }
+
     public Integer dynamicBucketAssignerParallelism() {
         return options.get(DYNAMIC_BUCKET_ASSIGNER_PARALLELISM);
     }
 
     public Optional<String> sequenceField() {
         return options.getOptional(SEQUENCE_FIELD);
+    }
+
+    public Optional<String> rowkindField() {
+        return options.getOptional(ROWKIND_FIELD);
     }
 
     public List<String> sequenceAutoPadding() {
@@ -1335,8 +1480,8 @@ public class CoreOptions implements Serializable {
         return options.get(CONSUMER_EXPIRATION_TIME);
     }
 
-    public ConsumerMode consumerWithLegacyMode() {
-        return options.get(CONSUMER_CONSISTENCY_MODE);
+    public boolean consumerIgnoreProgress() {
+        return options.get(CONSUMER_IGNORE_PROGRESS);
     }
 
     public boolean partitionedTableInMetastore() {
@@ -1362,6 +1507,10 @@ public class CoreOptions implements Serializable {
 
     public Duration tagCreationDelay() {
         return options.get(TAG_CREATION_DELAY);
+    }
+
+    public TagPeriodFormatter tagPeriodFormatter() {
+        return options.get(TAG_PERIOD_FORMATTER);
     }
 
     public Integer tagNumRetainedMax() {
@@ -1500,6 +1649,11 @@ public class CoreOptions implements Serializable {
                         + "without producing a snapshot at the beginning. "
                         + "For batch sources, produces a snapshot at timestamp specified by \"scan.timestamp-millis\" "
                         + "but does not read new changes."),
+
+        FROM_FILE_CREATION_TIME(
+                "from-file-creation-time",
+                "For streaming and batch sources, produces a snapshot and filters the data files by creation time. "
+                        + "For streaming sources, upon first startup, and continue to read the latest changes."),
 
         FROM_SNAPSHOT(
                 "from-snapshot",
@@ -1799,6 +1953,10 @@ public class CoreOptions implements Serializable {
             options.set(SCAN_MODE, StartupMode.FROM_TIMESTAMP);
         }
 
+        if (options.contains(SCAN_FILE_CREATION_TIME_MILLIS) && !options.contains(SCAN_MODE)) {
+            options.set(SCAN_MODE, StartupMode.FROM_FILE_CREATION_TIME);
+        }
+
         if (options.contains(SCAN_SNAPSHOT_ID) && !options.contains(SCAN_MODE)) {
             options.set(SCAN_MODE, StartupMode.FROM_SNAPSHOT);
         }
@@ -1910,12 +2068,38 @@ public class CoreOptions implements Serializable {
                 "Based on the time of the machine, create TAG once the processing time passes period time plus delay."),
         WATERMARK(
                 "watermark",
-                "Based on the watermark of the input, create TAG once the watermark passes period time plus delay.");
-
+                "Based on the watermark of the input, create TAG once the watermark passes period time plus delay."),
+        BATCH(
+                "batch",
+                "In the batch processing scenario, the tag corresponding to the current snapshot is generated after the task is completed.");
         private final String value;
         private final String description;
 
         TagCreationMode(String value, String description) {
+            this.value = value;
+            this.description = description;
+        }
+
+        @Override
+        public String toString() {
+            return value;
+        }
+
+        @Override
+        public InlineElement getDescription() {
+            return text(description);
+        }
+    }
+
+    /** The period format options for tag creation. */
+    public enum TagPeriodFormatter implements DescribedEnum {
+        WITH_DASHES("with_dashes", "Dates and hours with dashes, e.g., 'yyyy-MM-dd HH'"),
+        WITHOUT_DASHES("without_dashes", "Dates and hours without dashes, e.g., 'yyyyMMdd HH'");
+
+        private final String value;
+        private final String description;
+
+        TagPeriodFormatter(String value, String description) {
             this.value = value;
             this.description = description;
         }

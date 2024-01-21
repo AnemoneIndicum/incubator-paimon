@@ -19,17 +19,19 @@
 package org.apache.paimon.flink.sink;
 
 import org.apache.paimon.CoreOptions.ChangelogProducer;
+import org.apache.paimon.CoreOptions.TagCreationMode;
 import org.apache.paimon.flink.utils.StreamExecutionEnvironmentUtils;
 import org.apache.paimon.manifest.ManifestCommittable;
 import org.apache.paimon.options.MemorySize;
 import org.apache.paimon.options.Options;
 import org.apache.paimon.table.FileStoreTable;
+import org.apache.paimon.utils.Preconditions;
 
 import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.api.common.operators.SlotSharingGroup;
+import org.apache.flink.api.dag.Transformation;
 import org.apache.flink.configuration.ExecutionOptions;
 import org.apache.flink.configuration.ReadableConfig;
-import org.apache.flink.core.memory.ManagedMemoryUseCase;
 import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.DataStreamSink;
@@ -39,10 +41,15 @@ import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.sink.DiscardingSink;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
+import org.apache.flink.table.api.config.ExecutionConfigOptions;
 
 import javax.annotation.Nullable;
 
 import java.io.Serializable;
+import java.util.HashSet;
+import java.util.LinkedList;
+import java.util.Queue;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.apache.flink.configuration.ClusterOptions.ENABLE_FINE_GRAINED_RESOURCE_MANAGEMENT;
@@ -54,6 +61,7 @@ import static org.apache.paimon.flink.FlinkConnectorOptions.SINK_COMMITTER_CPU;
 import static org.apache.paimon.flink.FlinkConnectorOptions.SINK_COMMITTER_MEMORY;
 import static org.apache.paimon.flink.FlinkConnectorOptions.SINK_MANAGED_WRITER_BUFFER_MEMORY;
 import static org.apache.paimon.flink.FlinkConnectorOptions.SINK_USE_MANAGED_MEMORY;
+import static org.apache.paimon.flink.utils.ManagedMemoryUtils.declareManagedMemory;
 import static org.apache.paimon.utils.Preconditions.checkArgument;
 
 /** Abstract sink of paimon. */
@@ -99,7 +107,7 @@ public abstract class FlinkSink<T> implements Serializable {
 
             if (changelogProducer == ChangelogProducer.FULL_COMPACTION || deltaCommits >= 0) {
                 int finalDeltaCommits = Math.max(deltaCommits, 1);
-                return (table, commitUser, state, ioManager, memoryPool) ->
+                return (table, commitUser, state, ioManager, memoryPool, metricGroup) ->
                         new GlobalFullCompactionSinkWrite(
                                 table,
                                 commitUser,
@@ -109,11 +117,12 @@ public abstract class FlinkSink<T> implements Serializable {
                                 waitCompaction,
                                 finalDeltaCommits,
                                 isStreaming,
-                                memoryPool);
+                                memoryPool,
+                                metricGroup);
             }
         }
 
-        return (table, commitUser, state, ioManager, memoryPool) ->
+        return (table, commitUser, state, ioManager, memoryPool, metricGroup) ->
                 new StoreSinkWriteImpl(
                         table,
                         commitUser,
@@ -122,7 +131,8 @@ public abstract class FlinkSink<T> implements Serializable {
                         ignorePreviousFiles,
                         waitCompaction,
                         isStreaming,
-                        memoryPool);
+                        memoryPool,
+                        metricGroup);
     }
 
     public DataStreamSink<?> sinkFrom(DataStream<T> input) {
@@ -136,16 +146,41 @@ public abstract class FlinkSink<T> implements Serializable {
     }
 
     public DataStreamSink<?> sinkFrom(DataStream<T> input, String initialCommitUser) {
+        assertNoSinkMaterializer(input);
+
         // do the actually writing action, no snapshot generated in this stage
-        SingleOutputStreamOperator<Committable> written =
-                doWrite(input, initialCommitUser, input.getParallelism());
+        DataStream<Committable> written = doWrite(input, initialCommitUser, input.getParallelism());
 
         // commit the committable to generate a new snapshot
         return doCommit(written, initialCommitUser);
     }
 
-    public SingleOutputStreamOperator<Committable> doWrite(
-            DataStream<T> input, String commitUser, Integer parallelism) {
+    private void assertNoSinkMaterializer(DataStream<T> input) {
+        // traverse the transformation graph with breadth first search
+        Set<Integer> visited = new HashSet<>();
+        Queue<Transformation<?>> queue = new LinkedList<>();
+        queue.add(input.getTransformation());
+        visited.add(input.getTransformation().getId());
+        while (!queue.isEmpty()) {
+            Transformation<?> transformation = queue.poll();
+            Preconditions.checkArgument(
+                    !transformation.getName().startsWith("SinkMaterializer"),
+                    String.format(
+                            "Sink materializer must not be used with Paimon sink. "
+                                    + "Please set '%s' to '%s' in Flink's config.",
+                            ExecutionConfigOptions.TABLE_EXEC_SINK_UPSERT_MATERIALIZE.key(),
+                            ExecutionConfigOptions.UpsertMaterialize.NONE.name()));
+            for (Transformation<?> prev : transformation.getInputs()) {
+                if (!visited.contains(prev.getId())) {
+                    queue.add(prev);
+                    visited.add(prev.getId());
+                }
+            }
+        }
+    }
+
+    public DataStream<Committable> doWrite(
+            DataStream<T> input, String commitUser, @Nullable Integer parallelism) {
         StreamExecutionEnvironment env = input.getExecutionEnvironment();
         boolean isStreaming =
                 StreamExecutionEnvironmentUtils.getConfiguration(env)
@@ -170,10 +205,7 @@ public abstract class FlinkSink<T> implements Serializable {
 
         Options options = Options.fromMap(table.options());
         if (options.get(SINK_USE_MANAGED_MEMORY)) {
-            MemorySize memorySize = options.get(SINK_MANAGED_WRITER_BUFFER_MEMORY);
-            written.getTransformation()
-                    .declareManagedMemoryUseCaseAtOperatorScope(
-                            ManagedMemoryUseCase.OPERATOR, memorySize.getMebiBytes());
+            declareManagedMemory(written, options.get(SINK_MANAGED_WRITER_BUFFER_MEMORY));
         }
         return written;
     }
@@ -202,7 +234,15 @@ public abstract class FlinkSink<T> implements Serializable {
                             (CommitterOperator<Committable, ManifestCommittable>) committerOperator,
                             table::snapshotManager,
                             table::tagManager,
-                            () -> table.store().newTagDeletion());
+                            () -> table.store().newTagDeletion(),
+                            () -> table.store().createTagCallbacks());
+        }
+        if (conf.get(ExecutionOptions.RUNTIME_MODE) == RuntimeExecutionMode.BATCH
+                && table.coreOptions().tagCreationMode() == TagCreationMode.BATCH) {
+            committerOperator =
+                    new BatchWriteGeneratorTagOperator<>(
+                            (CommitterOperator<Committable, ManifestCommittable>) committerOperator,
+                            table);
         }
         SingleOutputStreamOperator<?> committed =
                 written.transform(

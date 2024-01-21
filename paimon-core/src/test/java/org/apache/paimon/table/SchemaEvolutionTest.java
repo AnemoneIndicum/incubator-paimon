@@ -76,7 +76,7 @@ public class SchemaEvolutionTest {
     @BeforeEach
     public void beforeEach() {
         tablePath = new Path(tempDir.toUri());
-        identifier = SchemaManager.fromPath(tablePath.getPath(), true);
+        identifier = SchemaManager.fromPath(tablePath.toString(), true);
         schemaManager = new SchemaManager(LocalFileIO.create(), tablePath);
         commitUser = UUID.randomUUID().toString();
     }
@@ -264,7 +264,10 @@ public class SchemaEvolutionTest {
                                                         null,
                                                         null))))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessage("ADD COLUMN cannot specify NOT NULL.");
+                .hasMessage(
+                        String.format(
+                                "Column %s cannot specify NOT NULL in the %s table.",
+                                "f4", identifier.getFullName()));
     }
 
     @Test

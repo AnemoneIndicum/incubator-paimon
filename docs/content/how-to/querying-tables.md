@@ -87,6 +87,12 @@ SELECT * FROM t TIMESTAMP AS OF 1678883047;
 SELECT * FROM t VERSION AS OF 'my-tag';
 ```
 
+{{< hint warning >}}
+If tag's name is a number and equals to a snapshot id, the VERSION AS OF syntax will consider tag first. For example, if 
+you have a tag named '1' based on snapshot 2, the statement `SELECT * FROM t VERSION AS OF '1'` actually queries snapshot 2 
+instead of snapshot 1.
+{{< /hint >}}
+
 {{< /tab >}}
 
 {{< tab "Spark3-DF" >}}
@@ -123,6 +129,18 @@ spark.read
 -- read the snapshot from specified timestamp with a long value in unix milliseconds
 SET SESSION paimon.scan_timestamp_millis=1679486589444;
 SELECT * FROM t;
+```
+
+{{< /tab >}}
+
+{{< tab "Trino 368+" >}}
+
+```sql
+-- read the snapshot from specified timestamp
+SELECT * FROM t FOR TIMESTAMP AS OF TIMESTAMP '2023-01-01 00:00:00 Asia/Shanghai';
+
+-- read the snapshot with id 1L (use snapshot id as version)
+SELECT * FROM t FOR VERSION AS OF 1;
 ```
 
 {{< /tab >}}
@@ -310,6 +328,20 @@ SELECT * FROM t FOR SYSTEM_TIME AS OF TIMESTAMP '2023-01-01 00:00:00' + INTERVAL
 
 {{< /tabs >}}
 
+Time travel's stream read rely on snapshots, but by default, snapshot only retains data within 1 hour, which can 
+prevent you from reading older incremental data. So, Paimon also provides another mode for streaming reads, 
+`scan.file-creation-time-millis`, which provides a rough filtering to retain files generated after `timeMillis`.
+
+{{< tabs "file-creation-time-millis" >}}
+
+{{< tab "Flink (dynamic option)" >}}
+```sql
+SELECT * FROM t /*+ OPTIONS('scan.file-creation-time-millis' = '1678883047356') */;
+```
+{{< /tab >}}
+
+{{< /tabs >}}
+
 ### Consumer ID
 
 You can specify the `consumer-id` when streaming read table:
@@ -320,7 +352,8 @@ SELECT * FROM t /*+ OPTIONS('consumer-id' = 'myid') */;
 When stream read Paimon tables, the next snapshot id to be recorded into the file system. This has several advantages:
 
 1. When previous job is stopped, the newly started job can continue to consume from the previous progress without
-   resuming from the state. The newly reading will start reading from next snapshot id found in consumer files.
+   resuming from the state. The newly reading will start reading from next snapshot id found in consumer files. 
+   If you don't want this behavior, you can set `'consumer.ignore-progress'` to true.
 2. When deciding whether a snapshot has expired, Paimon looks at all the consumers of the table in the file system,
    and if there are consumers that still depend on this snapshot, then this snapshot will not be deleted by expiration.
 3. When there is no watermark definition, the Paimon table will pass the watermark in the snapshot to the downstream
@@ -362,12 +395,12 @@ Run the following command:
     --warehouse <warehouse-path> \
     --database <database-name> \ 
     --table <table-name> \
-    --consumer-id <consumer-id> \
-    [--next-snapshot <next-snapshot-id>] \
-    [--catalog-conf <paimon-catalog-conf> [--catalog-conf <paimon-catalog-conf> ...]]
+    --consumer_id <consumer-id> \
+    [--next_snapshot <next-snapshot-id>] \
+    [--catalog_conf <paimon-catalog-conf> [--catalog_conf <paimon-catalog-conf> ...]]
 ```
 
-please don't specify --next-snapshot parameter if you want to delete the consumer.
+please don't specify --next_snapshot parameter if you want to delete the consumer.
 
 {{< /tab >}}
 

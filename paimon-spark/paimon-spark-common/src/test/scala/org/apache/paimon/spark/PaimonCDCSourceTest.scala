@@ -43,7 +43,7 @@ class PaimonCDCSourceTest extends PaimonSparkTestBase with StreamTest {
         spark.sql(s"INSERT INTO $tableName VALUES (2, 'v_2_new')")
 
         val table = loadTable(tableName)
-        val location = table.location().getPath
+        val location = table.location().toString
 
         val readStream = spark.readStream
           .format("paimon")
@@ -94,7 +94,7 @@ class PaimonCDCSourceTest extends PaimonSparkTestBase with StreamTest {
         spark.sql(s"INSERT INTO $tableName VALUES (2, 'v_2_new')")
 
         val table = loadTable(tableName)
-        val location = table.location().getPath
+        val location = table.location().toString
 
         val readStream = spark.readStream
           .format("paimon")
@@ -146,7 +146,7 @@ class PaimonCDCSourceTest extends PaimonSparkTestBase with StreamTest {
                      |""".stripMargin)
 
         val table = loadTable(tableName)
-        val location = table.location().getPath
+        val location = table.location().toString
 
         // streaming write
         val inputData = MemoryStream[(Int, String)]
@@ -213,4 +213,39 @@ class PaimonCDCSourceTest extends PaimonSparkTestBase with StreamTest {
     }
   }
 
+  test("Paimon CDC Source: streaming read change-log with audit_log system table") {
+    withTable("T") {
+      withTempDir {
+        checkpointDir =>
+          spark.sql(
+            s"""
+               |CREATE TABLE T (a INT, b STRING)
+               |TBLPROPERTIES ('primary-key'='a','bucket'='2', 'changelog-producer' = 'lookup')
+               |""".stripMargin)
+
+          val readStream = spark.readStream
+            .format("paimon")
+            .table("`T$audit_log`")
+            .writeStream
+            .format("memory")
+            .option("checkpointLocation", checkpointDir.getCanonicalPath)
+            .queryName("mem_table")
+            .outputMode("append")
+            .start()
+
+          val currentResult = () => spark.sql("SELECT * FROM mem_table")
+          try {
+            spark.sql(s"INSERT INTO T VALUES (1, 'v_1')")
+            readStream.processAllAvailable()
+            checkAnswer(currentResult(), Row("+I", 1, "v_1") :: Nil)
+
+            spark.sql(s"INSERT INTO T VALUES (2, 'v_2')")
+            readStream.processAllAvailable()
+            checkAnswer(currentResult(), Row("+I", 1, "v_1") :: Row("+I", 2, "v_2") :: Nil)
+          } finally {
+            readStream.stop()
+          }
+      }
+    }
+  }
 }

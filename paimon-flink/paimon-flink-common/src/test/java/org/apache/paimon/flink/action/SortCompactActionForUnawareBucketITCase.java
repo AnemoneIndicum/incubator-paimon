@@ -62,6 +62,17 @@ public class SortCompactActionForUnawareBucketITCase extends ActionITCaseBase {
         commit(commitMessages);
     }
 
+    private void prepareSameData(int size) throws Exception {
+        createTable();
+        BatchWriteBuilder builder = getTable().newBatchWriteBuilder();
+        try (BatchTableWrite batchTableWrite = builder.newWrite()) {
+            for (int i = 0; i < size; i++) {
+                batchTableWrite.write(data(0, 0, 0));
+            }
+            commit(batchTableWrite.prepareCommit());
+        }
+    }
+
     @Test
     public void testOrderBy() throws Exception {
         prepareData(300, 1);
@@ -230,17 +241,26 @@ public class SortCompactActionForUnawareBucketITCase extends ActionITCaseBase {
                 .isEqualTo("20");
     }
 
+    @Test
+    public void testRandomSuffixWorks() throws Exception {
+        prepareSameData(200);
+        Assertions.assertThatCode(() -> order(Collections.singletonList("f1")))
+                .doesNotThrowAnyException();
+        List<ManifestEntry> files =
+                ((AppendOnlyFileStoreTable) getTable()).store().newScan().plan().files();
+        Assertions.assertThat(files.size()).isEqualTo(3);
+
+        dropTable();
+        prepareSameData(200);
+        Assertions.assertThatCode(() -> zorder(Arrays.asList("f1", "f2")))
+                .doesNotThrowAnyException();
+        files = ((AppendOnlyFileStoreTable) getTable()).store().newScan().plan().files();
+        Assertions.assertThat(files.size()).isEqualTo(3);
+    }
+
     private void zorder(List<String> columns) throws Exception {
         if (RANDOM.nextBoolean()) {
-            new SortCompactAction(
-                            warehouse,
-                            database,
-                            tableName,
-                            Collections.emptyMap(),
-                            Collections.emptyMap())
-                    .withOrderStrategy("zorder")
-                    .withOrderColumns(columns)
-                    .run();
+            createAction("zorder", columns).run();
         } else {
             callProcedure("zorder", columns);
         }
@@ -248,18 +268,26 @@ public class SortCompactActionForUnawareBucketITCase extends ActionITCaseBase {
 
     private void order(List<String> columns) throws Exception {
         if (RANDOM.nextBoolean()) {
-            new SortCompactAction(
-                            warehouse,
-                            database,
-                            tableName,
-                            Collections.emptyMap(),
-                            Collections.emptyMap())
-                    .withOrderStrategy("order")
-                    .withOrderColumns(columns)
-                    .run();
+            createAction("order", columns).run();
         } else {
             callProcedure("order", columns);
         }
+    }
+
+    private SortCompactAction createAction(String orderStrategy, List<String> columns) {
+        return createAction(
+                SortCompactAction.class,
+                "compact",
+                "--warehouse",
+                warehouse,
+                "--database",
+                database,
+                "--table",
+                tableName,
+                "--order_strategy",
+                orderStrategy,
+                "--order_by",
+                String.join(",", columns));
     }
 
     private void callProcedure(String orderStrategy, List<String> orderByColumns) {
@@ -274,6 +302,10 @@ public class SortCompactActionForUnawareBucketITCase extends ActionITCaseBase {
     private void createTable() throws Exception {
         catalog.createDatabase(database, true);
         catalog.createTable(identifier(), schema(), true);
+    }
+
+    private void dropTable() throws Exception {
+        catalog.dropTable(identifier(), true);
     }
 
     private Identifier identifier() {

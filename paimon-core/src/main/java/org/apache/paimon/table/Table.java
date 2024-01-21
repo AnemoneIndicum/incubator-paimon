@@ -71,6 +71,10 @@ public interface Table extends Serializable {
     @Experimental
     void createTag(String tagName, long fromSnapshotId);
 
+    /** Create a tag from latest snapshot. */
+    @Experimental
+    void createTag(String tagName);
+
     /** Delete a tag by name. */
     @Experimental
     void deleteTag(String tagName);
@@ -78,6 +82,16 @@ public interface Table extends Serializable {
     /** Rollback table's state to a specific tag. */
     @Experimental
     void rollbackTo(String tagName);
+
+    /** Create a branch from given tag. */
+    @Experimental
+    void createBranch(String branchName, String tagName);
+
+    /** Delete a branch by branchName. */
+    @Experimental
+    void deleteBranch(String branchName);
+
+    ExpireSnapshots newExpireSnapshots();
 
     // =============== Read & Write Operations ==================
 

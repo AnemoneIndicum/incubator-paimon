@@ -26,6 +26,7 @@ import org.apache.paimon.io.DataFileMeta;
 import org.apache.paimon.io.DataFileMetaSerializer;
 import org.apache.paimon.options.Options;
 import org.apache.paimon.table.FileStoreTable;
+import org.apache.paimon.table.sink.ChannelComputer;
 import org.apache.paimon.utils.Preconditions;
 
 import org.apache.flink.runtime.state.StateInitializationContext;
@@ -155,7 +156,8 @@ public class MultiTablesStoreCompactOperator
                                         commitUser,
                                         state,
                                         getContainingTask().getEnvironment().getIOManager(),
-                                        memoryPool));
+                                        memoryPool,
+                                        getMetricGroup()));
 
         if (write.streamingMode()) {
             write.notifyNewFiles(snapshotId, partition, bucket, files);
@@ -257,7 +259,7 @@ public class MultiTablesStoreCompactOperator
             if (changelogProducer == CoreOptions.ChangelogProducer.FULL_COMPACTION
                     || deltaCommits >= 0) {
                 int finalDeltaCommits = Math.max(deltaCommits, 1);
-                return (table, commitUser, state, ioManager, memoryPool) ->
+                return (table, commitUser, state, ioManager, memoryPool, metricGroup) ->
                         new GlobalFullCompactionSinkWrite(
                                 table,
                                 commitUser,
@@ -267,11 +269,12 @@ public class MultiTablesStoreCompactOperator
                                 waitCompaction,
                                 finalDeltaCommits,
                                 isStreaming,
-                                memoryPool);
+                                memoryPool,
+                                metricGroup);
             }
         }
 
-        return (table, commitUser, state, ioManager, memoryPool) ->
+        return (table, commitUser, state, ioManager, memoryPool, metricGroup) ->
                 new StoreSinkWriteImpl(
                         table,
                         commitUser,
@@ -280,6 +283,7 @@ public class MultiTablesStoreCompactOperator
                         ignorePreviousFiles,
                         waitCompaction,
                         isStreaming,
-                        memoryPool);
+                        memoryPool,
+                        metricGroup);
     }
 }

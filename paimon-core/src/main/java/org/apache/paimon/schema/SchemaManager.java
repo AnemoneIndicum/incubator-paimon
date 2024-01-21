@@ -35,6 +35,7 @@ import org.apache.paimon.schema.SchemaChange.UpdateColumnComment;
 import org.apache.paimon.schema.SchemaChange.UpdateColumnNullability;
 import org.apache.paimon.schema.SchemaChange.UpdateColumnPosition;
 import org.apache.paimon.schema.SchemaChange.UpdateColumnType;
+import org.apache.paimon.schema.SchemaChange.UpdateComment;
 import org.apache.paimon.types.DataField;
 import org.apache.paimon.types.DataType;
 import org.apache.paimon.types.DataTypeCasts;
@@ -63,6 +64,7 @@ import java.util.stream.Collectors;
 
 import static org.apache.paimon.catalog.AbstractCatalog.DB_SUFFIX;
 import static org.apache.paimon.catalog.Identifier.UNKNOWN_DATABASE;
+import static org.apache.paimon.utils.BranchManager.getBranchPath;
 import static org.apache.paimon.utils.FileUtils.listVersionedFiles;
 import static org.apache.paimon.utils.Preconditions.checkState;
 
@@ -161,10 +163,11 @@ public class SchemaManager implements Serializable {
                     latest().orElseThrow(
                                     () ->
                                             new Catalog.TableNotExistException(
-                                                    fromPath(tableRoot.getPath(), true)));
+                                                    fromPath(tableRoot.toString(), true)));
             Map<String, String> newOptions = new HashMap<>(schema.options());
             List<DataField> newFields = new ArrayList<>(schema.fields());
             AtomicInteger highestFieldId = new AtomicInteger(schema.highestFieldId());
+            String newComment = schema.comment();
             for (SchemaChange change : changes) {
                 if (change instanceof SetOption) {
                     SetOption setOption = (SetOption) change;
@@ -174,16 +177,21 @@ public class SchemaManager implements Serializable {
                     RemoveOption removeOption = (RemoveOption) change;
                     checkAlterTableOption(removeOption.key());
                     newOptions.remove(removeOption.key());
+                } else if (change instanceof UpdateComment) {
+                    UpdateComment updateComment = (UpdateComment) change;
+                    newComment = updateComment.comment();
                 } else if (change instanceof AddColumn) {
                     AddColumn addColumn = (AddColumn) change;
                     SchemaChange.Move move = addColumn.move();
                     if (newFields.stream().anyMatch(f -> f.name().equals(addColumn.fieldName()))) {
                         throw new Catalog.ColumnAlreadyExistException(
-                                fromPath(tableRoot.getPath(), true), addColumn.fieldName());
+                                fromPath(tableRoot.toString(), true), addColumn.fieldName());
                     }
                     Preconditions.checkArgument(
                             addColumn.dataType().isNullable(),
-                            "ADD COLUMN cannot specify NOT NULL.");
+                            "Column %s cannot specify NOT NULL in the %s table.",
+                            addColumn.fieldName(),
+                            fromPath(tableRoot.toString(), true).getFullName());
                     int id = highestFieldId.incrementAndGet();
                     DataType dataType =
                             ReassignFieldId.reassign(addColumn.dataType(), highestFieldId);
@@ -214,7 +222,7 @@ public class SchemaManager implements Serializable {
                     validateNotPrimaryAndPartitionKey(schema, rename.fieldName());
                     if (newFields.stream().anyMatch(f -> f.name().equals(rename.newName()))) {
                         throw new Catalog.ColumnAlreadyExistException(
-                                fromPath(tableRoot.getPath(), true), rename.fieldName());
+                                fromPath(tableRoot.toString(), true), rename.fieldName());
                     }
 
                     updateNestedColumn(
@@ -233,7 +241,7 @@ public class SchemaManager implements Serializable {
                     if (!newFields.removeIf(
                             f -> f.name().equals(((DropColumn) change).fieldName()))) {
                         throw new Catalog.ColumnNotExistException(
-                                fromPath(tableRoot.getPath(), true), drop.fieldName());
+                                fromPath(tableRoot.toString(), true), drop.fieldName());
                     }
                     if (newFields.isEmpty()) {
                         throw new IllegalArgumentException("Cannot drop all fields in table");
@@ -341,7 +349,7 @@ public class SchemaManager implements Serializable {
                             schema.partitionKeys(),
                             schema.primaryKeys(),
                             newOptions,
-                            schema.comment());
+                            newComment);
 
             try {
                 boolean success = commit(newSchema);
@@ -424,7 +432,7 @@ public class SchemaManager implements Serializable {
         }
         if (!found) {
             throw new Catalog.ColumnNotExistException(
-                    fromPath(tableRoot.getPath(), true), Arrays.toString(updateFieldNames));
+                    fromPath(tableRoot.toString(), true), Arrays.toString(updateFieldNames));
         }
     }
 
@@ -457,6 +465,14 @@ public class SchemaManager implements Serializable {
         }
     }
 
+    public static TableSchema fromPath(FileIO fileIO, Path path) {
+        try {
+            return JsonSerdeUtil.fromJson(fileIO.readFileUtf8(path), TableSchema.class);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
     private Path schemaDirectory() {
         return new Path(tableRoot + "/schema");
     }
@@ -464,6 +480,11 @@ public class SchemaManager implements Serializable {
     @VisibleForTesting
     public Path toSchemaPath(long id) {
         return new Path(tableRoot + "/schema/" + SCHEMA_PREFIX + id);
+    }
+
+    public Path branchSchemaPath(String branchName, long schemaId) {
+        return new Path(
+                getBranchPath(tableRoot, branchName) + "/schema/" + SCHEMA_PREFIX + schemaId);
     }
 
     /**

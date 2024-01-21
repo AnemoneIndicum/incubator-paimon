@@ -22,6 +22,7 @@ import org.apache.paimon.annotation.VisibleForTesting;
 import org.apache.paimon.flink.sink.StoreSinkWriteState.StateValueFilter;
 import org.apache.paimon.options.Options;
 import org.apache.paimon.table.FileStoreTable;
+import org.apache.paimon.table.sink.ChannelComputer;
 
 import org.apache.flink.runtime.io.disk.iomanager.IOManager;
 import org.apache.flink.runtime.state.StateInitializationContext;
@@ -91,7 +92,9 @@ public abstract class TableWriteOperator<IN> extends PrepareCommitOperator<IN, C
         // runtime context, we can test to construct a writer here
         state = new StoreSinkWriteState(context, stateFilter);
 
-        write = storeSinkWriteProvider.provide(table, commitUser, state, ioManager, memoryPool);
+        write =
+                storeSinkWriteProvider.provide(
+                        table, commitUser, state, ioManager, memoryPool, getMetricGroup());
     }
 
     protected abstract boolean containLogSystem();
@@ -116,5 +119,10 @@ public abstract class TableWriteOperator<IN> extends PrepareCommitOperator<IN, C
     protected List<Committable> prepareCommit(boolean waitCompaction, long checkpointId)
             throws IOException {
         return write.prepareCommit(waitCompaction, checkpointId);
+    }
+
+    @VisibleForTesting
+    public StoreSinkWrite getWrite() {
+        return write;
     }
 }

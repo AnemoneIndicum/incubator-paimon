@@ -20,10 +20,12 @@ package org.apache.paimon.hive;
 
 import org.apache.paimon.catalog.CatalogTestBase;
 import org.apache.paimon.catalog.Identifier;
+import org.apache.paimon.options.Options;
 import org.apache.paimon.schema.Schema;
 import org.apache.paimon.types.DataField;
 import org.apache.paimon.types.DataTypes;
 import org.apache.paimon.utils.CommonTestUtils;
+import org.apache.paimon.utils.HadoopUtils;
 
 import org.apache.paimon.shade.guava30.com.google.common.collect.Lists;
 
@@ -40,10 +42,13 @@ import java.lang.reflect.Field;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 
 import static org.apache.hadoop.hive.conf.HiveConf.ConfVars.METASTORECONNECTURLKEY;
+import static org.apache.paimon.hive.HiveCatalog.PAIMON_TABLE_TYPE_VALUE;
+import static org.apache.paimon.hive.HiveCatalog.TABLE_TYPE_PROP;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -104,7 +109,9 @@ public class HiveCatalogTest extends CatalogTestBase {
 
     @Test
     public void testHadoopConfDir() {
-        HiveConf hiveConf = HiveCatalog.createHiveConf(null, HADOOP_CONF_DIR);
+        HiveConf hiveConf =
+                HiveCatalog.createHiveConf(
+                        null, HADOOP_CONF_DIR, HadoopUtils.getHadoopConfiguration(new Options()));
         assertThat(hiveConf.get("fs.defaultFS")).isEqualTo("dummy-fs");
     }
 
@@ -118,7 +125,9 @@ public class HiveCatalogTest extends CatalogTestBase {
     }
 
     private void testHiveConfDirImpl() {
-        HiveConf hiveConf = HiveCatalog.createHiveConf(HIVE_CONF_DIR, null);
+        HiveConf hiveConf =
+                HiveCatalog.createHiveConf(
+                        HIVE_CONF_DIR, null, HadoopUtils.getHadoopConfiguration(new Options()));
         assertThat(hiveConf.get("hive.metastore.uris")).isEqualTo("dummy-hms");
     }
 
@@ -134,7 +143,9 @@ public class HiveCatalogTest extends CatalogTestBase {
         // add HADOOP_CONF_DIR to system environment
         CommonTestUtils.setEnv(newEnv, false);
 
-        HiveConf hiveConf = HiveCatalog.createHiveConf(null, null);
+        HiveConf hiveConf =
+                HiveCatalog.createHiveConf(
+                        null, null, HadoopUtils.getHadoopConfiguration(new Options()));
         assertThat(hiveConf.get("fs.defaultFS")).isEqualTo("dummy-fs");
     }
 
@@ -153,7 +164,9 @@ public class HiveCatalogTest extends CatalogTestBase {
         // add HIVE_CONF_DIR to system environment
         CommonTestUtils.setEnv(newEnv, false);
 
-        HiveConf hiveConf = HiveCatalog.createHiveConf(null, null);
+        HiveConf hiveConf =
+                HiveCatalog.createHiveConf(
+                        null, null, HadoopUtils.getHadoopConfiguration(new Options()));
         assertThat(hiveConf.get("hive.metastore.uris")).isEqualTo("dummy-hms");
     }
 
@@ -197,6 +210,9 @@ public class HiveCatalogTest extends CatalogTestBase {
             // Verify the transformed parameters
             assertThat(tableProperties).containsEntry("table.owner", "Jon");
             assertThat(tableProperties).containsEntry("storage.format", "ORC");
+            assertThat(tableProperties)
+                    .containsEntry(
+                            TABLE_TYPE_PROP, PAIMON_TABLE_TYPE_VALUE.toUpperCase(Locale.ROOT));
         } catch (Exception e) {
             fail("Test failed due to exception: " + e.getMessage());
         }

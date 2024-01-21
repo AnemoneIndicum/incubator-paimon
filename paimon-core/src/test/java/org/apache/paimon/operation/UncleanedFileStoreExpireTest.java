@@ -19,7 +19,10 @@
 package org.apache.paimon.operation;
 
 import org.apache.paimon.KeyValue;
+import org.apache.paimon.Snapshot;
 import org.apache.paimon.fs.Path;
+import org.apache.paimon.table.ExpireSnapshots;
+import org.apache.paimon.utils.TagManager;
 
 import org.junit.jupiter.api.Test;
 
@@ -27,6 +30,7 @@ import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
@@ -35,14 +39,14 @@ import java.util.stream.Collectors;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Tests for {@link FileStoreExpireImpl}. Some files not in use may still remain after the test due
- * to the testing methods.
+ * Tests for {@link ExpireSnapshots}. Some files not in use may still remain after the test due to
+ * the testing methods.
  */
 public class UncleanedFileStoreExpireTest extends FileStoreExpireTestBase {
 
     @Test
     public void testExpireWithMissingFiles() throws Exception {
-        FileStoreExpire expire = store.newExpire(1, 1, 1);
+        ExpireSnapshots expire = store.newExpire(1, 1, 1);
 
         List<KeyValue> allData = new ArrayList<>();
         List<Integer> snapshotPositions = new ArrayList<>();
@@ -79,5 +83,43 @@ public class UncleanedFileStoreExpireTest extends FileStoreExpireTestBase {
         }
         assertThat(snapshotManager.snapshotExists(latestSnapshotId)).isTrue();
         assertSnapshot(latestSnapshotId, allData, snapshotPositions);
+    }
+
+    @Test
+    public void testMixedSnapshotAndTagDeletion() throws Exception {
+        List<KeyValue> allData = new ArrayList<>();
+        List<Integer> snapshotPositions = new ArrayList<>();
+        ThreadLocalRandom random = ThreadLocalRandom.current();
+
+        commit(random.nextInt(10) + 30, allData, snapshotPositions);
+        int latestSnapshotId = snapshotManager.latestSnapshotId().intValue();
+        TagManager tagManager = store.newTagManager();
+
+        // create tags for each snapshot
+        for (int id = 1; id <= latestSnapshotId; id++) {
+            Snapshot snapshot = snapshotManager.snapshot(id);
+            tagManager.createTag(snapshot, "tag" + id, Collections.emptyList());
+        }
+
+        // randomly expire snapshots
+        int expired = random.nextInt(latestSnapshotId / 2) + 1;
+        int retained = latestSnapshotId - expired;
+        store.newExpire(retained, retained, Long.MAX_VALUE).expire();
+
+        // randomly delete tags
+        for (int id = 1; id <= latestSnapshotId; id++) {
+            if (random.nextBoolean()) {
+                tagManager.deleteTag("tag" + id, store.newTagDeletion(), snapshotManager);
+            }
+        }
+
+        // check snapshots and tags
+        Set<Snapshot> allSnapshots = new HashSet<>();
+        snapshotManager.snapshots().forEachRemaining(allSnapshots::add);
+        allSnapshots.addAll(tagManager.taggedSnapshots());
+
+        for (Snapshot snapshot : allSnapshots) {
+            assertSnapshot(snapshot, allData, snapshotPositions);
+        }
     }
 }

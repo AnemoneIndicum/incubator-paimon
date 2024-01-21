@@ -34,12 +34,12 @@ import org.apache.paimon.predicate.Predicate;
 import org.apache.paimon.schema.SchemaManager;
 import org.apache.paimon.schema.SchemaValidation;
 import org.apache.paimon.schema.TableSchema;
+import org.apache.paimon.table.sink.CallbackUtils;
 import org.apache.paimon.table.sink.CommitCallback;
 import org.apache.paimon.table.sink.DynamicBucketRowKeyExtractor;
 import org.apache.paimon.table.sink.FixedBucketRowKeyExtractor;
 import org.apache.paimon.table.sink.RowKeyExtractor;
 import org.apache.paimon.table.sink.TableCommitImpl;
-import org.apache.paimon.table.sink.TagCallback;
 import org.apache.paimon.table.sink.UnawareBucketRowKeyExtractor;
 import org.apache.paimon.table.source.InnerStreamTableScan;
 import org.apache.paimon.table.source.InnerStreamTableScanImpl;
@@ -50,15 +50,15 @@ import org.apache.paimon.table.source.snapshot.SnapshotReader;
 import org.apache.paimon.table.source.snapshot.SnapshotReaderImpl;
 import org.apache.paimon.table.source.snapshot.StaticFromTimestampStartingScanner;
 import org.apache.paimon.tag.TagPreview;
-import org.apache.paimon.utils.IOUtils;
-import org.apache.paimon.utils.Preconditions;
+import org.apache.paimon.utils.BranchManager;
 import org.apache.paimon.utils.SnapshotManager;
 import org.apache.paimon.utils.TagManager;
+
+import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -68,6 +68,7 @@ import java.util.function.BiConsumer;
 
 import static org.apache.paimon.CoreOptions.PATH;
 import static org.apache.paimon.utils.Preconditions.checkArgument;
+import static org.apache.paimon.utils.Preconditions.checkNotNull;
 
 /** Abstract {@link FileStoreTable}. */
 public abstract class AbstractFileStoreTable implements FileStoreTable {
@@ -163,6 +164,22 @@ public abstract class AbstractFileStoreTable implements FileStoreTable {
 
     @Override
     public FileStoreTable copy(Map<String, String> dynamicOptions) {
+        checkImmutability(dynamicOptions);
+        return copyInternal(dynamicOptions, true);
+    }
+
+    @Override
+    public FileStoreTable copyWithoutTimeTravel(Map<String, String> dynamicOptions) {
+        checkImmutability(dynamicOptions);
+        return copyInternal(dynamicOptions, false);
+    }
+
+    @Override
+    public FileStoreTable internalCopyWithoutCheck(Map<String, String> dynamicOptions) {
+        return copyInternal(dynamicOptions, true);
+    }
+
+    private void checkImmutability(Map<String, String> dynamicOptions) {
         Map<String, String> options = tableSchema.options();
         // check option is not immutable
         dynamicOptions.forEach(
@@ -171,12 +188,9 @@ public abstract class AbstractFileStoreTable implements FileStoreTable {
                         SchemaManager.checkAlterTableOption(k);
                     }
                 });
-
-        return internalCopyWithoutCheck(dynamicOptions);
     }
 
-    @Override
-    public FileStoreTable internalCopyWithoutCheck(Map<String, String> dynamicOptions) {
+    private FileStoreTable copyInternal(Map<String, String> dynamicOptions, boolean tryTimeTravel) {
         Map<String, String> options = new HashMap<>(tableSchema.options());
 
         // merge non-null dynamic options into schema.options
@@ -200,11 +214,13 @@ public abstract class AbstractFileStoreTable implements FileStoreTable {
         // copy a new table schema to contain dynamic options
         TableSchema newTableSchema = tableSchema.copy(newOptions.toMap());
 
+        if (tryTimeTravel) {
+            // see if merged options contain time travel option
+            newTableSchema = tryTimeTravel(newOptions).orElse(newTableSchema);
+        }
+
         // validate schema with new options
         SchemaValidation.validateTableSchema(newTableSchema);
-
-        // see if merged options contain time travel option
-        newTableSchema = tryTimeTravel(newOptions).orElse(newTableSchema);
 
         return copy(newTableSchema);
     }
@@ -254,22 +270,47 @@ public abstract class AbstractFileStoreTable implements FileStoreTable {
     }
 
     @Override
+    public ExpireSnapshots newExpireSnapshots() {
+        return new ExpireSnapshotsImpl(
+                snapshotManager(),
+                store().newSnapshotDeletion(),
+                store().newTagManager(),
+                coreOptions().snapshotExpireCleanEmptyDirectories());
+    }
+
+    @Override
     public TableCommitImpl newCommit(String commitUser) {
+        CoreOptions options = coreOptions();
+        Runnable snapshotExpire = null;
+        if (!options.writeOnly()) {
+            ExpireSnapshots expireSnapshots =
+                    newExpireSnapshots()
+                            .retainMax(options.snapshotNumRetainMax())
+                            .retainMin(options.snapshotNumRetainMin())
+                            .maxDeletes(options.snapshotExpireLimit());
+            long snapshotTimeRetain = options.snapshotTimeRetain().toMillis();
+            snapshotExpire =
+                    () ->
+                            expireSnapshots
+                                    .olderThanMills(System.currentTimeMillis() - snapshotTimeRetain)
+                                    .expire();
+        }
         return new TableCommitImpl(
                 store().newCommit(commitUser),
                 createCommitCallbacks(),
-                coreOptions().writeOnly() ? null : store().newExpire(),
-                coreOptions().writeOnly() ? null : store().newPartitionExpire(commitUser),
-                coreOptions().writeOnly() ? null : store().newTagCreationManager(),
+                snapshotExpire,
+                options.writeOnly() ? null : store().newPartitionExpire(commitUser),
+                options.writeOnly() ? null : store().newTagCreationManager(),
                 catalogEnvironment.lockFactory().create(),
                 CoreOptions.fromMap(options()).consumerExpireTime(),
                 new ConsumerManager(fileIO, path),
-                coreOptions().snapshotExpireExecutionMode(),
+                options.snapshotExpireExecutionMode(),
                 name());
     }
 
     private List<CommitCallback> createCommitCallbacks() {
-        List<CommitCallback> callbacks = new ArrayList<>(loadCommitCallbacks());
+        List<CommitCallback> callbacks =
+                new ArrayList<>(CallbackUtils.loadCommitCallbacks(coreOptions()));
         CoreOptions options = coreOptions();
         MetastoreClient.Factory metastoreClientFactory =
                 catalogEnvironment.metastoreClientFactory();
@@ -293,95 +334,60 @@ public abstract class AbstractFileStoreTable implements FileStoreTable {
         return callbacks;
     }
 
-    private List<TagCallback> createTagCallbacks() {
-        List<TagCallback> callbacks = new ArrayList<>(loadTagCallbacks());
-        String partitionField = coreOptions().tagToPartitionField();
-        MetastoreClient.Factory metastoreClientFactory =
-                catalogEnvironment.metastoreClientFactory();
-        if (partitionField != null && metastoreClientFactory != null) {
-            callbacks.add(
-                    new AddPartitionTagCallback(metastoreClientFactory.create(), partitionField));
-        }
-        return callbacks;
-    }
-
-    private List<TagCallback> loadTagCallbacks() {
-        return loadCallbacks(coreOptions().tagCallbacks(), TagCallback.class);
-    }
-
-    private List<CommitCallback> loadCommitCallbacks() {
-        return loadCallbacks(coreOptions().commitCallbacks(), CommitCallback.class);
-    }
-
-    @SuppressWarnings("unchecked")
-    private <T> List<T> loadCallbacks(Map<String, String> clazzParamMaps, Class<T> expectClass) {
-        List<T> result = new ArrayList<>();
-
-        for (Map.Entry<String, String> classParamEntry : clazzParamMaps.entrySet()) {
-            String className = classParamEntry.getKey();
-            String param = classParamEntry.getValue();
-
-            Class<?> clazz;
-            try {
-                clazz = Class.forName(className, true, this.getClass().getClassLoader());
-            } catch (ClassNotFoundException e) {
-                throw new RuntimeException(e);
-            }
-
-            Preconditions.checkArgument(
-                    expectClass.isAssignableFrom(clazz),
-                    "Class " + clazz + " must implement " + expectClass);
-
-            try {
-                if (param == null) {
-                    result.add((T) clazz.newInstance());
-                } else {
-                    result.add((T) clazz.getConstructor(String.class).newInstance(param));
-                }
-            } catch (Exception e) {
-                throw new RuntimeException(
-                        "Failed to initialize commit callback "
-                                + className
-                                + (param == null ? "" : " with param " + param),
-                        e);
-            }
-        }
-        return result;
-    }
-
     private Optional<TableSchema> tryTimeTravel(Options options) {
         CoreOptions coreOptions = new CoreOptions(options);
 
         switch (coreOptions.startupMode()) {
             case FROM_SNAPSHOT:
             case FROM_SNAPSHOT_FULL:
-                if (coreOptions.scanSnapshotId() != null) {
-                    long snapshotId = coreOptions.scanSnapshotId();
-                    if (snapshotManager().snapshotExists(snapshotId)) {
-                        long schemaId = snapshotManager().snapshot(snapshotId).schemaId();
-                        return Optional.of(schemaManager().schema(schemaId).copy(options.toMap()));
-                    }
+                if (coreOptions.scanVersion() != null) {
+                    return travelToVersion(coreOptions.scanVersion(), options);
+                } else if (coreOptions.scanSnapshotId() != null) {
+                    return travelToSnapshot(coreOptions.scanSnapshotId(), options);
                 } else {
-                    String tagName = coreOptions.scanTagName();
-                    TagManager tagManager = tagManager();
-                    if (tagManager.tagExists(tagName)) {
-                        long schemaId = tagManager.taggedSnapshot(tagName).schemaId();
-                        return Optional.of(schemaManager().schema(schemaId).copy(options.toMap()));
-                    }
+                    return travelToTag(coreOptions.scanTagName(), options);
                 }
-                return Optional.empty();
             case FROM_TIMESTAMP:
                 Snapshot snapshot =
                         StaticFromTimestampStartingScanner.timeTravelToTimestamp(
                                 snapshotManager(), coreOptions.scanTimestampMills());
-                if (snapshot != null) {
-                    long schemaId = snapshot.schemaId();
-                    return Optional.of(schemaManager().schema(schemaId).copy(options.toMap()));
-                }
-                return Optional.empty();
+                return travelToSnapshot(snapshot, options);
             default:
                 return Optional.empty();
         }
+    }
+
+    /** Tag first when travelling to a version. */
+    private Optional<TableSchema> travelToVersion(String version, Options options) {
+        options.remove(CoreOptions.SCAN_VERSION.key());
+        if (tagManager().tagExists(version)) {
+            options.set(CoreOptions.SCAN_TAG_NAME, version);
+            return travelToTag(version, options);
+        } else if (version.chars().allMatch(Character::isDigit)) {
+            options.set(CoreOptions.SCAN_SNAPSHOT_ID.key(), version);
+            return travelToSnapshot(Long.parseLong(version), options);
+        } else {
+            throw new RuntimeException("Cannot find a time travel version for " + version);
+        }
+    }
+
+    private Optional<TableSchema> travelToTag(String tagName, Options options) {
+        return travelToSnapshot(tagManager().taggedSnapshot(tagName), options);
+    }
+
+    private Optional<TableSchema> travelToSnapshot(long snapshotId, Options options) {
+        SnapshotManager snapshotManager = snapshotManager();
+        if (snapshotManager.snapshotExists(snapshotId)) {
+            return travelToSnapshot(snapshotManager.snapshot(snapshotId), options);
+        }
+        return Optional.empty();
+    }
+
+    private Optional<TableSchema> travelToSnapshot(@Nullable Snapshot snapshot, Options options) {
+        if (snapshot != null) {
+            return Optional.of(schemaManager().schema(snapshot.schemaId()).copy(options.toMap()));
+        }
+        return Optional.empty();
     }
 
     @Override
@@ -402,24 +408,33 @@ public abstract class AbstractFileStoreTable implements FileStoreTable {
                 snapshotManager.snapshotExists(fromSnapshotId),
                 "Cannot create tag because given snapshot #%s doesn't exist.",
                 fromSnapshotId);
+        createTag(tagName, snapshotManager.snapshot(fromSnapshotId));
+    }
 
-        Snapshot snapshot = snapshotManager.snapshot(fromSnapshotId);
-        tagManager().createTag(snapshot, tagName);
+    @Override
+    public void createTag(String tagName) {
+        Snapshot latestSnapshot = snapshotManager().latestSnapshot();
+        checkNotNull(latestSnapshot, "Cannot create tag because latest snapshot doesn't exist.");
+        createTag(tagName, latestSnapshot);
+    }
 
-        List<TagCallback> callbacks = Collections.emptyList();
-        try {
-            callbacks = createTagCallbacks();
-            callbacks.forEach(callback -> callback.notifyCreation(tagName));
-        } finally {
-            for (TagCallback tagCallback : callbacks) {
-                IOUtils.closeQuietly(tagCallback);
-            }
-        }
+    private void createTag(String tagName, Snapshot fromSnapshot) {
+        tagManager().createTag(fromSnapshot, tagName, store().createTagCallbacks());
     }
 
     @Override
     public void deleteTag(String tagName) {
         tagManager().deleteTag(tagName, store().newTagDeletion(), snapshotManager());
+    }
+
+    @Override
+    public void createBranch(String branchName, String tagName) {
+        branchManager().createBranch(branchName, tagName);
+    }
+
+    @Override
+    public void deleteBranch(String branchName) {
+        branchManager().deleteBranch(branchName);
     }
 
     @Override
@@ -452,6 +467,11 @@ public abstract class AbstractFileStoreTable implements FileStoreTable {
         return new TagManager(fileIO, path);
     }
 
+    @Override
+    public BranchManager branchManager() {
+        return new BranchManager(fileIO, path, snapshotManager(), tagManager(), schemaManager());
+    }
+
     private RollbackHelper rollbackHelper() {
         return new RollbackHelper(
                 snapshotManager(),
@@ -459,5 +479,17 @@ public abstract class AbstractFileStoreTable implements FileStoreTable {
                 fileIO,
                 store().newSnapshotDeletion(),
                 store().newTagDeletion());
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) {
+            return true;
+        }
+        if (o == null || getClass() != o.getClass()) {
+            return false;
+        }
+        AbstractFileStoreTable that = (AbstractFileStoreTable) o;
+        return Objects.equals(path, that.path) && Objects.equals(tableSchema, that.tableSchema);
     }
 }

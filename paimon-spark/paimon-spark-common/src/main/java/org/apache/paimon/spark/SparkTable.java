@@ -20,7 +20,6 @@ package org.apache.paimon.spark;
 
 import org.apache.paimon.CoreOptions;
 import org.apache.paimon.options.Options;
-import org.apache.paimon.predicate.Predicate;
 import org.apache.paimon.table.DataTable;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.Table;
@@ -28,6 +27,7 @@ import org.apache.paimon.table.Table;
 import org.apache.spark.sql.connector.catalog.SupportsRead;
 import org.apache.spark.sql.connector.catalog.SupportsWrite;
 import org.apache.spark.sql.connector.catalog.TableCapability;
+import org.apache.spark.sql.connector.catalog.TableCatalog;
 import org.apache.spark.sql.connector.expressions.FieldReference;
 import org.apache.spark.sql.connector.expressions.IdentityTransform;
 import org.apache.spark.sql.connector.expressions.Transform;
@@ -37,12 +37,11 @@ import org.apache.spark.sql.connector.write.WriteBuilder;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.sql.util.CaseInsensitiveStringMap;
 
-import javax.annotation.Nullable;
-
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 /** A spark {@link org.apache.spark.sql.connector.catalog.Table} for paimon. */
@@ -53,7 +52,6 @@ public class SparkTable
                 PaimonPartitionManagement {
 
     private final Table table;
-    @Nullable protected Predicate deletePredicate;
 
     public SparkTable(Table table) {
         this.table = table;
@@ -66,7 +64,7 @@ public class SparkTable
     @Override
     public ScanBuilder newScanBuilder(CaseInsensitiveStringMap options) {
         Table newTable = table.copy(options.asCaseSensitiveMap());
-        return new SparkScanBuilder(newTable);
+        return new PaimonScanBuilder(newTable);
     }
 
     @Override
@@ -112,13 +110,29 @@ public class SparkTable
         if (table instanceof DataTable) {
             Map<String, String> properties =
                     new HashMap<>(((DataTable) table).coreOptions().toMap());
-            if (table.primaryKeys().size() > 0) {
+            if (!table.primaryKeys().isEmpty()) {
                 properties.put(
                         CoreOptions.PRIMARY_KEY.key(), String.join(",", table.primaryKeys()));
+            }
+            properties.put(TableCatalog.PROP_PROVIDER, SparkSource.NAME());
+            if (table.comment().isPresent()) {
+                properties.put(TableCatalog.PROP_COMMENT, table.comment().get());
             }
             return properties;
         } else {
             return Collections.emptyMap();
         }
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) {
+            return true;
+        }
+        if (o == null || getClass() != o.getClass()) {
+            return false;
+        }
+        SparkTable that = (SparkTable) o;
+        return Objects.equals(table, that.table);
     }
 }

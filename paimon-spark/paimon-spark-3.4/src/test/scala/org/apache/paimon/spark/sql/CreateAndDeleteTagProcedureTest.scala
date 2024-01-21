@@ -36,7 +36,7 @@ class CreateAndDeleteTagProcedureTest extends PaimonSparkTestBase with StreamTes
                        |CREATE TABLE T (a INT, b STRING)
                        |TBLPROPERTIES ('primary-key'='a', 'write-mode'='change-log', 'bucket'='3')
                        |""".stripMargin)
-          val location = loadTable("T").location().getPath
+          val location = loadTable("T").location().toString
 
           val inputData = MemoryStream[(Int, String)]
           val stream = inputData
@@ -76,6 +76,18 @@ class CreateAndDeleteTagProcedureTest extends PaimonSparkTestBase with StreamTes
               Row("test_tag") :: Nil)
             checkAnswer(
               spark.sql("CALL paimon.sys.delete_tag(table => 'test.T', tag => 'test_tag')"),
+              Row(true) :: Nil)
+            checkAnswer(spark.sql("SELECT tag_name FROM paimon.test.`T$tags`"), Nil)
+            checkAnswer(
+              spark.sql(
+                "CALL paimon.sys.create_tag(table => 'test.T', tag => 'test_latestSnapshot_tag')"),
+              Row(true) :: Nil)
+            checkAnswer(
+              spark.sql("SELECT tag_name FROM paimon.test.`T$tags`"),
+              Row("test_latestSnapshot_tag") :: Nil)
+            checkAnswer(
+              spark.sql(
+                "CALL paimon.sys.delete_tag(table => 'test.T', tag => 'test_latestSnapshot_tag')"),
               Row(true) :: Nil)
             checkAnswer(spark.sql("SELECT tag_name FROM paimon.test.`T$tags`"), Nil)
           } finally {

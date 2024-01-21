@@ -36,6 +36,8 @@ import org.apache.paimon.predicate.Predicate;
 import org.apache.paimon.reader.RecordReader;
 import org.apache.paimon.schema.KeyValueFieldsExtractor;
 import org.apache.paimon.schema.TableSchema;
+import org.apache.paimon.table.query.LocalTableQuery;
+import org.apache.paimon.table.sink.RowKindGenerator;
 import org.apache.paimon.table.sink.SequenceGenerator;
 import org.apache.paimon.table.sink.TableWriteImpl;
 import org.apache.paimon.table.source.InnerTableRead;
@@ -43,6 +45,7 @@ import org.apache.paimon.table.source.KeyValueTableRead;
 import org.apache.paimon.table.source.MergeTreeSplitGenerator;
 import org.apache.paimon.table.source.SplitGenerator;
 import org.apache.paimon.table.source.ValueContentRowDataRecordIterator;
+import org.apache.paimon.types.RowKind;
 import org.apache.paimon.types.RowType;
 
 import java.util.List;
@@ -107,7 +110,8 @@ public class PrimaryKeyFileStoreTable extends AbstractFileStoreTable {
                             rowType,
                             extractor,
                             mfFactory,
-                            name());
+                            name(),
+                            catalogEnvironment);
         }
         return lazyStore;
     }
@@ -181,22 +185,30 @@ public class PrimaryKeyFileStoreTable extends AbstractFileStoreTable {
     @Override
     public TableWriteImpl<KeyValue> newWrite(
             String commitUser, ManifestCacheFilter manifestFilter) {
-        final SequenceGenerator sequenceGenerator =
-                SequenceGenerator.create(schema(), store().options());
+        TableSchema schema = schema();
+        CoreOptions options = store().options();
+        final SequenceGenerator sequenceGenerator = SequenceGenerator.create(schema, options);
+        final RowKindGenerator rowKindGenerator = RowKindGenerator.create(schema, options);
         final KeyValue kv = new KeyValue();
         return new TableWriteImpl<>(
                 store().newWrite(commitUser, manifestFilter),
                 createRowKeyExtractor(),
                 record -> {
+                    InternalRow row = record.row();
                     long sequenceNumber =
                             sequenceGenerator == null
                                     ? KeyValue.UNKNOWN_SEQUENCE
-                                    : sequenceGenerator.generate(record.row());
-                    return kv.replace(
-                            record.primaryKey(),
-                            sequenceNumber,
-                            record.row().getRowKind(),
-                            record.row());
+                                    : sequenceGenerator.generate(row);
+                    RowKind rowKind =
+                            rowKindGenerator == null
+                                    ? row.getRowKind()
+                                    : rowKindGenerator.generate(row);
+                    return kv.replace(record.primaryKey(), sequenceNumber, rowKind, row);
                 });
+    }
+
+    @Override
+    public LocalTableQuery newLocalTableQuery() {
+        return new LocalTableQuery(this);
     }
 }

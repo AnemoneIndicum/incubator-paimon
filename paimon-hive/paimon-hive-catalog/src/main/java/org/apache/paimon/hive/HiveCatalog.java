@@ -21,12 +21,15 @@ package org.apache.paimon.hive;
 import org.apache.paimon.CoreOptions;
 import org.apache.paimon.annotation.VisibleForTesting;
 import org.apache.paimon.catalog.AbstractCatalog;
+import org.apache.paimon.catalog.Catalog;
+import org.apache.paimon.catalog.CatalogContext;
 import org.apache.paimon.catalog.CatalogLock;
 import org.apache.paimon.catalog.Identifier;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.Path;
 import org.apache.paimon.metastore.MetastoreClient;
 import org.apache.paimon.operation.Lock;
+import org.apache.paimon.options.CatalogOptions;
 import org.apache.paimon.options.Options;
 import org.apache.paimon.options.OptionsUtils;
 import org.apache.paimon.schema.Schema;
@@ -39,6 +42,7 @@ import org.apache.paimon.types.DataTypes;
 
 import org.apache.flink.table.hive.LegacyHiveClasses;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.IMetaStoreClient;
 import org.apache.hadoop.hive.metastore.api.Database;
@@ -58,6 +62,8 @@ import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.UncheckedIOException;
+import java.net.URL;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -70,11 +76,16 @@ import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+import static org.apache.hadoop.hive.conf.HiveConf.ConfVars.METASTOREWAREHOUSE;
 import static org.apache.paimon.hive.HiveCatalogLock.acquireTimeout;
 import static org.apache.paimon.hive.HiveCatalogLock.checkMaxSleep;
+import static org.apache.paimon.hive.HiveCatalogOptions.HADOOP_CONF_DIR;
+import static org.apache.paimon.hive.HiveCatalogOptions.HIVE_CONF_DIR;
+import static org.apache.paimon.hive.HiveCatalogOptions.IDENTIFIER;
 import static org.apache.paimon.hive.HiveCatalogOptions.LOCATION_IN_PROPERTIES;
 import static org.apache.paimon.options.CatalogOptions.LOCK_ENABLED;
 import static org.apache.paimon.options.CatalogOptions.TABLE_TYPE;
+import static org.apache.paimon.options.OptionsUtils.convertToPropertiesPrefixKey;
 import static org.apache.paimon.utils.Preconditions.checkArgument;
 import static org.apache.paimon.utils.Preconditions.checkState;
 import static org.apache.paimon.utils.StringUtils.isNullOrWhitespaceOnly;
@@ -82,6 +93,11 @@ import static org.apache.paimon.utils.StringUtils.isNullOrWhitespaceOnly;
 /** A catalog implementation for Hive. */
 public class HiveCatalog extends AbstractCatalog {
     private static final Logger LOG = LoggerFactory.getLogger(HiveCatalog.class);
+
+    // Reserved properties
+    public static final String DB_COMMENT_PROP = "comment";
+    public static final String TABLE_TYPE_PROP = "table_type";
+    public static final String PAIMON_TABLE_TYPE_VALUE = "paimon";
 
     // we don't include paimon-hive-connector as dependencies because it depends on
     // hive-exec
@@ -93,7 +109,6 @@ public class HiveCatalog extends AbstractCatalog {
     private static final String STORAGE_HANDLER_CLASS_NAME =
             "org.apache.paimon.hive.PaimonStorageHandler";
     private static final String HIVE_PREFIX = "hive.";
-    private static final int HIVE_PREFIX_LENGTH = HIVE_PREFIX.length();
     public static final String HIVE_SITE_FILE = "hive-site.xml";
 
     private final HiveConf hiveConf;
@@ -206,19 +221,66 @@ public class HiveCatalog extends AbstractCatalog {
     }
 
     @Override
-    protected void createDatabaseImpl(String name) {
+    protected void createDatabaseImpl(String name, Map<String, String> properties) {
         try {
-            client.createDatabase(convertToDatabase(name));
-            locationHelper.createPathIfRequired(databasePath(name), fileIO);
+            Database database = convertToHiveDatabase(name, properties);
+            Path databasePath =
+                    database.getLocationUri() == null
+                            ? newDatabasePath(name)
+                            : new Path(database.getLocationUri());
+            locationHelper.createPathIfRequired(databasePath, fileIO);
+            locationHelper.specifyDatabaseLocation(databasePath, database);
+            client.createDatabase(database);
         } catch (TException | IOException e) {
             throw new RuntimeException("Failed to create database " + name, e);
         }
     }
 
+    private Database convertToHiveDatabase(String name, Map<String, String> properties) {
+        Database database = new Database();
+        database.setName(name);
+        Map<String, String> parameter = new HashMap<>();
+        properties.forEach(
+                (key, value) -> {
+                    if (key.equals(DB_COMMENT_PROP)) {
+                        database.setDescription(value);
+                    } else if (key.equals(DB_LOCATION_PROP)) {
+                        database.setLocationUri(value);
+                    } else if (value != null) {
+                        parameter.put(key, value);
+                    }
+                });
+        database.setParameters(parameter);
+        return database;
+    }
+
+    @Override
+    public Map<String, String> loadDatabasePropertiesImpl(String name) {
+        try {
+            return convertToProperties(client.getDatabase(name));
+        } catch (TException e) {
+            throw new RuntimeException(
+                    String.format("Failed to get database %s properties", name), e);
+        }
+    }
+
+    private Map<String, String> convertToProperties(Database database) {
+        Map<String, String> properties = new HashMap<>(database.getParameters());
+        if (database.getLocationUri() != null) {
+            properties.put(DB_LOCATION_PROP, database.getLocationUri());
+        }
+        if (database.getDescription() != null) {
+            properties.put(DB_COMMENT_PROP, database.getDescription());
+        }
+        return properties;
+    }
+
     @Override
     protected void dropDatabaseImpl(String name) {
         try {
-            locationHelper.dropPathIfRequired(databasePath(name), fileIO);
+            Database database = client.getDatabase(name);
+            String location = locationHelper.getDatabaseLocation(database);
+            locationHelper.dropPathIfRequired(new Path(location), fileIO);
             client.dropDatabase(name, true, false, true);
         } catch (TException | IOException e) {
             throw new RuntimeException("Failed to drop database " + name, e);
@@ -232,9 +294,7 @@ public class HiveCatalog extends AbstractCatalog {
                     .filter(
                             tableName -> {
                                 Identifier identifier = new Identifier(databaseName, tableName);
-                                // the environment here may not be able to access non-paimon
-                                // tables, so we just check the schema file first
-                                return schemaFileExists(identifier) && tableExists(identifier);
+                                return tableExists(identifier);
                             })
                     .collect(Collectors.toList());
         } catch (TException e) {
@@ -318,14 +378,7 @@ public class HiveCatalog extends AbstractCatalog {
         Table table =
                 newHmsTable(
                         identifier,
-                        tableSchema.options().entrySet().stream()
-                                .filter(entry -> entry.getKey().startsWith(HIVE_PREFIX))
-                                .collect(
-                                        Collectors.toMap(
-                                                entry ->
-                                                        entry.getKey()
-                                                                .substring(HIVE_PREFIX_LENGTH),
-                                                Map.Entry::getValue)));
+                        convertToPropertiesPrefixKey(tableSchema.options(), HIVE_PREFIX));
         try {
             updateHmsTable(table, identifier, tableSchema);
             client.createTable(table);
@@ -421,13 +474,6 @@ public class HiveCatalog extends AbstractCatalog {
                         identifier.getObjectName()));
     }
 
-    private Database convertToDatabase(String name) {
-        Database database = new Database();
-        database.setName(name);
-        locationHelper.specifyDatabaseLocation(databasePath(name), database);
-        return database;
-    }
-
     private Table newHmsTable(Identifier identifier, Map<String, String> tableParameters) {
         long currentTimeMillis = System.currentTimeMillis();
         TableType tableType =
@@ -449,6 +495,7 @@ public class HiveCatalog extends AbstractCatalog {
                         null,
                         null,
                         tableType.toString().toUpperCase(Locale.ROOT) + "_TABLE");
+        table.getParameters().put(TABLE_TYPE_PROP, PAIMON_TABLE_TYPE_VALUE.toUpperCase());
         table.getParameters()
                 .put(hive_metastoreConstants.META_TABLE_STORAGE, STORAGE_HANDLER_CLASS_NAME);
         if (TableType.EXTERNAL.equals(tableType)) {
@@ -515,7 +562,7 @@ public class HiveCatalog extends AbstractCatalog {
     }
 
     @VisibleForTesting
-    IMetaStoreClient getHmsClient() {
+    public IMetaStoreClient getHmsClient() {
         return client;
     }
 
@@ -550,17 +597,16 @@ public class HiveCatalog extends AbstractCatalog {
     }
 
     public static HiveConf createHiveConf(
-            @Nullable String hiveConfDir, @Nullable String hadoopConfDir) {
+            @Nullable String hiveConfDir,
+            @Nullable String hadoopConfDir,
+            Configuration defaultHadoopConf) {
         // try to load from system env.
         if (isNullOrWhitespaceOnly(hiveConfDir)) {
             hiveConfDir = possibleHiveConfPath();
         }
-        if (isNullOrWhitespaceOnly(hadoopConfDir)) {
-            hadoopConfDir = possibleHadoopConfPath();
-        }
 
         // create HiveConf from hadoop configuration with hadoop conf directory configured.
-        Configuration hadoopConf = null;
+        Configuration hadoopConf = defaultHadoopConf;
         if (!isNullOrWhitespaceOnly(hadoopConfDir)) {
             hadoopConf = getHadoopConfiguration(hadoopConfDir);
             if (hadoopConf == null) {
@@ -574,9 +620,6 @@ public class HiveCatalog extends AbstractCatalog {
                                         + ") exist in the folder."));
             }
         }
-        if (hadoopConf == null) {
-            hadoopConf = new Configuration();
-        }
 
         LOG.info("Setting hive conf dir as {}", hiveConfDir);
         if (hiveConfDir != null) {
@@ -585,7 +628,6 @@ public class HiveCatalog extends AbstractCatalog {
             HiveConf.setLoadMetastoreConfig(false);
             HiveConf.setLoadHiveServer2Config(false);
             HiveConf hiveConf = new HiveConf(hadoopConf, HiveConf.class);
-
             org.apache.hadoop.fs.Path hiveSite =
                     new org.apache.hadoop.fs.Path(hiveConfDir, HIVE_SITE_FILE);
             if (!hiveSite.toUri().isAbsolute()) {
@@ -603,12 +645,74 @@ public class HiveCatalog extends AbstractCatalog {
 
             return hiveConf;
         } else {
-            return new HiveConf(hadoopConf, HiveConf.class);
+            HiveConf hiveConf = new HiveConf(hadoopConf, HiveConf.class);
+            // user doesn't provide hive conf dir, we try to find it in classpath
+            URL hiveSite =
+                    Thread.currentThread().getContextClassLoader().getResource(HIVE_SITE_FILE);
+            if (hiveSite != null) {
+                LOG.info("Found {} in classpath: {}", HIVE_SITE_FILE, hiveSite);
+                hiveConf.addResource(hiveSite);
+            }
+            return hiveConf;
         }
     }
 
     public static boolean isEmbeddedMetastore(HiveConf hiveConf) {
         return isNullOrWhitespaceOnly(hiveConf.getVar(HiveConf.ConfVars.METASTOREURIS));
+    }
+
+    public static Catalog createHiveCatalog(CatalogContext context) {
+        HiveConf hiveConf = createHiveConf(context);
+        String warehouseStr = context.options().get(CatalogOptions.WAREHOUSE);
+        if (warehouseStr == null) {
+            warehouseStr =
+                    hiveConf.get(METASTOREWAREHOUSE.varname, METASTOREWAREHOUSE.defaultStrVal);
+        }
+        Path warehouse = new Path(warehouseStr);
+        Path uri =
+                warehouse.toUri().getScheme() == null
+                        ? new Path(FileSystem.getDefaultUri(hiveConf))
+                        : warehouse;
+        FileIO fileIO;
+        try {
+            fileIO = FileIO.get(uri, context);
+            fileIO.checkOrMkdirs(warehouse);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+        return new HiveCatalog(
+                fileIO,
+                hiveConf,
+                context.options().get(HiveCatalogFactory.METASTORE_CLIENT_CLASS),
+                context.options(),
+                warehouse.toUri().toString());
+    }
+
+    public static HiveConf createHiveConf(CatalogContext context) {
+        String uri = context.options().get(CatalogOptions.URI);
+        String hiveConfDir = context.options().get(HIVE_CONF_DIR);
+        String hadoopConfDir = context.options().get(HADOOP_CONF_DIR);
+        HiveConf hiveConf =
+                HiveCatalog.createHiveConf(hiveConfDir, hadoopConfDir, context.hadoopConf());
+
+        // always using user-set parameters overwrite hive-site.xml parameters
+        context.options().toMap().forEach(hiveConf::set);
+        if (uri != null) {
+            hiveConf.set(HiveConf.ConfVars.METASTOREURIS.varname, uri);
+        }
+
+        if (hiveConf.get(HiveConf.ConfVars.METASTOREURIS.varname) == null) {
+            LOG.error(
+                    "Can't find hive metastore uri to connect: "
+                            + " either set "
+                            + CatalogOptions.URI.key()
+                            + " for paimon "
+                            + IDENTIFIER
+                            + " catalog or set hive.metastore.uris in hive-site.xml or hadoop configurations."
+                            + " Will use empty metastore uris, which means we may use a embedded metastore. The may cause unpredictable consensus problem.");
+        }
+
+        return hiveConf;
     }
 
     /**
@@ -649,22 +753,6 @@ public class HiveCatalog extends AbstractCatalog {
             }
         }
         return null;
-    }
-
-    public static String possibleHadoopConfPath() {
-        String possiblePath = null;
-        if (System.getenv("HADOOP_CONF_DIR") != null) {
-            possiblePath = System.getenv("HADOOP_CONF_DIR");
-        } else if (System.getenv("HADOOP_HOME") != null) {
-            String possiblePath1 = System.getenv("HADOOP_HOME") + "/conf";
-            String possiblePath2 = System.getenv("HADOOP_HOME") + "/etc/hadoop";
-            if (new File(possiblePath1).exists()) {
-                possiblePath = possiblePath1;
-            } else if (new File(possiblePath2).exists()) {
-                possiblePath = possiblePath2;
-            }
-        }
-        return possiblePath;
     }
 
     public static String possibleHiveConfPath() {

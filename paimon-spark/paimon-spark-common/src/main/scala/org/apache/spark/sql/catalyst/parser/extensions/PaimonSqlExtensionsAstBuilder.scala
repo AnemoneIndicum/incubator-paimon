@@ -17,16 +17,20 @@
  */
 package org.apache.spark.sql.catalyst.parser.extensions
 
+import org.apache.paimon.spark.catalyst.plans.logical
+import org.apache.paimon.spark.catalyst.plans.logical.{PaimonCallArgument, PaimonCallStatement, PaimonNamedArgument, PaimonPositionalArgument}
+
 import org.antlr.v4.runtime._
 import org.antlr.v4.runtime.misc.Interval
 import org.antlr.v4.runtime.tree.{ParseTree, TerminalNode}
+import org.apache.spark.QueryContext
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.catalyst.parser.ParserInterface
 import org.apache.spark.sql.catalyst.parser.extensions.PaimonParserUtils.withOrigin
 import org.apache.spark.sql.catalyst.parser.extensions.PaimonSqlExtensionsParser._
 import org.apache.spark.sql.catalyst.plans.logical._
-import org.apache.spark.sql.catalyst.trees.{CurrentOrigin, Origin}
+import org.apache.spark.sql.catalyst.trees.SQLQueryContext
 
 import scala.collection.JavaConverters._
 
@@ -52,25 +56,25 @@ class PaimonSqlExtensionsAstBuilder(delegate: ParserInterface)
     visit(ctx.statement).asInstanceOf[LogicalPlan]
   }
 
-  /** Creates a [[CallStatement]] for a stored procedure call. */
-  override def visitCall(ctx: CallContext): CallStatement = withOrigin(ctx) {
+  /** Creates a [[PaimonCallStatement]] for a stored procedure call. */
+  override def visitCall(ctx: CallContext): PaimonCallStatement = withOrigin(ctx) {
     val name = toSeq(ctx.multipartIdentifier.parts).map(_.getText)
-    val args = toSeq(ctx.callArgument).map(typedVisit[CallArgument])
-    CallStatement(name, args)
+    val args = toSeq(ctx.callArgument).map(typedVisit[PaimonCallArgument])
+    logical.PaimonCallStatement(name, args)
   }
 
   /** Creates a positional argument in a stored procedure call. */
-  override def visitPositionalArgument(ctx: PositionalArgumentContext): CallArgument =
+  override def visitPositionalArgument(ctx: PositionalArgumentContext): PaimonCallArgument =
     withOrigin(ctx) {
       val expression = typedVisit[Expression](ctx.expression)
-      PositionalArgument(expression)
+      PaimonPositionalArgument(expression)
     }
 
   /** Creates a named argument in a stored procedure call. */
-  override def visitNamedArgument(ctx: NamedArgumentContext): CallArgument = withOrigin(ctx) {
+  override def visitNamedArgument(ctx: NamedArgumentContext): PaimonCallArgument = withOrigin(ctx) {
     val name = ctx.identifier.getText
     val expression = typedVisit[Expression](ctx.expression)
-    NamedArgument(name, expression)
+    PaimonNamedArgument(name, expression)
   }
 
   /** Creates a [[Expression]] in a positional and named argument. */
@@ -130,3 +134,23 @@ object PaimonParserUtils {
     stream.getText(Interval.of(0, stream.size() - 1))
   }
 }
+
+case class Origin(
+    line: Option[Int] = None,
+    startPosition: Option[Int] = None,
+    startIndex: Option[Int] = None,
+    stopIndex: Option[Int] = None,
+    sqlText: Option[String] = None,
+    objectType: Option[String] = None,
+    objectName: Option[String] = None) {}
+
+object CurrentOrigin {
+  private val value = new ThreadLocal[Origin]() {
+    override def initialValue: Origin = Origin()
+  }
+
+  def get: Origin = value.get()
+  def set(o: Origin): Unit = value.set(o)
+  def reset(): Unit = value.set(Origin())
+}
+/* Apache Spark copy end */

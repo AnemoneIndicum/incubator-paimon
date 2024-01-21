@@ -51,6 +51,7 @@ import java.io.File;
 import java.io.IOException;
 import java.time.Duration;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -92,6 +93,17 @@ public abstract class CatalogITCaseBase extends AbstractTestBase {
 
         setParallelism(defaultParallelism());
         prepareEnv();
+    }
+
+    protected Table getPaimonTable(String tableName) {
+        FlinkCatalog flinkCatalog = (FlinkCatalog) tEnv.getCatalog(tEnv.getCurrentCatalog()).get();
+        try {
+            return flinkCatalog
+                    .catalog()
+                    .getTable(new Identifier(tEnv.getCurrentDatabase(), tableName));
+        } catch (org.apache.paimon.catalog.Catalog.TableNotExistException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     protected Map<String, String> catalogOptions() {
@@ -193,5 +205,11 @@ public abstract class CatalogITCaseBase extends AbstractTestBase {
 
     protected String toWarehouse(String path) {
         return path;
+    }
+
+    protected List<Row> queryAndSort(String sql) {
+        return sql(sql).stream()
+                .sorted(Comparator.comparingInt(r -> r.getFieldAs(0)))
+                .collect(Collectors.toList());
     }
 }

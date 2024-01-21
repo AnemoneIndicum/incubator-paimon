@@ -19,6 +19,8 @@ package org.apache.paimon.spark.commands
 
 import org.apache.paimon.options.Options
 import org.apache.paimon.spark.{InsertInto, SparkTable}
+import org.apache.paimon.spark.catalyst.analysis.expressions.ExpressionHelper
+import org.apache.paimon.spark.leafnode.PaimonLeafRunnableCommand
 import org.apache.paimon.spark.schema.SparkSystemColumns
 import org.apache.paimon.spark.util.EncoderUtils
 import org.apache.paimon.table.FileStoreTable
@@ -27,13 +29,11 @@ import org.apache.paimon.types.RowKind
 import org.apache.spark.sql.{Column, Dataset, Row, SparkSession}
 import org.apache.spark.sql.Utils._
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.analysis.expressions.ExpressionHelper
 import org.apache.spark.sql.catalyst.encoders.ExpressionEncoder
 import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, BasePredicate, Expression, Literal, PredicateHelper, UnsafeProjection}
 import org.apache.spark.sql.catalyst.expressions.Literal.TrueLiteral
 import org.apache.spark.sql.catalyst.expressions.codegen.GeneratePredicate
 import org.apache.spark.sql.catalyst.plans.logical.{DeleteAction, Filter, InsertAction, LogicalPlan, MergeAction, UpdateAction}
-import org.apache.spark.sql.execution.command.LeafRunnableCommand
 import org.apache.spark.sql.functions.{col, lit, monotonically_increasing_id, sum}
 import org.apache.spark.sql.types.{ByteType, StructField, StructType}
 
@@ -44,8 +44,9 @@ case class MergeIntoPaimonTable(
     sourceTable: LogicalPlan,
     mergeCondition: Expression,
     matchedActions: Seq[MergeAction],
-    notMatchedActions: Seq[MergeAction])
-  extends LeafRunnableCommand
+    notMatchedActions: Seq[MergeAction],
+    notMatchedBySourceActions: Seq[MergeAction])
+  extends PaimonLeafRunnableCommand
   with WithFileStoreTable
   with ExpressionHelper
   with PredicateHelper {
@@ -100,7 +101,16 @@ case class MergeIntoPaimonTable(
     val sourceRowNotMatched = resolveOnJoinedPlan(Seq(col(TARGET_ROW_COL).isNull.expr)).head
     val matchedExprs = matchedActions.map(_.condition.getOrElse(TrueLiteral))
     val notMatchedExprs = notMatchedActions.map(_.condition.getOrElse(TrueLiteral))
+    val notMatchedBySourceExprs = notMatchedBySourceActions.map(_.condition.getOrElse(TrueLiteral))
     val matchedOutputs = matchedActions.map {
+      case UpdateAction(_, assignments) =>
+        assignments.map(_.value) :+ Literal(RowKind.UPDATE_AFTER.toByteValue)
+      case DeleteAction(_) =>
+        targetOutput :+ Literal(RowKind.DELETE.toByteValue)
+      case _ =>
+        throw new RuntimeException("should not be here.")
+    }
+    val notMatchedBySourceOutputs = notMatchedBySourceActions.map {
       case UpdateAction(_, assignments) =>
         assignments.map(_.value) :+ Literal(RowKind.UPDATE_AFTER.toByteValue)
       case DeleteAction(_) =>
@@ -126,6 +136,8 @@ case class MergeIntoPaimonTable(
       sourceRowNotMatched,
       matchedExprs,
       matchedOutputs,
+      notMatchedBySourceExprs,
+      notMatchedBySourceOutputs,
       notMatchedExprs,
       notMatchedOutputs,
       noopOutput,
@@ -169,6 +181,8 @@ object MergeIntoPaimonTable {
       sourceRowHasNoMatch: Expression,
       matchedConditions: Seq[Expression],
       matchedOutputs: Seq[Seq[Expression]],
+      notMatchedBySourceConditions: Seq[Expression],
+      notMatchedBySourceOutputs: Seq[Seq[Expression]],
       notMatchedConditions: Seq[Expression],
       notMatchedOutputs: Seq[Seq[Expression]],
       noopCopyOutput: Seq[Expression],
@@ -193,6 +207,8 @@ object MergeIntoPaimonTable {
       val sourceRowHasNoMatchPred = generatePredicate(sourceRowHasNoMatch)
       val matchedPreds = matchedConditions.map(generatePredicate)
       val matchedProjs = matchedOutputs.map(generateProjection)
+      val notMatchedBySourcePreds = notMatchedBySourceConditions.map(generatePredicate)
+      val notMatchedBySourceProjs = notMatchedBySourceOutputs.map(generateProjection)
       val notMatchedPreds = notMatchedConditions.map(generatePredicate)
       val notMatchedProjs = notMatchedOutputs.map(generateProjection)
       val noopCopyProj = generateProjection(noopCopyOutput)
@@ -200,7 +216,15 @@ object MergeIntoPaimonTable {
 
       def processRow(inputRow: InternalRow): InternalRow = {
         if (targetRowHasNoMatchPred.eval(inputRow)) {
-          noopCopyProj.apply(inputRow)
+          val pair = notMatchedBySourcePreds.zip(notMatchedBySourceProjs).find {
+            case (predicate, _) => predicate.eval(inputRow)
+          }
+
+          pair match {
+            case Some((_, projections)) =>
+              projections.apply(inputRow)
+            case None => noopCopyProj.apply(inputRow)
+          }
         } else if (sourceRowHasNoMatchPred.eval(inputRow)) {
           val pair = notMatchedPreds.zip(notMatchedProjs).find {
             case (predicate, _) => predicate.eval(inputRow)

@@ -18,6 +18,7 @@
 
 package org.apache.paimon.catalog;
 
+import org.apache.paimon.CoreOptions;
 import org.apache.paimon.annotation.VisibleForTesting;
 import org.apache.paimon.factories.FactoryUtil;
 import org.apache.paimon.fs.FileIO;
@@ -58,6 +59,7 @@ public abstract class AbstractCatalog implements Catalog {
 
     public static final String DB_SUFFIX = ".db";
     protected static final String TABLE_DEFAULT_OPTION_PREFIX = "table-default.";
+    protected static final String DB_LOCATION_PROP = "location";
 
     protected final FileIO fileIO;
     protected final Map<String, String> tableDefaultOptions;
@@ -93,7 +95,7 @@ public abstract class AbstractCatalog implements Catalog {
     protected abstract boolean databaseExistsImpl(String databaseName);
 
     @Override
-    public void createDatabase(String name, boolean ignoreIfExists)
+    public void createDatabase(String name, boolean ignoreIfExists, Map<String, String> properties)
             throws DatabaseAlreadyExistException {
         if (isSystemDatabase(name)) {
             throw new ProcessSystemDatabaseException();
@@ -104,9 +106,22 @@ public abstract class AbstractCatalog implements Catalog {
             }
             throw new DatabaseAlreadyExistException(name);
         }
-
-        createDatabaseImpl(name);
+        createDatabaseImpl(name, properties);
     }
+
+    @Override
+    public Map<String, String> loadDatabaseProperties(String name)
+            throws DatabaseNotExistException {
+        if (isSystemDatabase(name)) {
+            return Collections.emptyMap();
+        }
+        if (!databaseExists(name)) {
+            throw new DatabaseNotExistException(name);
+        }
+        return loadDatabasePropertiesImpl(name);
+    }
+
+    protected abstract Map<String, String> loadDatabasePropertiesImpl(String name);
 
     @Override
     public void dropPartition(Identifier identifier, Map<String, String> partitionSpec)
@@ -118,7 +133,7 @@ public abstract class AbstractCatalog implements Catalog {
                 Collections.singletonList(partitionSpec), BatchWriteBuilder.COMMIT_IDENTIFIER);
     }
 
-    protected abstract void createDatabaseImpl(String name);
+    protected abstract void createDatabaseImpl(String name, Map<String, String> properties);
 
     @Override
     public void dropDatabase(String name, boolean ignoreIfNotExists, boolean cascade)
@@ -178,6 +193,7 @@ public abstract class AbstractCatalog implements Catalog {
         checkNotSystemTable(identifier, "createTable");
         validateIdentifierNameCaseInsensitive(identifier);
         validateFieldNameCaseInsensitive(schema.rowType().getFieldNames());
+        validateAutoCreateClose(schema.options());
 
         if (!databaseExists(identifier.getDatabaseName())) {
             throw new DatabaseNotExistException(identifier.getDatabaseName());
@@ -294,21 +310,25 @@ public abstract class AbstractCatalog implements Catalog {
                         lineageMetaFactory));
     }
 
-    @VisibleForTesting
-    public Path databasePath(String database) {
-        return databasePath(warehouse(), database);
+    /**
+     * Get warehouse path for specified database. If a catalog would like to provide individual path
+     * for each database, this method can be `Override` in that catalog.
+     *
+     * @param database The given database name
+     * @return The warehouse path for the database
+     */
+    public Path newDatabasePath(String database) {
+        return newDatabasePath(warehouse(), database);
     }
 
-    Map<String, Map<String, Path>> allTablePaths() {
+    public Map<String, Map<String, Path>> allTablePaths() {
         try {
             Map<String, Map<String, Path>> allPaths = new HashMap<>();
             for (String database : listDatabases()) {
                 Map<String, Path> tableMap =
                         allPaths.computeIfAbsent(database, d -> new HashMap<>());
                 for (String table : listTables(database)) {
-                    tableMap.put(
-                            table,
-                            dataTableLocation(warehouse(), Identifier.create(database, table)));
+                    tableMap.put(table, getDataTableLocation(Identifier.create(database, table)));
                 }
             }
             return allPaths;
@@ -317,6 +337,11 @@ public abstract class AbstractCatalog implements Catalog {
         }
     }
 
+    /**
+     * Get the warehouse path for the catalog if exists.
+     *
+     * @return The catalog warehouse path.
+     */
     public abstract String warehouse();
 
     public Map<String, String> options() {
@@ -328,7 +353,7 @@ public abstract class AbstractCatalog implements Catalog {
 
     @VisibleForTesting
     public Path getDataTableLocation(Identifier identifier) {
-        return dataTableLocation(warehouse(), identifier);
+        return new Path(newDatabasePath(identifier.getDatabaseName()), identifier.getObjectName());
     }
 
     private static boolean isSpecifiedSystemTable(Identifier identifier) {
@@ -352,6 +377,10 @@ public abstract class AbstractCatalog implements Catalog {
         tableDefaultOptions.forEach(options::putIfAbsent);
     }
 
+    public FileIO fileIO() {
+        return fileIO;
+    }
+
     private String[] tableAndSystemName(Identifier identifier) {
         String[] splits = StringUtils.split(identifier.getObjectName(), SYSTEM_TABLE_SPLITTER);
         if (splits.length != 2) {
@@ -362,7 +391,7 @@ public abstract class AbstractCatalog implements Catalog {
         return splits;
     }
 
-    public static Path dataTableLocation(String warehouse, Identifier identifier) {
+    public static Path newTableLocation(String warehouse, Identifier identifier) {
         if (isSpecifiedSystemTable(identifier)) {
             throw new IllegalArgumentException(
                     String.format(
@@ -370,10 +399,11 @@ public abstract class AbstractCatalog implements Catalog {
                             identifier.getObjectName(), SYSTEM_TABLE_SPLITTER));
         }
         return new Path(
-                databasePath(warehouse, identifier.getDatabaseName()), identifier.getObjectName());
+                newDatabasePath(warehouse, identifier.getDatabaseName()),
+                identifier.getObjectName());
     }
 
-    public static Path databasePath(String warehouse, String database) {
+    public static Path newDatabasePath(String warehouse, String database) {
         return new Path(warehouse, database + DB_SUFFIX);
     }
 
@@ -425,5 +455,16 @@ public abstract class AbstractCatalog implements Catalog {
 
     private void validateFieldNameCaseInsensitive(List<String> fieldNames) {
         validateCaseInsensitive(caseSensitive(), "Field", fieldNames);
+    }
+
+    private void validateAutoCreateClose(Map<String, String> options) {
+        checkArgument(
+                !Boolean.valueOf(
+                        options.getOrDefault(
+                                CoreOptions.AUTO_CREATE.key(),
+                                CoreOptions.AUTO_CREATE.defaultValue().toString())),
+                String.format(
+                        "The value of %s property should be %s.",
+                        CoreOptions.AUTO_CREATE.key(), Boolean.FALSE));
     }
 }

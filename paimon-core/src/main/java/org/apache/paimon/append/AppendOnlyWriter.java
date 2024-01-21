@@ -34,6 +34,7 @@ import org.apache.paimon.io.NewFilesIncrement;
 import org.apache.paimon.io.RowDataRollingFileWriter;
 import org.apache.paimon.memory.MemoryOwner;
 import org.apache.paimon.memory.MemorySegmentPool;
+import org.apache.paimon.operation.metrics.WriterMetrics;
 import org.apache.paimon.statistics.FieldStatsCollector;
 import org.apache.paimon.types.RowKind;
 import org.apache.paimon.types.RowType;
@@ -70,9 +71,12 @@ public class AppendOnlyWriter implements RecordWriter<InternalRow>, MemoryOwner 
     private final List<DataFileMeta> compactAfter;
     private final LongCounter seqNumCounter;
     private final String fileCompression;
-    private final SinkWriter sinkWriter;
+    private SinkWriter sinkWriter;
     private final FieldStatsCollector.Factory[] statsCollectors;
     private final IOManager ioManager;
+
+    private MemorySegmentPool memorySegmentPool;
+    private WriterMetrics writerMetrics;
 
     public AppendOnlyWriter(
             FileIO fileIO,
@@ -89,7 +93,8 @@ public class AppendOnlyWriter implements RecordWriter<InternalRow>, MemoryOwner 
             boolean useWriteBuffer,
             boolean spillable,
             String fileCompression,
-            FieldStatsCollector.Factory[] statsCollectors) {
+            FieldStatsCollector.Factory[] statsCollectors,
+            WriterMetrics writerMetrics) {
         this.fileIO = fileIO;
         this.schemaId = schemaId;
         this.fileFormat = fileFormat;
@@ -114,6 +119,7 @@ public class AppendOnlyWriter implements RecordWriter<InternalRow>, MemoryOwner 
             compactBefore.addAll(increment.compactIncrement().compactBefore());
             compactAfter.addAll(increment.compactIncrement().compactAfter());
         }
+        this.writerMetrics = writerMetrics;
     }
 
     @Override
@@ -132,6 +138,10 @@ public class AppendOnlyWriter implements RecordWriter<InternalRow>, MemoryOwner 
                 // code in SpillableBuffer.)
                 throw new RuntimeException("Mem table is too small to hold a single element.");
             }
+        }
+
+        if (writerMetrics != null) {
+            writerMetrics.incWriteRecordNum();
         }
     }
 
@@ -152,13 +162,19 @@ public class AppendOnlyWriter implements RecordWriter<InternalRow>, MemoryOwner 
 
     @Override
     public CommitIncrement prepareCommit(boolean waitCompaction) throws Exception {
+        long start = System.currentTimeMillis();
         flush(false, false);
         trySyncLatestCompaction(waitCompaction || forceCompact);
-        return drainIncrement();
+        CommitIncrement increment = drainIncrement();
+        if (writerMetrics != null) {
+            writerMetrics.updatePrepareCommitCostMillis(System.currentTimeMillis() - start);
+        }
+        return increment;
     }
 
     private void flush(boolean waitForLatestCompaction, boolean forcedFullCompaction)
             throws Exception {
+        long start = System.currentTimeMillis();
         List<DataFileMeta> flushedFiles = sinkWriter.flush();
 
         // add new generated files
@@ -166,6 +182,9 @@ public class AppendOnlyWriter implements RecordWriter<InternalRow>, MemoryOwner 
         trySyncLatestCompaction(waitForLatestCompaction);
         compactManager.triggerCompaction(forcedFullCompaction);
         newFiles.addAll(flushedFiles);
+        if (writerMetrics != null) {
+            writerMetrics.updateBufferFlushCostMillis(System.currentTimeMillis() - start);
+        }
     }
 
     @Override
@@ -175,6 +194,9 @@ public class AppendOnlyWriter implements RecordWriter<InternalRow>, MemoryOwner 
 
     @Override
     public void close() throws Exception {
+        if (writerMetrics != null) {
+            writerMetrics.close();
+        }
         // cancel compaction so that it does not block job cancelling
         compactManager.cancelCompaction();
         sync();
@@ -187,6 +209,17 @@ public class AppendOnlyWriter implements RecordWriter<InternalRow>, MemoryOwner 
         }
 
         sinkWriter.close();
+    }
+
+    public void toBufferedWriter() throws Exception {
+        if (sinkWriter != null && !sinkWriter.bufferSpillableWriter()) {
+            flush(false, false);
+            trySyncLatestCompaction(true);
+
+            sinkWriter.close();
+            sinkWriter = new BufferedSinkWriter(true);
+            sinkWriter.setMemoryPool(memorySegmentPool);
+        }
     }
 
     private RowDataRollingFileWriter createRollingRowWriter() {
@@ -231,6 +264,7 @@ public class AppendOnlyWriter implements RecordWriter<InternalRow>, MemoryOwner 
 
     @Override
     public void setMemoryPool(MemorySegmentPool memoryPool) {
+        this.memorySegmentPool = memoryPool;
         sinkWriter.setMemoryPool(memoryPool);
     }
 
@@ -245,7 +279,7 @@ public class AppendOnlyWriter implements RecordWriter<InternalRow>, MemoryOwner 
     }
 
     @VisibleForTesting
-    RowBuffer getWriteBuffer() {
+    public RowBuffer getWriteBuffer() {
         if (sinkWriter instanceof BufferedSinkWriter) {
             return ((BufferedSinkWriter) sinkWriter).writeBuffer;
         } else {
@@ -270,6 +304,8 @@ public class AppendOnlyWriter implements RecordWriter<InternalRow>, MemoryOwner 
         void close();
 
         void setMemoryPool(MemorySegmentPool memoryPool);
+
+        boolean bufferSpillableWriter();
     }
 
     /**
@@ -316,6 +352,11 @@ public class AppendOnlyWriter implements RecordWriter<InternalRow>, MemoryOwner 
         @Override
         public void setMemoryPool(MemorySegmentPool memoryPool) {
             // do nothing
+        }
+
+        @Override
+        public boolean bufferSpillableWriter() {
+            return false;
         }
     }
 
@@ -379,6 +420,11 @@ public class AppendOnlyWriter implements RecordWriter<InternalRow>, MemoryOwner 
                             memoryPool,
                             new InternalRowSerializer(writeSchema),
                             spillable);
+        }
+
+        @Override
+        public boolean bufferSpillableWriter() {
+            return spillable;
         }
     }
 }

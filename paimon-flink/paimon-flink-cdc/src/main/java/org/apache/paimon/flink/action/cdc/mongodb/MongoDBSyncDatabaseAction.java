@@ -18,31 +18,15 @@
 
 package org.apache.paimon.flink.action.cdc.mongodb;
 
-import org.apache.paimon.annotation.VisibleForTesting;
-import org.apache.paimon.catalog.AbstractCatalog;
-import org.apache.paimon.catalog.Identifier;
-import org.apache.paimon.flink.action.ActionBase;
-import org.apache.paimon.flink.action.MultiTablesSinkMode;
 import org.apache.paimon.flink.action.cdc.CdcActionCommonUtils;
-import org.apache.paimon.flink.action.cdc.TableNameConverter;
-import org.apache.paimon.flink.sink.cdc.EventParser;
-import org.apache.paimon.flink.sink.cdc.FlinkCdcSyncDatabaseSinkBuilder;
-import org.apache.paimon.flink.sink.cdc.NewTableSchemaBuilder;
-import org.apache.paimon.flink.sink.cdc.RichCdcMultiplexRecord;
-import org.apache.paimon.flink.sink.cdc.RichCdcMultiplexRecordEventParser;
+import org.apache.paimon.flink.action.cdc.SyncDatabaseActionBase;
+import org.apache.paimon.flink.action.cdc.SyncJobHandler;
 
 import com.ververica.cdc.connectors.mongodb.source.MongoDBSource;
 import com.ververica.cdc.connectors.mongodb.source.config.MongoDBSourceOptions;
-import org.apache.flink.api.common.eventtime.WatermarkStrategy;
-import org.apache.flink.configuration.Configuration;
 
-import javax.annotation.Nullable;
-
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
+import java.util.Collections;
 import java.util.Map;
-import java.util.regex.Pattern;
 
 /**
  * An action class responsible for synchronizing MongoDB databases with a target system.
@@ -63,119 +47,23 @@ import java.util.regex.Pattern;
  * <p>Note: This action is primarily intended for use in Flink streaming applications that
  * synchronize MongoDB data with other systems.
  */
-public class MongoDBSyncDatabaseAction extends ActionBase {
-
-    private final String database;
-    private final Configuration mongodbConfig;
-    private Map<String, String> tableConfig = new HashMap<>();
-    private String tablePrefix = "";
-    private String tableSuffix = "";
-    private String includingTables = ".*";
-    @Nullable String excludingTables;
+public class MongoDBSyncDatabaseAction extends SyncDatabaseActionBase {
 
     public MongoDBSyncDatabaseAction(
             String warehouse,
             String database,
             Map<String, String> catalogConfig,
             Map<String, String> mongodbConfig) {
-        super(warehouse, catalogConfig);
-        this.database = database;
-        this.mongodbConfig = Configuration.fromMap(mongodbConfig);
-    }
-
-    public MongoDBSyncDatabaseAction withTableConfig(Map<String, String> tableConfig) {
-        this.tableConfig = tableConfig;
-        return this;
-    }
-
-    public MongoDBSyncDatabaseAction withTablePrefix(@Nullable String tablePrefix) {
-        if (tablePrefix != null) {
-            this.tablePrefix = tablePrefix;
-        }
-        return this;
-    }
-
-    public MongoDBSyncDatabaseAction withTableSuffix(@Nullable String tableSuffix) {
-        if (tableSuffix != null) {
-            this.tableSuffix = tableSuffix;
-        }
-        return this;
-    }
-
-    public MongoDBSyncDatabaseAction includingTables(@Nullable String includingTables) {
-        if (includingTables != null) {
-            this.includingTables = includingTables;
-        }
-        return this;
-    }
-
-    public MongoDBSyncDatabaseAction excludingTables(@Nullable String excludingTables) {
-        this.excludingTables = excludingTables;
-        return this;
+        super(warehouse, database, catalogConfig, mongodbConfig, SyncJobHandler.SourceType.MONGODB);
     }
 
     @Override
-    public void build() throws Exception {
-        boolean caseSensitive = catalog.caseSensitive();
-
-        validateCaseInsensitive(caseSensitive);
-
-        catalog.createDatabase(database, true);
-
-        List<Identifier> excludedTables = new ArrayList<>();
-        MongoDBSource<String> source =
-                MongoDBActionUtils.buildMongodbSource(
-                        mongodbConfig,
-                        CdcActionCommonUtils.combinedModeTableList(
-                                mongodbConfig.get(MongoDBSourceOptions.DATABASE),
-                                includingTables,
-                                excludedTables));
-
-        EventParser.Factory<RichCdcMultiplexRecord> parserFactory;
-        NewTableSchemaBuilder schemaBuilder = new NewTableSchemaBuilder(tableConfig, caseSensitive);
-        Pattern includingPattern = Pattern.compile(this.includingTables);
-        Pattern excludingPattern =
-                excludingTables == null ? null : Pattern.compile(excludingTables);
-        TableNameConverter tableNameConverter =
-                new TableNameConverter(caseSensitive, true, tablePrefix, tableSuffix);
-        parserFactory =
-                () ->
-                        new RichCdcMultiplexRecordEventParser(
-                                schemaBuilder,
-                                includingPattern,
-                                excludingPattern,
-                                tableNameConverter);
-        new FlinkCdcSyncDatabaseSinkBuilder<RichCdcMultiplexRecord>()
-                .withInput(
-                        env.fromSource(source, WatermarkStrategy.noWatermarks(), "MongoDB Source")
-                                .flatMap(new MongoDBRecordParser(caseSensitive, mongodbConfig))
-                                .name("Parse"))
-                .withParserFactory(parserFactory)
-                .withCatalogLoader(catalogLoader())
-                .withDatabase(database)
-                .withMode(MultiTablesSinkMode.COMBINED)
-                .withTableOptions(tableConfig)
-                .build();
-    }
-
-    private void validateCaseInsensitive(boolean caseSensitive) {
-        AbstractCatalog.validateCaseInsensitive(caseSensitive, "Database", database);
-        AbstractCatalog.validateCaseInsensitive(caseSensitive, "Table prefix", tablePrefix);
-        AbstractCatalog.validateCaseInsensitive(caseSensitive, "Table suffix", tableSuffix);
-    }
-
-    @VisibleForTesting
-    public Map<String, String> tableConfig() {
-        return tableConfig;
-    }
-
-    // ------------------------------------------------------------------------
-    //  Flink run methods
-    // ------------------------------------------------------------------------
-
-    @Override
-    public void run() throws Exception {
-        build();
-        execute(String.format("MongoDB-Paimon Database Sync: %s", database));
+    protected MongoDBSource<String> buildSource() {
+        return MongoDBActionUtils.buildMongodbSource(
+                cdcSourceConfig,
+                CdcActionCommonUtils.combinedModeTableList(
+                        cdcSourceConfig.get(MongoDBSourceOptions.DATABASE),
+                        includingTables,
+                        Collections.emptyList()));
     }
 }

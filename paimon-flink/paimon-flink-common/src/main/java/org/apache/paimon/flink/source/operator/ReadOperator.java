@@ -21,11 +21,14 @@ package org.apache.paimon.flink.source.operator;
 import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.disk.IOManager;
 import org.apache.paimon.flink.FlinkRowData;
+import org.apache.paimon.flink.source.metrics.FileStoreSourceReaderMetrics;
+import org.apache.paimon.table.source.DataSplit;
 import org.apache.paimon.table.source.ReadBuilder;
 import org.apache.paimon.table.source.Split;
 import org.apache.paimon.table.source.TableRead;
 import org.apache.paimon.utils.CloseableIterator;
 
+import org.apache.flink.runtime.metrics.MetricNames;
 import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
@@ -48,6 +51,8 @@ public class ReadOperator extends AbstractStreamOperator<RowData>
     private transient FlinkRowData reuseRow;
     private transient IOManager ioManager;
 
+    private transient FileStoreSourceReaderMetrics sourceReaderMetrics;
+
     public ReadOperator(ReadBuilder readBuilder) {
         this.readBuilder = readBuilder;
     }
@@ -55,6 +60,22 @@ public class ReadOperator extends AbstractStreamOperator<RowData>
     @Override
     public void open() throws Exception {
         super.open();
+
+        this.sourceReaderMetrics = new FileStoreSourceReaderMetrics(getMetricGroup());
+        // we create our own gauge for currentEmitEventTimeLag, because this operator is not a
+        // FLIP-27 source and Flink can't automatically calculate this metric
+        getMetricGroup()
+                .gauge(
+                        MetricNames.CURRENT_EMIT_EVENT_TIME_LAG,
+                        () -> {
+                            long eventTime = sourceReaderMetrics.getLatestFileCreationTime();
+                            if (eventTime == FileStoreSourceReaderMetrics.UNDEFINED) {
+                                return FileStoreSourceReaderMetrics.UNDEFINED;
+                            } else {
+                                return System.currentTimeMillis() - eventTime;
+                            }
+                        });
+
         this.ioManager =
                 IOManager.create(
                         getContainingTask()
@@ -68,8 +89,16 @@ public class ReadOperator extends AbstractStreamOperator<RowData>
 
     @Override
     public void processElement(StreamRecord<Split> record) throws Exception {
+        Split split = record.getValue();
+        // update metric when reading a new split
+        long eventTime =
+                ((DataSplit) split)
+                        .getLatestFileCreationEpochMillis()
+                        .orElse(FileStoreSourceReaderMetrics.UNDEFINED);
+        sourceReaderMetrics.recordSnapshotUpdate(eventTime);
+
         try (CloseableIterator<InternalRow> iterator =
-                read.createReader(record.getValue()).toCloseableIterator()) {
+                read.createReader(split).toCloseableIterator()) {
             while (iterator.hasNext()) {
                 reuseRow.replace(iterator.next());
                 output.collect(reuseRecord);

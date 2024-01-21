@@ -34,12 +34,14 @@ import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.annotation.JsonPro
 
 import javax.annotation.Nullable;
 
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * This file is the entrance to all data committed at some specific time point.
@@ -85,6 +87,7 @@ public class Snapshot {
     private static final String FIELD_DELTA_RECORD_COUNT = "deltaRecordCount";
     private static final String FIELD_CHANGELOG_RECORD_COUNT = "changelogRecordCount";
     private static final String FIELD_WATERMARK = "watermark";
+    private static final String FIELD_STATISTICS = "statistics";
 
     // version of snapshot
     // null for paimon <= 0.2
@@ -167,6 +170,13 @@ public class Snapshot {
     @Nullable
     private final Long watermark;
 
+    // stats file name for statistics of this table
+    // null if no stats file
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    @JsonProperty(FIELD_STATISTICS)
+    @Nullable
+    private final String statistics;
+
     public Snapshot(
             long id,
             long schemaId,
@@ -182,7 +192,8 @@ public class Snapshot {
             @Nullable Long totalRecordCount,
             @Nullable Long deltaRecordCount,
             @Nullable Long changelogRecordCount,
-            @Nullable Long watermark) {
+            @Nullable Long watermark,
+            @Nullable String statistics) {
         this(
                 CURRENT_VERSION,
                 id,
@@ -199,7 +210,8 @@ public class Snapshot {
                 totalRecordCount,
                 deltaRecordCount,
                 changelogRecordCount,
-                watermark);
+                watermark,
+                statistics);
     }
 
     @JsonCreator
@@ -216,10 +228,11 @@ public class Snapshot {
             @JsonProperty(FIELD_COMMIT_KIND) CommitKind commitKind,
             @JsonProperty(FIELD_TIME_MILLIS) long timeMillis,
             @JsonProperty(FIELD_LOG_OFFSETS) Map<Integer, Long> logOffsets,
-            @JsonProperty(FIELD_TOTAL_RECORD_COUNT) Long totalRecordCount,
-            @JsonProperty(FIELD_DELTA_RECORD_COUNT) Long deltaRecordCount,
-            @JsonProperty(FIELD_CHANGELOG_RECORD_COUNT) Long changelogRecordCount,
-            @JsonProperty(FIELD_WATERMARK) Long watermark) {
+            @JsonProperty(FIELD_TOTAL_RECORD_COUNT) @Nullable Long totalRecordCount,
+            @JsonProperty(FIELD_DELTA_RECORD_COUNT) @Nullable Long deltaRecordCount,
+            @JsonProperty(FIELD_CHANGELOG_RECORD_COUNT) @Nullable Long changelogRecordCount,
+            @JsonProperty(FIELD_WATERMARK) @Nullable Long watermark,
+            @JsonProperty(FIELD_STATISTICS) @Nullable String statistics) {
         this.version = version;
         this.id = id;
         this.schemaId = schemaId;
@@ -236,6 +249,7 @@ public class Snapshot {
         this.deltaRecordCount = deltaRecordCount;
         this.changelogRecordCount = changelogRecordCount;
         this.watermark = watermark;
+        this.statistics = statistics;
     }
 
     @JsonGetter(FIELD_VERSION)
@@ -323,6 +337,12 @@ public class Snapshot {
     @Nullable
     public Long watermark() {
         return watermark;
+    }
+
+    @JsonGetter(FIELD_STATISTICS)
+    @Nullable
+    public String statistics() {
+        return statistics;
     }
 
     /**
@@ -421,6 +441,15 @@ public class Snapshot {
         }
     }
 
+    public static Optional<Snapshot> safelyFromPath(FileIO fileIO, Path path) throws IOException {
+        try {
+            String json = fileIO.readFileUtf8(path);
+            return Optional.of(Snapshot.fromJson(json));
+        } catch (FileNotFoundException e) {
+            return Optional.empty();
+        }
+    }
+
     @Override
     public int hashCode() {
         return Objects.hash(
@@ -476,6 +505,9 @@ public class Snapshot {
         COMPACT,
 
         /** Changes that clear up the whole partition and then add new records. */
-        OVERWRITE
+        OVERWRITE,
+
+        /** Collect statistics. */
+        ANALYZE
     }
 }

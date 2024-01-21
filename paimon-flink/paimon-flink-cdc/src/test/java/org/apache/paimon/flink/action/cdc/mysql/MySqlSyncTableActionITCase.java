@@ -18,6 +18,7 @@
 
 package org.apache.paimon.flink.action.cdc.mysql;
 
+import org.apache.paimon.catalog.FileSystemCatalogOptions;
 import org.apache.paimon.options.CatalogOptions;
 import org.apache.paimon.schema.SchemaChange;
 import org.apache.paimon.schema.SchemaManager;
@@ -26,14 +27,18 @@ import org.apache.paimon.types.DataField;
 import org.apache.paimon.types.DataType;
 import org.apache.paimon.types.DataTypes;
 import org.apache.paimon.types.RowType;
+import org.apache.paimon.utils.CommonTestUtils;
 import org.apache.paimon.utils.JsonSerdeUtil;
 
+import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.core.execution.JobClient;
+import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.sql.Statement;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -650,7 +655,7 @@ public class MySqlSyncTableActionITCase extends MySqlActionITCaseBase {
     }
 
     @Test
-    public void testInvalidPrimaryKey() throws Exception {
+    public void testInvalidPrimaryKey() {
         Map<String, String> mySqlConfig = getBasicMySqlConfig();
         mySqlConfig.put("database-name", DATABASE_NAME);
         mySqlConfig.put("table-name", "schema_evolution_\\d+");
@@ -662,7 +667,7 @@ public class MySqlSyncTableActionITCase extends MySqlActionITCaseBase {
                 .satisfies(
                         anyCauseMatches(
                                 IllegalArgumentException.class,
-                                "Specified primary key 'pk' does not exist in source tables or computed columns."));
+                                "Specified primary key 'pk' does not exist in source tables or computed columns [pt, _id, v1]."));
     }
 
     @Test
@@ -711,6 +716,12 @@ public class MySqlSyncTableActionITCase extends MySqlActionITCaseBase {
                         "_hour_date=hour(_date)",
                         "_hour_datetime=hour(_datetime)",
                         "_hour_timestamp=hour(_timestamp)",
+                        "_minute_date=minute(_date)",
+                        "_minute_datetime=minute(_datetime)",
+                        "_minute_timestamp=minute(_timestamp)",
+                        "_second_date=second(_date)",
+                        "_second_datetime=second(_datetime)",
+                        "_second_timestamp=second(_timestamp)",
                         "_date_format_date=date_format(_date,yyyy)",
                         "_date_format_datetime=date_format(_datetime,yyyy-MM-dd)",
                         "_date_format_timestamp=date_format(_timestamp,yyyyMMdd)",
@@ -756,6 +767,12 @@ public class MySqlSyncTableActionITCase extends MySqlActionITCaseBase {
                             DataTypes.INT(),
                             DataTypes.INT(),
                             DataTypes.INT(),
+                            DataTypes.INT(),
+                            DataTypes.INT(),
+                            DataTypes.INT(),
+                            DataTypes.INT(),
+                            DataTypes.INT(),
+                            DataTypes.INT(),
                             DataTypes.STRING(),
                             DataTypes.STRING(),
                             DataTypes.STRING(),
@@ -780,6 +797,12 @@ public class MySqlSyncTableActionITCase extends MySqlActionITCaseBase {
                             "_hour_date",
                             "_hour_datetime",
                             "_hour_timestamp",
+                            "_minute_date",
+                            "_minute_datetime",
+                            "_minute_timestamp",
+                            "_second_date",
+                            "_second_datetime",
+                            "_second_timestamp",
                             "_date_format_date",
                             "_date_format_datetime",
                             "_date_format_timestamp",
@@ -789,8 +812,8 @@ public class MySqlSyncTableActionITCase extends MySqlActionITCaseBase {
                         });
         List<String> expected =
                 Arrays.asList(
-                        "+I[1, 19439, 2022-01-01T14:30, 2021-09-15T15:00:10, 2023, 2022, 2021, 3, 1, 9, 23, 1, 15, 0, 14, 15, 2023, 2022-01-01, 20210915, 23-03-23, 09-15, 0]",
-                        "+I[2, 19439, NULL, NULL, 2023, NULL, NULL, 3, NULL, NULL, 23, NULL, NULL, 0, NULL, NULL, 2023, NULL, NULL, 23-03-23, NULL, 2]");
+                        "+I[1, 19439, 2022-01-01T14:30, 2021-09-15T15:00:10, 2023, 2022, 2021, 3, 1, 9, 23, 1, 15, 0, 14, 15, 0, 30, 0, 0, 0, 10, 2023, 2022-01-01, 20210915, 23-03-23, 09-15, 0]",
+                        "+I[2, 19439, NULL, NULL, 2023, NULL, NULL, 3, NULL, NULL, 23, NULL, NULL, 0, NULL, NULL, 0, NULL, NULL, 0, NULL, NULL, 2023, NULL, NULL, 23-03-23, NULL, 2]");
         waitForResult(expected, table, rowType, Arrays.asList("pk", "_year_date"));
     }
 
@@ -959,5 +982,97 @@ public class MySqlSyncTableActionITCase extends MySqlActionITCaseBase {
 
     private FileStoreTable getFileStoreTable() throws Exception {
         return getFileStoreTable(tableName);
+    }
+
+    @Test
+    @Timeout(60)
+    public void testDefaultCheckpointInterval() throws Exception {
+        Map<String, String> mySqlConfig = getBasicMySqlConfig();
+        mySqlConfig.put("database-name", "default_checkpoint");
+        mySqlConfig.put("table-name", "t");
+
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setRestartStrategy(RestartStrategies.noRestart());
+
+        MySqlSyncTableAction action = syncTableActionBuilder(mySqlConfig).build();
+        action.withStreamExecutionEnvironment(env);
+
+        Thread thread =
+                new Thread(
+                        () -> {
+                            try {
+                                action.run();
+                            } catch (Exception ignore) {
+                            }
+                        });
+        thread.start();
+
+        CommonTestUtils.waitUtil(
+                () -> env.getCheckpointConfig().isCheckpointingEnabled(),
+                Duration.ofSeconds(5),
+                Duration.ofMillis(100));
+
+        assertThat(env.getCheckpointInterval()).isEqualTo(3 * 60 * 1000);
+
+        thread.interrupt();
+        env.close();
+    }
+
+    @Test
+    @Timeout(60)
+    public void testComputedColumnWithCaseInsensitive() throws Exception {
+        Map<String, String> mySqlConfig = getBasicMySqlConfig();
+        mySqlConfig.put("database-name", "computed_column_with_case_insensitive");
+        mySqlConfig.put("table-name", "t");
+
+        MySqlSyncTableAction action =
+                syncTableActionBuilder(mySqlConfig)
+                        .withCatalogConfig(
+                                Collections.singletonMap(
+                                        FileSystemCatalogOptions.CASE_SENSITIVE.key(), "false"))
+                        .withComputedColumnArgs("SUBSTRING=substring(UPPERCASE_STRING,2)")
+                        .build();
+        runActionWithDefaultEnv(action);
+
+        try (Statement statement = getStatement()) {
+            statement.execute("USE computed_column_with_case_insensitive");
+            statement.executeUpdate("INSERT INTO t VALUES (1, 'apache')");
+            statement.executeUpdate("INSERT INTO t VALUES (2, null)");
+        }
+
+        FileStoreTable table = getFileStoreTable();
+        RowType rowType =
+                RowType.of(
+                        new DataType[] {
+                            DataTypes.INT().notNull(), DataTypes.VARCHAR(10), DataTypes.STRING(),
+                        },
+                        new String[] {"pk", "uppercase_string", "substring"});
+        waitForResult(
+                Arrays.asList("+I[1, apache, ache]", "+I[2, NULL, NULL]"),
+                table,
+                rowType,
+                Collections.singletonList("pk"));
+    }
+
+    @Test
+    @Timeout(60)
+    public void testSpecifyKeysWithCaseInsensitive() throws Exception {
+        Map<String, String> mySqlConfig = getBasicMySqlConfig();
+        mySqlConfig.put("database-name", "specify_key_with_case_insensitive");
+        mySqlConfig.put("table-name", "t");
+
+        MySqlSyncTableAction action =
+                syncTableActionBuilder(mySqlConfig)
+                        .withCatalogConfig(
+                                Collections.singletonMap(
+                                        FileSystemCatalogOptions.CASE_SENSITIVE.key(), "false"))
+                        .withPrimaryKeys("ID1", "PART")
+                        .withPartitionKeys("PART")
+                        .build();
+        runActionWithDefaultEnv(action);
+
+        FileStoreTable table = getFileStoreTable();
+        assertThat(table.primaryKeys()).containsExactly("id1", "part");
+        assertThat(table.partitionKeys()).containsExactly("part");
     }
 }

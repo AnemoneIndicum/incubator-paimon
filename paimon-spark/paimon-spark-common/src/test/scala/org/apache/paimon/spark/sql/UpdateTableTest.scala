@@ -19,8 +19,8 @@ package org.apache.paimon.spark.sql
 
 import org.apache.paimon.CoreOptions
 import org.apache.paimon.spark.PaimonSparkTestBase
+import org.apache.paimon.spark.catalyst.analysis.Update
 
-import org.apache.spark.sql.catalyst.analysis.Update
 import org.assertj.core.api.Assertions.{assertThat, assertThatThrownBy}
 
 class UpdateTableTest extends PaimonSparkTestBase {
@@ -225,6 +225,6 @@ class UpdateTableTest extends PaimonSparkTestBase {
 
     assertThatThrownBy(
       () => spark.sql("UPDATE T SET s.c2 = 'a_new', s = struct(11, 'a_new') WHERE s.c1 = 1"))
-      .hasMessageContaining("Conflicting updates on attrs: s.c2, s")
+      .hasMessageContaining("Conflicting update/insert on attrs: s.c2, s")
   }
 }

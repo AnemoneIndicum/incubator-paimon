@@ -18,6 +18,7 @@
 
 package org.apache.paimon.catalog;
 
+import org.apache.paimon.CoreOptions;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.Path;
 import org.apache.paimon.options.CatalogOptions;
@@ -225,6 +226,14 @@ public abstract class CatalogTestBase {
                         .partitionKeys("pk1", "pk2")
                         .primaryKey("pk1", "pk2", "pk3")
                         .build();
+
+        // Create table throws Exception when auto-create = true.
+        schema.options().put(CoreOptions.AUTO_CREATE.key(), Boolean.TRUE.toString());
+        assertThatExceptionOfType(IllegalArgumentException.class)
+                .isThrownBy(() -> catalog.createTable(identifier, schema, false))
+                .withMessage("The value of auto-create property should be false.");
+        schema.options().remove(CoreOptions.AUTO_CREATE.key());
+
         catalog.createTable(identifier, schema, false);
         boolean exists = catalog.tableExists(identifier);
         assertThat(exists).isTrue();
@@ -791,5 +800,36 @@ public abstract class CatalogTestBase {
                         anyCauseMatches(
                                 UnsupportedOperationException.class,
                                 "Cannot change nullability of primary key"));
+    }
+
+    @Test
+    public void testAlterTableUpdateComment() throws Exception {
+        catalog.createDatabase("test_db", false);
+
+        Identifier identifier = Identifier.create("test_db", "test_table");
+        catalog.createTable(
+                identifier,
+                new Schema(
+                        Lists.newArrayList(
+                                new DataField(0, "col1", DataTypes.STRING(), "field1"),
+                                new DataField(1, "col2", DataTypes.STRING(), "field2")),
+                        Collections.emptyList(),
+                        Collections.emptyList(),
+                        Maps.newHashMap(),
+                        "comment"),
+                false);
+
+        catalog.alterTable(
+                identifier, Lists.newArrayList(SchemaChange.updateComment("new comment")), false);
+
+        Table table = catalog.getTable(identifier);
+        assertThat(table.comment().isPresent() && table.comment().get().equals("new comment"))
+                .isTrue();
+
+        // drop comment
+        catalog.alterTable(identifier, Lists.newArrayList(SchemaChange.updateComment(null)), false);
+
+        table = catalog.getTable(identifier);
+        assertThat(table.comment().isPresent()).isFalse();
     }
 }

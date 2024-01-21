@@ -20,6 +20,8 @@ package org.apache.paimon.flink;
 
 import org.apache.paimon.CoreOptions;
 import org.apache.paimon.table.FileStoreTable;
+import org.apache.paimon.utils.BlockingIterator;
+import org.apache.paimon.utils.DateTimeUtils;
 
 import org.apache.flink.types.Row;
 import org.apache.flink.types.RowKind;
@@ -101,6 +103,18 @@ public class BatchFileStoreITCase extends CatalogITCaseBase {
                                         time1)))
                 .containsExactlyInAnyOrder(Row.of(1, 11, 111), Row.of(2, 22, 222));
 
+        assertThat(
+                        batchSql(
+                                "SELECT * FROM T /*+ OPTIONS('scan.file-creation-time-millis'='%s') */",
+                                time1))
+                .containsExactlyInAnyOrder(
+                        Row.of(3, 33, 333),
+                        Row.of(4, 44, 444),
+                        Row.of(5, 55, 555),
+                        Row.of(6, 66, 666),
+                        Row.of(7, 77, 777),
+                        Row.of(8, 88, 888));
+
         assertThat(batchSql("SELECT * FROM T /*+ OPTIONS('scan.snapshot-id'='2') */"))
                 .containsExactlyInAnyOrder(
                         Row.of(1, 11, 111),
@@ -125,6 +139,15 @@ public class BatchFileStoreITCase extends CatalogITCaseBase {
                         Row.of(2, 22, 222),
                         Row.of(3, 33, 333),
                         Row.of(4, 44, 444));
+
+        assertThat(
+                        batchSql(
+                                String.format(
+                                        "SELECT * FROM T /*+ OPTIONS('scan.file-creation-time-millis'='%s') */",
+                                        time2)))
+                .containsExactlyInAnyOrder(
+                        Row.of(5, 55, 555), Row.of(6, 66, 666),
+                        Row.of(7, 77, 777), Row.of(8, 88, 888));
 
         assertThat(batchSql("SELECT * FROM T /*+ OPTIONS('scan.snapshot-id'='3') */"))
                 .containsExactlyInAnyOrder(
@@ -156,6 +179,13 @@ public class BatchFileStoreITCase extends CatalogITCaseBase {
                         Row.of(4, 44, 444),
                         Row.of(5, 55, 555),
                         Row.of(6, 66, 666));
+
+        assertThat(
+                        batchSql(
+                                String.format(
+                                        "SELECT * FROM T /*+ OPTIONS('scan.file-creation-time-millis'='%s') */",
+                                        time3)))
+                .containsExactlyInAnyOrder(Row.of(7, 77, 777), Row.of(8, 88, 888));
 
         assertThatThrownBy(
                         () ->
@@ -203,7 +233,7 @@ public class BatchFileStoreITCase extends CatalogITCaseBase {
         expireOptions.put(CoreOptions.SNAPSHOT_NUM_RETAINED_MAX.key(), "1");
         expireOptions.put(CoreOptions.SNAPSHOT_NUM_RETAINED_MIN.key(), "1");
         FileStoreTable table = (FileStoreTable) paimonTable("T");
-        table.copy(expireOptions).store().newExpire().expire();
+        table.copy(expireOptions).newCommit("").expireSnapshots();
         assertThat(table.snapshotManager().snapshotCount()).isEqualTo(1);
 
         assertThat(batchSql("SELECT * FROM T /*+ OPTIONS('scan.tag-name'='tag1') */"))
@@ -328,5 +358,79 @@ public class BatchFileStoreITCase extends CatalogITCaseBase {
                         + "+I[60, 300, aaa, 3, 3, c], +I[61, 301, bbb, 3, 3, c], +I[62, 302, ccc, 3, 3, c]]";
         assertThat(tEnv.explainSql(joinSql)).contains("DynamicFilteringDataCollector");
         assertThat(sql(joinSql).toString()).isEqualTo(expected2);
+    }
+
+    @Test
+    public void testRowKindField() {
+        sql(
+                "CREATE TABLE R_T (pk INT PRIMARY KEY NOT ENFORCED, v INT, rf STRING) "
+                        + "WITH ('rowkind.field'='rf')");
+        sql("INSERT INTO R_T VALUES (1, 1, '+I')");
+        assertThat(sql("SELECT * FROM R_T")).containsExactly(Row.of(1, 1, "+I"));
+        sql("INSERT INTO R_T VALUES (1, 2, '-D')");
+        assertThat(sql("SELECT * FROM R_T")).isEmpty();
+    }
+
+    @Test
+    public void testIgnoreDelete() throws Exception {
+        sql(
+                "CREATE TABLE ignore_delete (pk INT PRIMARY KEY NOT ENFORCED, v STRING) "
+                        + "WITH ('deduplicate.ignore-delete' = 'true')");
+        BlockingIterator<Row, Row> iterator = streamSqlBlockIter("SELECT * FROM ignore_delete");
+
+        sql("INSERT INTO ignore_delete VALUES (1, 'A'), (2, 'B')");
+        sql("DELETE FROM ignore_delete WHERE pk = 1");
+        sql("INSERT INTO ignore_delete VALUES (1, 'B')");
+
+        assertThat(iterator.collect(2))
+                .containsExactlyInAnyOrder(
+                        Row.ofKind(RowKind.INSERT, 1, "B"), Row.ofKind(RowKind.INSERT, 2, "B"));
+        iterator.close();
+    }
+
+    @Test
+    public void testDeleteWithPkLookup() throws Exception {
+        sql(
+                "CREATE TABLE ignore_delete (pk INT PRIMARY KEY NOT ENFORCED, v STRING) "
+                        + "WITH ('changelog-producer' = 'lookup')");
+        BlockingIterator<Row, Row> iterator = streamSqlBlockIter("SELECT * FROM ignore_delete");
+
+        sql("INSERT INTO ignore_delete VALUES (1, 'A'), (2, 'B')");
+        sql("DELETE FROM ignore_delete WHERE pk = 1");
+        sql("INSERT INTO ignore_delete VALUES (1, 'B')");
+
+        assertThat(iterator.collect(2))
+                .containsExactlyInAnyOrder(
+                        Row.ofKind(RowKind.INSERT, 1, "B"), Row.ofKind(RowKind.INSERT, 2, "B"));
+        iterator.close();
+    }
+
+    @Test
+    public void testScanFromOldSchema() throws InterruptedException {
+        sql("CREATE TABLE select_old (f0 INT PRIMARY KEY NOT ENFORCED, f1 STRING)");
+
+        sql("INSERT INTO select_old VALUES (1, 'a'), (2, 'b')");
+
+        Thread.sleep(1_000);
+        long timestamp = System.currentTimeMillis();
+
+        sql("ALTER TABLE select_old ADD f2 STRING");
+        sql("INSERT INTO select_old VALUES (3, 'c', 'C')");
+
+        // this way will initialize source with the latest schema
+        assertThat(
+                        sql(
+                                "SELECT * FROM select_old /*+ OPTIONS('scan.timestamp-millis'='%s') */",
+                                timestamp))
+                // old schema doesn't have column f2
+                .containsExactlyInAnyOrder(Row.of(1, "a", null), Row.of(2, "b", null));
+
+        // this way will initialize source with time-travelled schema
+        assertThat(
+                        sql(
+                                "SELECT * FROM select_old FOR SYSTEM_TIME AS OF TIMESTAMP '%s'",
+                                DateTimeUtils.formatTimestamp(
+                                        DateTimeUtils.toInternal(timestamp, 0), 0)))
+                .containsExactlyInAnyOrder(Row.of(1, "a"), Row.of(2, "b"));
     }
 }
