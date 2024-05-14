@@ -41,7 +41,6 @@ import org.apache.paimon.types.DataTypes;
 import org.apache.paimon.types.RowType;
 import org.apache.paimon.utils.SnapshotManager;
 
-import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.data.RowData;
@@ -112,6 +111,7 @@ public class MultiTablesCompactorSourceBuilderITCase extends AbstractTestBase
             // change options to test whether CompactorSourceBuilder work normally
             options.put(CoreOptions.SCAN_SNAPSHOT_ID.key(), "2");
         }
+        options.put("bucket", "1");
         long monitorInterval = 1000;
 
         for (String dbName : DATABASE_NAMES) {
@@ -155,9 +155,11 @@ public class MultiTablesCompactorSourceBuilderITCase extends AbstractTestBase
             }
         }
 
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        env.setRuntimeMode(RuntimeExecutionMode.BATCH);
-        env.setParallelism(ThreadLocalRandom.current().nextInt(2) + 1);
+        StreamExecutionEnvironment env =
+                streamExecutionEnvironmentBuilder()
+                        .batchMode()
+                        .parallelism(ThreadLocalRandom.current().nextInt(2) + 1)
+                        .build();
         DataStream<RowData> source =
                 new MultiTablesCompactorSourceBuilder(
                                 catalogLoader(),
@@ -203,6 +205,7 @@ public class MultiTablesCompactorSourceBuilderITCase extends AbstractTestBase
                     CoreOptions.ChangelogProducer.NONE.toString());
             options.put(CoreOptions.SCAN_BOUNDED_WATERMARK.key(), "0");
         }
+        options.put("bucket", "1");
         long monitorInterval = 1000;
         List<FileStoreTable> tables = new ArrayList<>();
         for (String dbName : DATABASE_NAMES) {
@@ -252,7 +255,8 @@ public class MultiTablesCompactorSourceBuilderITCase extends AbstractTestBase
             }
         }
 
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        StreamExecutionEnvironment env =
+                streamExecutionEnvironmentBuilder().streamingMode().build();
         DataStream<RowData> compactorSource =
                 new MultiTablesCompactorSourceBuilder(
                                 catalogLoader(),
@@ -372,6 +376,7 @@ public class MultiTablesCompactorSourceBuilderITCase extends AbstractTestBase
                     CoreOptions.ChangelogProducer.NONE.toString());
             options.put(CoreOptions.SCAN_BOUNDED_WATERMARK.key(), "0");
         }
+        options.put("bucket", "1");
         long monitorInterval = 1000;
 
         for (String dbName : DATABASE_NAMES) {
@@ -420,7 +425,8 @@ public class MultiTablesCompactorSourceBuilderITCase extends AbstractTestBase
             }
         }
 
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        StreamExecutionEnvironment env =
+                streamExecutionEnvironmentBuilder().streamingMode().build();
         DataStream<RowData> compactorSource =
                 new MultiTablesCompactorSourceBuilder(
                                 catalogLoader(),

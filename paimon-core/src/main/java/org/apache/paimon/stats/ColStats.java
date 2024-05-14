@@ -18,6 +18,7 @@
 
 package org.apache.paimon.stats;
 
+import org.apache.paimon.annotation.Experimental;
 import org.apache.paimon.data.serializer.InternalSerializers;
 import org.apache.paimon.data.serializer.Serializer;
 import org.apache.paimon.types.DataType;
@@ -25,6 +26,7 @@ import org.apache.paimon.utils.JsonSerdeUtil;
 import org.apache.paimon.utils.OptionalUtils;
 
 import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.annotation.JsonCreator;
+import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.annotation.JsonInclude;
 import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.annotation.JsonProperty;
 
@@ -48,6 +50,8 @@ import java.util.OptionalLong;
  *
  * @param <T> col internal data type
  */
+@Experimental
+@JsonIgnoreProperties(ignoreUnknown = true)
 public class ColStats<T> {
 
     private static final String FIELD_COL_ID = "colId";
@@ -89,6 +93,7 @@ public class ColStats<T> {
     @JsonProperty(FIELD_MAX_LEN)
     private final @Nullable Long maxLen;
 
+    // This should only be used by jackson
     @JsonCreator
     public ColStats(
             @JsonProperty(FIELD_COL_ID) int colId,
@@ -107,7 +112,7 @@ public class ColStats<T> {
         this.maxLen = maxLen;
     }
 
-    public ColStats(
+    private ColStats(
             int colId,
             @Nullable Long distinctCount,
             @Nullable Comparable<T> min,
@@ -122,6 +127,17 @@ public class ColStats<T> {
         this.nullCount = nullCount;
         this.avgLen = avgLen;
         this.maxLen = maxLen;
+    }
+
+    public static <T> ColStats<T> newColStats(
+            int colId,
+            @Nullable Long distinctCount,
+            @Nullable Comparable<T> min,
+            @Nullable Comparable<T> max,
+            @Nullable Long nullCount,
+            @Nullable Long avgLen,
+            @Nullable Long maxLen) {
+        return new ColStats<>(colId, distinctCount, min, max, nullCount, avgLen, maxLen);
     }
 
     public int colId() {
@@ -189,9 +205,7 @@ public class ColStats<T> {
         ColStats<?> colStats = (ColStats<?>) o;
         return colId == colStats.colId
                 && Objects.equals(distinctCount, colStats.distinctCount)
-                && Objects.equals(serializedMin, colStats.serializedMin)
                 && Objects.equals(min, colStats.min)
-                && Objects.equals(serializedMax, colStats.serializedMax)
                 && Objects.equals(max, colStats.max)
                 && Objects.equals(nullCount, colStats.nullCount)
                 && Objects.equals(avgLen, colStats.avgLen)
@@ -200,16 +214,7 @@ public class ColStats<T> {
 
     @Override
     public int hashCode() {
-        return Objects.hash(
-                colId,
-                distinctCount,
-                serializedMin,
-                min,
-                serializedMax,
-                max,
-                nullCount,
-                avgLen,
-                maxLen);
+        return Objects.hash(colId, distinctCount, min, max, nullCount, avgLen, maxLen);
     }
 
     @Override

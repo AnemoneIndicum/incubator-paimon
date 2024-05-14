@@ -18,7 +18,6 @@
 
 package org.apache.paimon.table.system;
 
-import org.apache.paimon.Snapshot;
 import org.apache.paimon.catalog.Identifier;
 import org.apache.paimon.data.BinaryString;
 import org.apache.paimon.data.GenericRow;
@@ -27,10 +26,13 @@ import org.apache.paimon.data.Timestamp;
 import org.apache.paimon.manifest.ManifestCommittable;
 import org.apache.paimon.schema.Schema;
 import org.apache.paimon.table.FileStoreTable;
+import org.apache.paimon.table.Table;
 import org.apache.paimon.table.TableTestBase;
 import org.apache.paimon.table.sink.TableCommitImpl;
+import org.apache.paimon.tag.Tag;
 import org.apache.paimon.types.DataTypes;
 import org.apache.paimon.utils.DateTimeUtils;
+import org.apache.paimon.utils.Pair;
 import org.apache.paimon.utils.TagManager;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -38,20 +40,22 @@ import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
-import java.util.Map;
+import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Unit tests for {@link TagsTable}. */
-public class TagsTableTest extends TableTestBase {
+class TagsTableTest extends TableTestBase {
 
     private static final String tableName = "MyTable";
     private TagsTable tagsTable;
     private TagManager tagManager;
 
     @BeforeEach
-    public void before() throws Exception {
+    void before() throws Exception {
         Identifier identifier = identifier(tableName);
         Schema schema =
                 Schema.newBuilder()
@@ -78,28 +82,63 @@ public class TagsTableTest extends TableTestBase {
                                 .getMillisecond()));
         tagsTable = (TagsTable) catalog.getTable(identifier(tableName + "$tags"));
         tagManager = table.store().newTagManager();
+        table.createTag("many-tags-test");
     }
 
     @Test
-    public void testTagsTable() throws Exception {
-        List<InternalRow> expectRow = getExceptedResult();
+    void testTagsTable() throws Exception {
+        List<InternalRow> expectRow =
+                getExceptedResult(
+                        key -> {
+                            return new ArrayList<>();
+                        });
         List<InternalRow> result = read(tagsTable);
         assertThat(result).containsExactlyElementsOf(expectRow);
     }
 
-    private List<InternalRow> getExceptedResult() {
-        List<InternalRow> internalRows = new ArrayList<>();
-        for (Map.Entry<Snapshot, String> tag : tagManager.tags().entrySet()) {
-            Snapshot snapshot = tag.getKey();
+    @Test
+    void testTagBranchesTable() throws Exception {
+        Table table = catalog.getTable(identifier(tableName));
+        table.createBranch("2023-07-17-branch1", "2023-07-17");
+        table.createBranch("2023-07-18-branch1", "2023-07-18");
+        table.createBranch("2023-07-18-branch2", "2023-07-18");
+        List<InternalRow> expectRow =
+                getExceptedResult(
+                        tag -> {
+                            if (tag.equals("2023-07-17")) {
+                                return Collections.singletonList("2023-07-17-branch1");
+                            } else if (tag.equals("2023-07-18")) {
+                                return Arrays.asList("2023-07-18-branch1", "2023-07-18-branch2");
+                            } else {
+                                return new ArrayList<>();
+                            }
+                        });
+        List<InternalRow> result = read(tagsTable);
+        assertThat(result).containsExactlyElementsOf(expectRow);
+    }
 
+    private List<InternalRow> getExceptedResult(
+            Function<String, List<String>> tagBranchesFunction) {
+        List<InternalRow> internalRows = new ArrayList<>();
+        for (Pair<Tag, String> snapshot : tagManager.tagObjects()) {
+            Tag tag = snapshot.getKey();
+            String tagName = snapshot.getValue();
             internalRows.add(
                     GenericRow.of(
-                            BinaryString.fromString(tag.getValue()),
-                            snapshot.id(),
-                            snapshot.schemaId(),
+                            BinaryString.fromString(tagName),
+                            tag.id(),
+                            tag.schemaId(),
                             Timestamp.fromLocalDateTime(
-                                    DateTimeUtils.toLocalDateTime(snapshot.timeMillis())),
-                            snapshot.totalRecordCount()));
+                                    DateTimeUtils.toLocalDateTime(tag.timeMillis())),
+                            tag.totalRecordCount(),
+                            BinaryString.fromString(tagBranchesFunction.apply(tagName).toString()),
+                            tag.getTagCreateTime() == null
+                                    ? null
+                                    : Timestamp.fromLocalDateTime(tag.getTagCreateTime()),
+                            tag.getTagTimeRetained() == null
+                                    ? null
+                                    : BinaryString.fromString(
+                                            tag.getTagTimeRetained().toString())));
         }
         return internalRows;
     }

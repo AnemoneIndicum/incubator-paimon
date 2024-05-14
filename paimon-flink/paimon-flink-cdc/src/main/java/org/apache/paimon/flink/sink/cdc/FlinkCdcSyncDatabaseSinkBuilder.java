@@ -27,7 +27,6 @@ import org.apache.paimon.flink.utils.SingleOutputStreamOperatorUtils;
 import org.apache.paimon.options.MemorySize;
 import org.apache.paimon.options.Options;
 import org.apache.paimon.schema.SchemaManager;
-import org.apache.paimon.table.AppendOnlyFileStoreTable;
 import org.apache.paimon.table.BucketMode;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.utils.Preconditions;
@@ -66,6 +65,7 @@ public class FlinkCdcSyncDatabaseSinkBuilder<T> {
     @Nullable private Integer parallelism;
     private double committerCpu;
     @Nullable private MemorySize committerMemory;
+    private boolean commitChaining;
 
     // Paimon catalog used to check and create tables. There will be two
     //     places where this catalog is used. 1) in processing function,
@@ -101,6 +101,7 @@ public class FlinkCdcSyncDatabaseSinkBuilder<T> {
         this.parallelism = options.get(FlinkConnectorOptions.SINK_PARALLELISM);
         this.committerCpu = options.get(FlinkConnectorOptions.SINK_COMMITTER_CPU);
         this.committerMemory = options.get(FlinkConnectorOptions.SINK_COMMITTER_MEMORY);
+        this.commitChaining = options.get(FlinkConnectorOptions.SINK_COMMITTER_OPERATOR_CHAINING);
         return this;
     }
 
@@ -150,6 +151,7 @@ public class FlinkCdcSyncDatabaseSinkBuilder<T> {
         SingleOutputStreamOperatorUtils.getSideOutput(
                         parsed,
                         CdcDynamicTableParsingProcessFunction.DYNAMIC_SCHEMA_CHANGE_OUTPUT_TAG)
+                .keyBy(t -> t.f0)
                 .process(new MultiTableUpdatedDataFieldsProcessFunction(catalogLoader))
                 .name("Schema Evolution");
 
@@ -160,7 +162,8 @@ public class FlinkCdcSyncDatabaseSinkBuilder<T> {
                         parallelism);
 
         FlinkCdcMultiTableSink sink =
-                new FlinkCdcMultiTableSink(catalogLoader, committerCpu, committerMemory);
+                new FlinkCdcMultiTableSink(
+                        catalogLoader, committerCpu, committerMemory, commitChaining);
         sink.sinkFrom(partitioned);
     }
 
@@ -171,7 +174,7 @@ public class FlinkCdcSyncDatabaseSinkBuilder<T> {
     }
 
     private void buildForUnawareBucket(FileStoreTable table, DataStream<CdcRecord> parsed) {
-        new CdcUnawareBucketSink((AppendOnlyFileStoreTable) table, parallelism).sinkFrom(parsed);
+        new CdcUnawareBucketSink(table, parallelism).sinkFrom(parsed);
     }
 
     private void buildDividedCdcSink() {
@@ -204,16 +207,16 @@ public class FlinkCdcSyncDatabaseSinkBuilder<T> {
 
             BucketMode bucketMode = table.bucketMode();
             switch (bucketMode) {
-                case FIXED:
+                case HASH_FIXED:
                     buildForFixedBucket(table, parsedForTable);
                     break;
-                case DYNAMIC:
+                case HASH_DYNAMIC:
                     new CdcDynamicBucketSink(table).build(parsedForTable, parallelism);
                     break;
-                case UNAWARE:
+                case BUCKET_UNAWARE:
                     buildForUnawareBucket(table, parsedForTable);
                     break;
-                case GLOBAL_DYNAMIC:
+                case CROSS_PARTITION:
                 default:
                     throw new UnsupportedOperationException(
                             "Unsupported bucket mode: " + bucketMode);

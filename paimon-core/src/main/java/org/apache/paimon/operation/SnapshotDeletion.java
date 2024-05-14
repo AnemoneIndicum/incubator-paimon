@@ -28,6 +28,7 @@ import org.apache.paimon.manifest.FileKind;
 import org.apache.paimon.manifest.ManifestEntry;
 import org.apache.paimon.manifest.ManifestFile;
 import org.apache.paimon.manifest.ManifestList;
+import org.apache.paimon.stats.StatsFileHandler;
 import org.apache.paimon.utils.FileStorePathFactory;
 import org.apache.paimon.utils.Pair;
 import org.apache.paimon.utils.TagManager;
@@ -58,16 +59,20 @@ public class SnapshotDeletion extends FileDeletionBase {
             FileStorePathFactory pathFactory,
             ManifestFile manifestFile,
             ManifestList manifestList,
-            IndexFileHandler indexFileHandler) {
-        super(fileIO, pathFactory, manifestFile, manifestList, indexFileHandler);
+            IndexFileHandler indexFileHandler,
+            StatsFileHandler statsFileHandler) {
+        super(fileIO, pathFactory, manifestFile, manifestList, indexFileHandler, statsFileHandler);
     }
 
     @Override
     public void cleanUnusedDataFiles(Snapshot snapshot, Predicate<ManifestEntry> skipper) {
+        cleanUnusedDataFiles(snapshot.deltaManifestList(), skipper);
+    }
+
+    public void cleanUnusedDataFiles(String manifestList, Predicate<ManifestEntry> skipper) {
         // try read manifests
-        List<String> manifestFileNames =
-                readManifestFileNames(tryReadManifestList(snapshot.deltaManifestList()));
-        List<ManifestEntry> manifestEntries = new ArrayList<>();
+        List<String> manifestFileNames = readManifestFileNames(tryReadManifestList(manifestList));
+        List<ManifestEntry> manifestEntries;
         // data file path -> (original manifest entry, extra file paths)
         Map<Path, Pair<ManifestEntry, List<Path>>> dataFileToDelete = new HashMap<>();
         for (String manifest : manifestFileNames) {

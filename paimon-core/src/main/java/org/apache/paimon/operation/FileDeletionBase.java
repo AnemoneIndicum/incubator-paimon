@@ -24,11 +24,13 @@ import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.Path;
 import org.apache.paimon.index.IndexFileHandler;
 import org.apache.paimon.index.IndexFileMeta;
+import org.apache.paimon.manifest.FileEntry;
 import org.apache.paimon.manifest.IndexManifestEntry;
 import org.apache.paimon.manifest.ManifestEntry;
 import org.apache.paimon.manifest.ManifestFile;
 import org.apache.paimon.manifest.ManifestFileMeta;
 import org.apache.paimon.manifest.ManifestList;
+import org.apache.paimon.stats.StatsFileHandler;
 import org.apache.paimon.utils.FileStorePathFactory;
 import org.apache.paimon.utils.FileUtils;
 
@@ -64,6 +66,8 @@ public abstract class FileDeletionBase {
     protected final ManifestFile manifestFile;
     protected final ManifestList manifestList;
     protected final IndexFileHandler indexFileHandler;
+    protected final StatsFileHandler statsFileHandler;
+
     protected final Map<BinaryRow, Set<Integer>> deletionBuckets;
     protected final Executor ioExecutor;
 
@@ -72,13 +76,14 @@ public abstract class FileDeletionBase {
             FileStorePathFactory pathFactory,
             ManifestFile manifestFile,
             ManifestList manifestList,
-            IndexFileHandler indexFileHandler) {
+            IndexFileHandler indexFileHandler,
+            StatsFileHandler statsFileHandler) {
         this.fileIO = fileIO;
         this.pathFactory = pathFactory;
         this.manifestFile = manifestFile;
         this.manifestList = manifestList;
         this.indexFileHandler = indexFileHandler;
-
+        this.statsFileHandler = statsFileHandler;
         this.deletionBuckets = new HashMap<>();
         this.ioExecutor = FileUtils.COMMON_IO_FORK_JOIN_POOL;
     }
@@ -146,40 +151,14 @@ public abstract class FileDeletionBase {
                 .add(entry.bucket());
     }
 
-    protected void cleanUnusedManifests(
-            Snapshot snapshot, Set<String> skippingSet, boolean deleteChangelog) {
-        // clean base and delta manifests
-        List<String> toDeleteManifests = new ArrayList<>();
-        List<ManifestFileMeta> toExpireManifests = new ArrayList<>();
-        toExpireManifests.addAll(tryReadManifestList(snapshot.baseManifestList()));
-        toExpireManifests.addAll(tryReadManifestList(snapshot.deltaManifestList()));
-        for (ManifestFileMeta manifest : toExpireManifests) {
-            String fileName = manifest.fileName();
-            if (!skippingSet.contains(fileName)) {
-                toDeleteManifests.add(fileName);
-                // to avoid other snapshots trying to delete again
-                skippingSet.add(fileName);
-            }
+    public void cleanUnusedStatisticsManifests(Snapshot snapshot, Set<String> skippingSet) {
+        // clean statistics
+        if (snapshot.statistics() != null && !skippingSet.contains(snapshot.statistics())) {
+            statsFileHandler.deleteStats(snapshot.statistics());
         }
-        deleteFiles(toDeleteManifests, manifestFile::delete);
+    }
 
-        toDeleteManifests.clear();
-        if (!skippingSet.contains(snapshot.baseManifestList())) {
-            toDeleteManifests.add(snapshot.baseManifestList());
-        }
-        if (!skippingSet.contains(snapshot.deltaManifestList())) {
-            toDeleteManifests.add(snapshot.deltaManifestList());
-        }
-        deleteFiles(toDeleteManifests, manifestList::delete);
-
-        // clean changelog manifests
-        if (deleteChangelog && snapshot.changelogManifestList() != null) {
-            deleteFiles(
-                    tryReadManifestList(snapshot.changelogManifestList()),
-                    manifest -> manifestFile.delete(manifest.fileName()));
-            manifestList.delete(snapshot.changelogManifestList());
-        }
-
+    public void cleanUnusedIndexManifests(Snapshot snapshot, Set<String> skippingSet) {
         // clean index manifests
         String indexManifest = snapshot.indexManifest();
         // check exists, it may have been deleted by other snapshots
@@ -194,6 +173,35 @@ public abstract class FileDeletionBase {
                 indexFileHandler.deleteManifest(indexManifest);
             }
         }
+    }
+
+    public void cleanUnusedManifestList(String manifestName, Set<String> skippingSet) {
+        List<String> toDeleteManifests = new ArrayList<>();
+        List<ManifestFileMeta> toExpireManifests = tryReadManifestList(manifestName);
+        for (ManifestFileMeta manifest : toExpireManifests) {
+            String fileName = manifest.fileName();
+            if (!skippingSet.contains(fileName)) {
+                toDeleteManifests.add(fileName);
+                // to avoid other snapshots trying to delete again
+                skippingSet.add(fileName);
+            }
+        }
+        if (!skippingSet.contains(manifestName)) {
+            toDeleteManifests.add(manifestName);
+        }
+
+        deleteFiles(toDeleteManifests, manifestFile::delete);
+    }
+
+    public void cleanUnusedManifests(
+            Snapshot snapshot, Set<String> skippingSet, boolean deleteChangelog) {
+        cleanUnusedManifestList(snapshot.baseManifestList(), skippingSet);
+        cleanUnusedManifestList(snapshot.deltaManifestList(), skippingSet);
+        if (deleteChangelog && snapshot.changelogManifestList() != null) {
+            cleanUnusedManifestList(snapshot.changelogManifestList(), skippingSet);
+        }
+        cleanUnusedIndexManifests(snapshot, skippingSet);
+        cleanUnusedStatisticsManifests(snapshot, skippingSet);
     }
 
     /**
@@ -247,7 +255,7 @@ public abstract class FileDeletionBase {
         for (String manifest : files) {
             List<ManifestEntry> entries;
             entries = manifestFile.readWithIOException(manifest);
-            ManifestEntry.mergeEntries(entries, map);
+            FileEntry.mergeEntries(entries, map);
         }
 
         return map.values();
@@ -289,6 +297,11 @@ public abstract class FileDeletionBase {
                         .map(IndexManifestEntry::indexFile)
                         .map(IndexFileMeta::fileName)
                         .forEach(skippingSet::add);
+            }
+
+            // statistics
+            if (skippingSnapshot.statistics() != null) {
+                skippingSet.add(skippingSnapshot.statistics());
             }
         }
 

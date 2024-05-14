@@ -15,6 +15,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.paimon.spark.sql
 
 import org.apache.paimon.spark.PaimonSparkTestBase
@@ -68,6 +69,19 @@ abstract class DDLTestBase extends PaimonSparkTestBase {
           assert(
             error.contains("Cannot specify location for a database when using fileSystem catalog."))
         }
+    }
+  }
+
+  test("Paimon DDL: create other table with paimon SparkCatalog") {
+    withTable("paimon_tbl1", "paimon_tbl2", "parquet_tbl") {
+      spark.sql(s"CREATE TABLE paimon_tbl1 (id int) USING paimon")
+      spark.sql(s"CREATE TABLE paimon_tbl2 (id int)")
+      val error = intercept[Exception] {
+        spark.sql(s"CREATE TABLE parquet_tbl (id int) USING parquet")
+      }.getMessage
+      assert(
+        error.contains(
+          "SparkCatalog can only create paimon table, but current provider is parquet"))
     }
   }
 }

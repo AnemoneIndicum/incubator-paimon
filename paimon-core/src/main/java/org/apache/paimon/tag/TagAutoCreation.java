@@ -23,22 +23,31 @@ import org.apache.paimon.Snapshot;
 import org.apache.paimon.operation.TagDeletion;
 import org.apache.paimon.table.sink.TagCallback;
 import org.apache.paimon.tag.TagTimeExtractor.ProcessTimeExtractor;
+import org.apache.paimon.tag.TagTimeExtractor.WatermarkExtractor;
 import org.apache.paimon.utils.SnapshotManager;
 import org.apache.paimon.utils.TagManager;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.Optional;
 import java.util.SortedMap;
 
 import static org.apache.paimon.Snapshot.FIRST_SNAPSHOT_ID;
 import static org.apache.paimon.shade.guava30.com.google.common.base.MoreObjects.firstNonNull;
+import static org.apache.paimon.utils.Preconditions.checkState;
 
 /** A manager to create tags automatically. */
 public class TagAutoCreation {
+
+    private static final Logger LOG = LoggerFactory.getLogger(TagAutoCreation.class);
 
     private final SnapshotManager snapshotManager;
     private final TagManager tagManager;
@@ -46,8 +55,10 @@ public class TagAutoCreation {
     private final TagTimeExtractor timeExtractor;
     private final TagPeriodHandler periodHandler;
     private final Duration delay;
-    private final Integer numRetainedMax;
+    @Nullable private final Integer numRetainedMax;
+    @Nullable private final Duration defaultTimeRetained;
     private final List<TagCallback> callbacks;
+    private final Duration idlenessTimeout;
 
     private LocalDateTime nextTag;
     private long nextSnapshot;
@@ -59,7 +70,9 @@ public class TagAutoCreation {
             TagTimeExtractor timeExtractor,
             TagPeriodHandler periodHandler,
             Duration delay,
-            Integer numRetainedMax,
+            @Nullable Integer numRetainedMax,
+            @Nullable Duration defaultTimeRetained,
+            Duration idlenessTimeout,
             List<TagCallback> callbacks) {
         this.snapshotManager = snapshotManager;
         this.tagManager = tagManager;
@@ -68,11 +81,13 @@ public class TagAutoCreation {
         this.periodHandler = periodHandler;
         this.delay = delay;
         this.numRetainedMax = numRetainedMax;
+        this.defaultTimeRetained = defaultTimeRetained;
         this.callbacks = callbacks;
+        this.idlenessTimeout = idlenessTimeout;
 
         this.periodHandler.validateDelay(delay);
 
-        SortedMap<Snapshot, String> tags = tagManager.tags(this::isAutoTag);
+        SortedMap<Snapshot, List<String>> tags = tagManager.tags(periodHandler::isAutoTag);
 
         if (tags.isEmpty()) {
             this.nextSnapshot =
@@ -81,32 +96,37 @@ public class TagAutoCreation {
             Snapshot lastTag = tags.lastKey();
             this.nextSnapshot = lastTag.id() + 1;
 
-            LocalDateTime time = periodHandler.tagToTime(tags.get(lastTag));
+            String tagName = checkAndGetOneAutoTag(tags.get(lastTag));
+            LocalDateTime time = periodHandler.tagToTime(tagName);
             this.nextTag = periodHandler.nextTagTime(time);
         }
     }
 
-    private boolean isAutoTag(String tag) {
-        try {
-            periodHandler.tagToTime(tag);
-            return true;
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
     public boolean forceCreatingSnapshot() {
-        return timeExtractor instanceof ProcessTimeExtractor
-                && (nextTag == null
-                        || isAfterOrEqual(
-                                LocalDateTime.now().minus(delay),
-                                periodHandler.nextTagTime(nextTag)));
+        if (timeExtractor instanceof WatermarkExtractor && idlenessTimeout != null) {
+            Snapshot latestSnapshot = snapshotManager.latestSnapshot();
+            if (latestSnapshot == null) {
+                return false;
+            }
+
+            LocalDateTime snapshotTime =
+                    LocalDateTime.ofInstant(
+                            Instant.ofEpochMilli(latestSnapshot.watermark()),
+                            ZoneId.systemDefault());
+
+            return isAfterOrEqual(LocalDateTime.now().minus(idlenessTimeout), snapshotTime);
+        } else if (timeExtractor instanceof ProcessTimeExtractor) {
+            return nextTag == null
+                    || isAfterOrEqual(
+                            LocalDateTime.now().minus(delay), periodHandler.nextTagTime(nextTag));
+        }
+        return false;
     }
 
     public void run() {
         while (true) {
             if (snapshotManager.snapshotExists(nextSnapshot)) {
-                tryToTag(snapshotManager.snapshot(nextSnapshot));
+                tryToCreateTags(snapshotManager.snapshot(nextSnapshot));
                 nextSnapshot++;
             } else {
                 // avoid snapshot has been expired
@@ -120,7 +140,7 @@ public class TagAutoCreation {
         }
     }
 
-    private void tryToTag(Snapshot snapshot) {
+    private void tryToCreateTags(Snapshot snapshot) {
         Optional<LocalDateTime> timeOptional =
                 timeExtractor.extract(snapshot.timeMillis(), snapshot.watermark());
         if (!timeOptional.isPresent()) {
@@ -132,16 +152,27 @@ public class TagAutoCreation {
                 || isAfterOrEqual(time.minus(delay), periodHandler.nextTagTime(nextTag))) {
             LocalDateTime thisTag = periodHandler.normalizeToPreviousTag(time);
             String tagName = periodHandler.timeToTag(thisTag);
-            tagManager.createTag(snapshot, tagName, callbacks);
+            if (!tagManager.tagExists(tagName)) {
+                tagManager.createTag(snapshot, tagName, defaultTimeRetained, callbacks);
+            }
             nextTag = periodHandler.nextTagTime(thisTag);
 
             if (numRetainedMax != null) {
-                SortedMap<Snapshot, String> tags = tagManager.tags(this::isAutoTag);
+                // only handle auto-created tags here
+                SortedMap<Snapshot, List<String>> tags = tagManager.tags(periodHandler::isAutoTag);
                 if (tags.size() > numRetainedMax) {
                     int toDelete = tags.size() - numRetainedMax;
                     int i = 0;
-                    for (String tag : tags.values()) {
-                        tagManager.deleteTag(tag, tagDeletion, snapshotManager);
+                    for (List<String> tag : tags.values()) {
+                        LOG.info(
+                                "Delete tag {}, because the number of auto-created tags reached numRetainedMax of {}.",
+                                tagName,
+                                numRetainedMax);
+                        tagManager.deleteTag(
+                                checkAndGetOneAutoTag(tag),
+                                tagDeletion,
+                                snapshotManager,
+                                callbacks);
                         i++;
                         if (i == toDelete) {
                             break;
@@ -154,6 +185,15 @@ public class TagAutoCreation {
 
     private boolean isAfterOrEqual(LocalDateTime t1, LocalDateTime t2) {
         return t1.isAfter(t2) || t1.isEqual(t2);
+    }
+
+    public static String checkAndGetOneAutoTag(List<String> autoTags) {
+        checkState(
+                autoTags.size() == 1,
+                "There are more than 1 auto-created tags of the same snapshot: %s. This is unexpected.",
+                String.join(",", autoTags));
+
+        return autoTags.get(0);
     }
 
     @Nullable
@@ -175,6 +215,8 @@ public class TagAutoCreation {
                 TagPeriodHandler.create(options),
                 options.tagCreationDelay(),
                 options.tagNumRetainedMax(),
+                options.tagDefaultTimeRetained(),
+                options.snapshotWatermarkIdleTimeout(),
                 callbacks);
     }
 }

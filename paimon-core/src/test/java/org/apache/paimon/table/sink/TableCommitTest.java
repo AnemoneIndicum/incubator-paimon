@@ -38,7 +38,6 @@ import org.apache.paimon.types.DataTypes;
 import org.apache.paimon.types.RowType;
 import org.apache.paimon.utils.ExceptionUtils;
 import org.apache.paimon.utils.FailingFileIO;
-import org.apache.paimon.utils.FileStorePathFactory;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -56,6 +55,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 import java.util.stream.LongStream;
 
+import static org.apache.paimon.utils.FileStorePathFactoryTest.createNonPartFactory;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -194,8 +194,9 @@ public class TableCommitTest {
                         new DataType[] {DataTypes.INT(), DataTypes.BIGINT()},
                         new String[] {"k", "v"});
 
-        Options conf = new Options();
-        conf.set(CoreOptions.PATH, path);
+        Options options = new Options();
+        options.set(CoreOptions.PATH, path);
+        options.set(CoreOptions.BUCKET, 1);
         TableSchema tableSchema =
                 SchemaUtils.forceCommit(
                         new SchemaManager(LocalFileIO.create(), new Path(path)),
@@ -203,7 +204,7 @@ public class TableCommitTest {
                                 rowType.getFields(),
                                 Collections.emptyList(),
                                 Collections.singletonList("k"),
-                                conf.toMap(),
+                                options.toMap(),
                                 ""));
 
         FileStoreTable table =
@@ -231,7 +232,7 @@ public class TableCommitTest {
                         (CommitMessageImpl) messages0.get(0),
                         (CommitMessageImpl) messages1.get(0))) {
             DataFilePathFactory pathFactory =
-                    new FileStorePathFactory(new Path(path))
+                    createNonPartFactory(new Path(path))
                             .createDataFilePathFactory(message.partition(), message.bucket());
             Path file =
                     message.newFilesIncrement().newFiles().get(0).collectFiles(pathFactory).get(0);

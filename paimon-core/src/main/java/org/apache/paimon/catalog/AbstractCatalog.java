@@ -7,7 +7,7 @@
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -30,7 +30,6 @@ import org.apache.paimon.options.Options;
 import org.apache.paimon.schema.Schema;
 import org.apache.paimon.schema.SchemaChange;
 import org.apache.paimon.schema.TableSchema;
-import org.apache.paimon.table.AbstractFileStoreTable;
 import org.apache.paimon.table.CatalogEnvironment;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.FileStoreTableFactory;
@@ -47,10 +46,13 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
 import static org.apache.paimon.options.CatalogOptions.LINEAGE_META;
+import static org.apache.paimon.options.CatalogOptions.LOCK_ENABLED;
+import static org.apache.paimon.options.CatalogOptions.LOCK_TYPE;
 import static org.apache.paimon.options.OptionsUtils.convertToPropertiesPrefixKey;
 import static org.apache.paimon.utils.Preconditions.checkArgument;
 
@@ -81,6 +83,45 @@ public abstract class AbstractCatalog implements Catalog {
         this.tableDefaultOptions =
                 convertToPropertiesPrefixKey(options.toMap(), TABLE_DEFAULT_OPTION_PREFIX);
         this.catalogOptions = options;
+    }
+
+    @Override
+    public Map<String, String> options() {
+        return catalogOptions.toMap();
+    }
+
+    @Override
+    public FileIO fileIO() {
+        return fileIO;
+    }
+
+    @Override
+    public Optional<CatalogLockFactory> lockFactory() {
+        if (!lockEnabled()) {
+            return Optional.empty();
+        }
+
+        String lock = catalogOptions.get(LOCK_TYPE);
+        if (lock == null) {
+            return defaultLockFactory();
+        }
+
+        return Optional.of(
+                FactoryUtil.discoverFactory(
+                        AbstractCatalog.class.getClassLoader(), CatalogLockFactory.class, lock));
+    }
+
+    public Optional<CatalogLockFactory> defaultLockFactory() {
+        return Optional.empty();
+    }
+
+    @Override
+    public Optional<CatalogLockContext> lockContext() {
+        return Optional.of(CatalogLockContext.fromOptions(catalogOptions));
+    }
+
+    protected boolean lockEnabled() {
+        return catalogOptions.get(LOCK_ENABLED);
     }
 
     @Override
@@ -127,7 +168,7 @@ public abstract class AbstractCatalog implements Catalog {
     public void dropPartition(Identifier identifier, Map<String, String> partitionSpec)
             throws TableNotExistException {
         Table table = getTable(identifier);
-        AbstractFileStoreTable fileStoreTable = (AbstractFileStoreTable) table;
+        FileStoreTable fileStoreTable = (FileStoreTable) table;
         FileStoreCommit commit = fileStoreTable.store().newCommit(UUID.randomUUID().toString());
         commit.dropPartitions(
                 Collections.singletonList(partitionSpec), BatchWriteBuilder.COMMIT_IDENTIFIER);
@@ -305,7 +346,8 @@ public abstract class AbstractCatalog implements Catalog {
                 getDataTableLocation(identifier),
                 tableSchema,
                 new CatalogEnvironment(
-                        Lock.factory(lockFactory().orElse(null), identifier),
+                        Lock.factory(
+                                lockFactory().orElse(null), lockContext().orElse(null), identifier),
                         metastoreClientFactory(identifier).orElse(null),
                         lineageMetaFactory));
     }
@@ -337,17 +379,6 @@ public abstract class AbstractCatalog implements Catalog {
         }
     }
 
-    /**
-     * Get the warehouse path for the catalog if exists.
-     *
-     * @return The catalog warehouse path.
-     */
-    public abstract String warehouse();
-
-    public Map<String, String> options() {
-        return catalogOptions.toMap();
-    }
-
     protected abstract TableSchema getDataTableSchema(Identifier identifier)
             throws TableNotExistException;
 
@@ -375,10 +406,6 @@ public abstract class AbstractCatalog implements Catalog {
 
     public void copyTableDefaultOptions(Map<String, String> options) {
         tableDefaultOptions.forEach(options::putIfAbsent);
-    }
-
-    public FileIO fileIO() {
-        return fileIO;
     }
 
     private String[] tableAndSystemName(Identifier identifier) {
@@ -446,8 +473,6 @@ public abstract class AbstractCatalog implements Catalog {
             } else if (change instanceof SchemaChange.RenameColumn) {
                 SchemaChange.RenameColumn rename = (SchemaChange.RenameColumn) change;
                 fieldNames.add(rename.newName());
-            } else {
-                // do nothing
             }
         }
         validateFieldNameCaseInsensitive(fieldNames);
@@ -459,7 +484,7 @@ public abstract class AbstractCatalog implements Catalog {
 
     private void validateAutoCreateClose(Map<String, String> options) {
         checkArgument(
-                !Boolean.valueOf(
+                !Boolean.parseBoolean(
                         options.getOrDefault(
                                 CoreOptions.AUTO_CREATE.key(),
                                 CoreOptions.AUTO_CREATE.defaultValue().toString())),

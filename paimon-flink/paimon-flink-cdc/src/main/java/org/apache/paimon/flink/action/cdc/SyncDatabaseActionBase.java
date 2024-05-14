@@ -110,14 +110,15 @@ public abstract class SyncDatabaseActionBase extends SynchronizationActionBase {
     }
 
     @Override
-    protected FlatMapFunction<String, RichCdcMultiplexRecord> recordParse() {
+    protected FlatMapFunction<CdcSourceRecord, RichCdcMultiplexRecord> recordParse() {
         return syncJobHandler.provideRecordParser(
                 caseSensitive, Collections.emptyList(), typeMapping, metadataConverters);
     }
 
     @Override
     protected EventParser.Factory<RichCdcMultiplexRecord> buildEventParserFactory() {
-        NewTableSchemaBuilder schemaBuilder = new NewTableSchemaBuilder(tableConfig, caseSensitive);
+        NewTableSchemaBuilder schemaBuilder =
+                new NewTableSchemaBuilder(tableConfig, caseSensitive, metadataConverters);
         Pattern includingPattern = Pattern.compile(includingTables);
         Pattern excludingPattern =
                 excludingTables == null ? null : Pattern.compile(excludingTables);

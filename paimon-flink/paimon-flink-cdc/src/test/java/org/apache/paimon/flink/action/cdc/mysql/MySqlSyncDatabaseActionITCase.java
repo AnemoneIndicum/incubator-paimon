@@ -241,6 +241,7 @@ public class MySqlSyncDatabaseActionITCase extends MySqlActionITCaseBase {
                         new String[] {"k", "v1"}),
                 Collections.emptyList(),
                 Collections.singletonList("k"),
+                Collections.emptyList(),
                 Collections.emptyMap());
 
         // try synchronization
@@ -288,6 +289,7 @@ public class MySqlSyncDatabaseActionITCase extends MySqlActionITCaseBase {
                         new String[] {"k1", "v0"}),
                 Collections.emptyList(),
                 Collections.singletonList("k1"),
+                Collections.emptyList(),
                 Collections.emptyMap());
 
         // try synchronization
@@ -1158,6 +1160,7 @@ public class MySqlSyncDatabaseActionITCase extends MySqlActionITCaseBase {
                         new String[] {"k", "v1"}),
                 Collections.emptyList(),
                 Collections.singletonList("k"),
+                Collections.emptyList(),
                 Collections.emptyMap());
 
         Map<String, String> mySqlConfig = getBasicMySqlConfig();
@@ -1314,6 +1317,20 @@ public class MySqlSyncDatabaseActionITCase extends MySqlActionITCaseBase {
                     table,
                     rowType,
                     Collections.singletonList("k"));
+
+            // test newly created table
+            if (mode == COMBINED) {
+                statement.execute("USE " + "metadata");
+                statement.executeUpdate("CREATE TABLE t3 (k INT, v1 VARCHAR(10), PRIMARY KEY (k))");
+                statement.executeUpdate("INSERT INTO t3 VALUES (1, 'Hi')");
+                waitingTables("t3");
+                table = getFileStoreTable("t3");
+                waitForResult(
+                        Collections.singletonList("+I[1, Hi, t3, metadata]"),
+                        table,
+                        rowType,
+                        Collections.singletonList("k"));
+            }
         }
     }
 

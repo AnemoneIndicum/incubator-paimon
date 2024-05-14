@@ -26,6 +26,7 @@ import org.apache.paimon.flink.action.cdc.mongodb.MongoDBSyncDatabaseActionFacto
 import org.apache.paimon.flink.action.cdc.mongodb.MongoDBSyncTableActionFactory;
 import org.apache.paimon.flink.action.cdc.mysql.MySqlSyncDatabaseActionFactory;
 import org.apache.paimon.flink.action.cdc.mysql.MySqlSyncTableActionFactory;
+import org.apache.paimon.flink.action.cdc.postgres.PostgresSyncTableActionFactory;
 import org.apache.paimon.flink.action.cdc.pulsar.PulsarSyncDatabaseActionFactory;
 import org.apache.paimon.flink.action.cdc.pulsar.PulsarSyncTableActionFactory;
 import org.apache.paimon.table.FileStoreTable;
@@ -35,7 +36,6 @@ import org.apache.paimon.types.DataField;
 import org.apache.paimon.types.RowType;
 
 import org.apache.flink.api.common.JobStatus;
-import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.core.execution.JobClient;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.junit.jupiter.api.AfterEach;
@@ -65,10 +65,12 @@ public class CdcActionITCaseBase extends ActionITCaseBase {
 
     @BeforeEach
     public void setEnv() {
-        env = StreamExecutionEnvironment.getExecutionEnvironment();
-        env.setParallelism(2);
-        env.enableCheckpointing(1000);
-        env.setRestartStrategy(RestartStrategies.noRestart());
+        env =
+                streamExecutionEnvironmentBuilder()
+                        .streamingMode()
+                        .parallelism(2)
+                        .checkpointIntervalMs(1000)
+                        .build();
     }
 
     @AfterEach
@@ -228,6 +230,8 @@ public class CdcActionITCaseBase extends ActionITCaseBase {
                 return PulsarSyncTableActionFactory.IDENTIFIER;
             case "PulsarSyncDatabaseAction":
                 return PulsarSyncDatabaseActionFactory.IDENTIFIER;
+            case "PostgresSyncTableAction":
+                return PostgresSyncTableActionFactory.IDENTIFIER;
             default:
                 throw new UnsupportedOperationException(
                         "Unknown sync action: " + clazz.getSimpleName());
@@ -248,6 +252,8 @@ public class CdcActionITCaseBase extends ActionITCaseBase {
             case "PulsarSyncTableAction":
             case "PulsarSyncDatabaseAction":
                 return "--" + CdcActionCommonUtils.PULSAR_CONF;
+            case "PostgresSyncTableAction":
+                return "--" + CdcActionCommonUtils.POSTGRES_CONF;
             default:
                 throw new UnsupportedOperationException(
                         "Unknown sync action: " + clazz.getSimpleName());

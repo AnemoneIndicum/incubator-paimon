@@ -16,13 +16,9 @@
  * limitations under the License.
  */
 
-/* This file is based on source code from MySqlTypeUtils in the flink-cdc-connectors Project
- * (https://ververica.github.io/flink-cdc-connectors/), licensed by the Apache Software Foundation (ASF)
- * under the Apache License, Version 2.0. See the NOTICE file distributed with this work for
- * additional information regarding copyright ownership. */
-
 package org.apache.paimon.flink.action.cdc.mysql;
 
+import org.apache.paimon.flink.action.cdc.JdbcToPaimonTypeVisitor;
 import org.apache.paimon.flink.action.cdc.TypeMapping;
 import org.apache.paimon.types.DataType;
 import org.apache.paimon.types.DataTypes;
@@ -50,6 +46,11 @@ import static org.apache.paimon.flink.action.cdc.TypeMapping.TypeMappingMode.CHA
 import static org.apache.paimon.flink.action.cdc.TypeMapping.TypeMappingMode.LONGTEXT_TO_BYTES;
 import static org.apache.paimon.flink.action.cdc.TypeMapping.TypeMappingMode.TINYINT1_NOT_BOOL;
 import static org.apache.paimon.flink.action.cdc.TypeMapping.TypeMappingMode.TO_STRING;
+
+/* This file is based on source code from MySqlTypeUtils in the flink-cdc-connectors Project
+ * (https://ververica.github.io/flink-cdc-connectors/), licensed by the Apache Software Foundation (ASF)
+ * under the Apache License, Version 2.0. See the NOTICE file distributed with this work for
+ * additional information regarding copyright ownership. */
 
 /** Converts from MySQL type to {@link DataType}. */
 public class MySqlTypeUtils {
@@ -412,6 +413,24 @@ public class MySqlTypeUtils {
             // When missing scale of the decimal, we
             // use the max scale to avoid parse error
             return isDecimalType(typeName) ? 18 : 0;
+        }
+    }
+
+    public static JdbcToPaimonTypeVisitor toPaimonTypeVisitor() {
+        return MySqlToPaimonTypeVisitor.INSTANCE;
+    }
+
+    private static class MySqlToPaimonTypeVisitor implements JdbcToPaimonTypeVisitor {
+
+        private static final MySqlToPaimonTypeVisitor INSTANCE = new MySqlToPaimonTypeVisitor();
+
+        @Override
+        public DataType visit(
+                String type,
+                @Nullable Integer length,
+                @Nullable Integer scale,
+                TypeMapping typeMapping) {
+            return toDataType(type, length, scale, typeMapping);
         }
     }
 }

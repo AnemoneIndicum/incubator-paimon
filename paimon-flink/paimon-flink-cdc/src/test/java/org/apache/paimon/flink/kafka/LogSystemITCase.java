@@ -65,6 +65,8 @@ public class LogSystemITCase extends KafkaTableTestBase {
                 String.format(
                         "CREATE TABLE T (i INT, j INT) WITH ("
                                 + "'log.system'='kafka', "
+                                + "'bucket'='1', "
+                                + "'bucket-key'='i', "
                                 + "'log.consistency'='eventual', "
                                 + "'kafka.bootstrap.servers'='%s', "
                                 + "'kafka.topic'='T')",
@@ -95,6 +97,7 @@ public class LogSystemITCase extends KafkaTableTestBase {
                                 + " 'merge-engine' = 'aggregation',\n"
                                 + "  'changelog-producer' = 'full-compaction',\n"
                                 + "    'log.system' = 'kafka',\n"
+                                + "    'bucket'='1',\n"
                                 + "    'streaming-read-mode'='file',\n"
                                 + "    'fields.cnt.aggregate-function' = 'sum',\n"
                                 + "    'kafka.bootstrap.servers' = '%s',\n"
@@ -137,6 +140,7 @@ public class LogSystemITCase extends KafkaTableTestBase {
                                 + "    'changelog-producer' = 'full-compaction',\n"
                                 + "    'log.consistency' = 'eventual',\n"
                                 + "    'log.system' = 'kafka',\n"
+                                + "    'bucket'='1',\n"
                                 + "    'streaming-read-mode'='log',\n"
                                 + "    'kafka.bootstrap.servers' = '%s',\n"
                                 + "    'kafka.topic' = 'test-single-sink',\n"
@@ -175,7 +179,8 @@ public class LogSystemITCase extends KafkaTableTestBase {
                         + "      PRIMARY KEY (word) NOT ENFORCED\n"
                         + ")\n"
                         + "WITH (\n"
-                        + " 'merge-engine' = 'aggregation',\n"
+                        + "    'merge-engine' = 'aggregation',\n"
+                        + "    'bucket'='1',\n"
                         + "    'changelog-producer' = 'full-compaction',\n"
                         + "    'streaming-read-mode'='log'\n"
                         + ");");
@@ -215,6 +220,8 @@ public class LogSystemITCase extends KafkaTableTestBase {
                 String.format(
                         "CREATE TABLE T (i INT, j INT) WITH ("
                                 + "'log.system'='kafka', "
+                                + "'bucket'='1', "
+                                + "'bucket-key'='i', "
                                 + "'log.system.partitions'='2', "
                                 + "'kafka.bootstrap.servers'='%s', "
                                 + "'kafka.topic'='Tt')",
@@ -227,6 +234,7 @@ public class LogSystemITCase extends KafkaTableTestBase {
                         "CREATE TABLE T2 (i INT, j INT) WITH ("
                                 + "'log.system'='kafka', "
                                 + "'bucket'='2', "
+                                + "'bucket-key'='i', "
                                 + "'kafka.bootstrap.servers'='%s', "
                                 + "'kafka.topic'='T2')",
                         getBootstrapServers()));
@@ -238,6 +246,8 @@ public class LogSystemITCase extends KafkaTableTestBase {
                 String.format(
                         "CREATE TABLE T1 (i INT, j INT) WITH ("
                                 + "'log.system'='kafka', "
+                                + "'bucket'='1', "
+                                + "'bucket-key'='i', "
                                 + "'log.system.partitions'='2', "
                                 + "'kafka.bootstrap.servers'='%s')",
                         getBootstrapServers()));
@@ -255,6 +265,8 @@ public class LogSystemITCase extends KafkaTableTestBase {
                                         String.format(
                                                 "CREATE TABLE T (i INT, j INT) WITH ("
                                                         + "'log.system'='kafka', "
+                                                        + "'bucket'='1', "
+                                                        + "'bucket-key'='i', "
                                                         + "'log.system.partitions'='2', "
                                                         + "'kafka.bootstrap.servers'='%s', "
                                                         + "'kafka.topic'='T1')",
@@ -275,6 +287,8 @@ public class LogSystemITCase extends KafkaTableTestBase {
                                         String.format(
                                                 "CREATE TABLE NOT_EXIST.T (i INT, j INT) WITH ("
                                                         + "'log.system'='kafka', "
+                                                        + "'bucket'='1', "
+                                                        + "'bucket-key'='i', "
                                                         + "'log.system.partitions'='2', "
                                                         + "'kafka.bootstrap.servers'='%s', "
                                                         + "'kafka.topic'='T1')",
@@ -328,6 +342,8 @@ public class LogSystemITCase extends KafkaTableTestBase {
                     String.format(
                             "CREATE TABLE T (a STRING, b STRING, c STRING) WITH ("
                                     + "'log.system'='kafka', "
+                                    + "'bucket'='1', "
+                                    + "'bucket-key'='a', "
                                     + "'kafka.bootstrap.servers'='%s',"
                                     + "'kafka.topic'='%s'"
                                     + ")",
@@ -359,6 +375,8 @@ public class LogSystemITCase extends KafkaTableTestBase {
                                     + "d AS CAST(c as INT) + 1"
                                     + ") WITH ("
                                     + "'log.system'='kafka', "
+                                    + "'bucket'='1', "
+                                    + "'bucket-key'='a', "
                                     + "'kafka.bootstrap.servers'='%s',"
                                     + "'kafka.topic'='%s'"
                                     + ")",

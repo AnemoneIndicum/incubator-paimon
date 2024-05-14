@@ -57,6 +57,36 @@ under the License.
             <td>The cache mode of lookup join.<br /><br />Possible values:<ul><li>"AUTO"</li><li>"FULL"</li></ul></td>
         </tr>
         <tr>
+            <td><h5>lookup.dynamic-partition</h5></td>
+            <td style="word-wrap: break-word;">(none)</td>
+            <td>String</td>
+            <td>Specific dynamic partition for lookup, only support 'max_pt()' currently.</td>
+        </tr>
+        <tr>
+            <td><h5>lookup.dynamic-partition.refresh-interval</h5></td>
+            <td style="word-wrap: break-word;">1 h</td>
+            <td>Duration</td>
+            <td>Specific dynamic partition refresh interval for lookup, scan all partitions and obtain corresponding partition.</td>
+        </tr>
+        <tr>
+            <td><h5>partition.idle-time-to-done</h5></td>
+            <td style="word-wrap: break-word;">(none)</td>
+            <td>Duration</td>
+            <td>Set a time duration when a partition has no new data after this time duration, mark the done status to indicate that the data is ready.</td>
+        </tr>
+        <tr>
+            <td><h5>partition.mark-done-action</h5></td>
+            <td style="word-wrap: break-word;">"success-file"</td>
+            <td>String</td>
+            <td>Action to mark a partition done is to notify the downstream application that the partition has finished writing, the partition is ready to be read.<br />1. 'success-file': add '_success' file to directory.<br />2. 'done-partition': add 'xxx.done' partition to metastore.<br />Both can be configured at the same time: 'done-partition,success-file'.</td>
+        </tr>
+        <tr>
+            <td><h5>partition.time-interval</h5></td>
+            <td style="word-wrap: break-word;">(none)</td>
+            <td>Duration</td>
+            <td>You can specify time interval for partition, for example, daily partition is '1 d', hourly partition is '1 h'.</td>
+        </tr>
+        <tr>
             <td><h5>scan.infer-parallelism</h5></td>
             <td style="word-wrap: break-word;">true</td>
             <td>Boolean</td>
@@ -139,6 +169,12 @@ under the License.
             <td style="word-wrap: break-word;">(none)</td>
             <td>MemorySize</td>
             <td>Sink committer memory to control heap memory of global committer.</td>
+        </tr>
+        <tr>
+            <td><h5>sink.committer-operator-chaining</h5></td>
+            <td style="word-wrap: break-word;">true</td>
+            <td>Boolean</td>
+            <td>Allow sink committer and writer operator to be chained together</td>
         </tr>
         <tr>
             <td><h5>sink.cross-partition.managed-memory</h5></td>

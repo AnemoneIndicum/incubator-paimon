@@ -18,6 +18,7 @@
 
 package org.apache.paimon.flink;
 
+import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.CatalogContext;
 import org.apache.paimon.catalog.CatalogFactory;
 import org.apache.paimon.catalog.Identifier;
@@ -25,7 +26,7 @@ import org.apache.paimon.data.BinaryRow;
 import org.apache.paimon.fs.Path;
 import org.apache.paimon.index.IndexFileHandler;
 import org.apache.paimon.manifest.IndexManifestEntry;
-import org.apache.paimon.table.AbstractFileStoreTable;
+import org.apache.paimon.table.FileStoreTable;
 
 import org.apache.flink.types.Row;
 import org.assertj.core.api.Assertions;
@@ -56,7 +57,7 @@ public class DynamicBucketTableITCase extends CatalogITCaseBase {
     }
 
     @Test
-    public void testWriteRead() {
+    public void testWriteReadDelete() {
         sql("INSERT INTO T VALUES (1, 1, 1), (1, 2, 2), (1, 3, 3), (1, 4, 4), (1, 5, 5)");
         assertThat(sql("SELECT * FROM T"))
                 .containsExactlyInAnyOrder(
@@ -73,6 +74,10 @@ public class DynamicBucketTableITCase extends CatalogITCaseBase {
                         Row.of(1, 3, 33),
                         Row.of(1, 4, 4),
                         Row.of(1, 5, 5));
+        sql("DELETE FROM T WHERE pt = 1 AND pk = 3");
+        assertThat(sql("SELECT * FROM T"))
+                .containsExactlyInAnyOrder(
+                        Row.of(1, 1, 11), Row.of(1, 2, 2), Row.of(1, 4, 4), Row.of(1, 5, 5));
 
         assertThat(sql("SELECT DISTINCT bucket FROM T$files"))
                 .containsExactlyInAnyOrder(Row.of(0), Row.of(1));
@@ -111,10 +116,9 @@ public class DynamicBucketTableITCase extends CatalogITCaseBase {
         // overwrite the whole table, we should update the index file by this sql
         sql("INSERT OVERWRITE T SELECT * FROM T LIMIT 4");
 
-        AbstractFileStoreTable table =
-                (AbstractFileStoreTable)
-                        (CatalogFactory.createCatalog(CatalogContext.create(new Path(path))))
-                                .getTable(Identifier.create("default", "T"));
+        Catalog catalog = CatalogFactory.createCatalog(CatalogContext.create(new Path(path)));
+
+        FileStoreTable table = (FileStoreTable) catalog.getTable(Identifier.create("default", "T"));
         IndexFileHandler indexFileHandler = table.store().newIndexFileHandler();
         List<BinaryRow> partitions = table.newScan().listPartitions();
         List<IndexManifestEntry> entries = new ArrayList<>();
@@ -123,5 +127,7 @@ public class DynamicBucketTableITCase extends CatalogITCaseBase {
         Long records =
                 entries.stream().map(entry -> entry.indexFile().rowCount()).reduce(Long::sum).get();
         Assertions.assertThat(records).isEqualTo(4);
+
+        catalog.close();
     }
 }

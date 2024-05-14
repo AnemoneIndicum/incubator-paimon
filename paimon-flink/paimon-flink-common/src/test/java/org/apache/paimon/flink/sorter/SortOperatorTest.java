@@ -62,7 +62,9 @@ public class SortOperatorTest {
                         MemorySize.parse("10 mb").getBytes(),
                         (int) MemorySize.parse("16 kb").getBytes(),
                         128,
-                        1) {};
+                        "lz4",
+                        1,
+                        MemorySize.MAX_VALUE) {};
 
         OneInputStreamOperatorTestHarness harness = createTestHarness(sortOperator);
         harness.open();
@@ -109,7 +111,9 @@ public class SortOperatorTest {
                         MemorySize.parse("10 mb").getBytes(),
                         (int) MemorySize.parse("16 kb").getBytes(),
                         128,
-                        1) {};
+                        "lz4",
+                        1,
+                        MemorySize.MAX_VALUE) {};
         OneInputStreamOperatorTestHarness harness = createTestHarness(sortOperator);
         harness.open();
         File[] files = harness.getEnvironment().getIOManager().getSpillingDirectories();

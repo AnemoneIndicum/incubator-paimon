@@ -7,7 +7,7 @@
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -23,13 +23,13 @@ import org.apache.paimon.KeyValue;
 import org.apache.paimon.data.BinaryRow;
 import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.data.serializer.InternalRowSerializer;
-import org.apache.paimon.format.FieldStats;
 import org.apache.paimon.format.FormatWriterFactory;
-import org.apache.paimon.format.TableStatsExtractor;
+import org.apache.paimon.format.SimpleColStats;
+import org.apache.paimon.format.SimpleStatsExtractor;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.Path;
-import org.apache.paimon.stats.BinaryTableStats;
-import org.apache.paimon.stats.FieldStatsArraySerializer;
+import org.apache.paimon.stats.SimpleStats;
+import org.apache.paimon.stats.SimpleStatsConverter;
 import org.apache.paimon.types.RowType;
 import org.apache.paimon.utils.StatsCollectorFactories;
 
@@ -59,14 +59,15 @@ public class KeyValueDataFileWriter
     private final long schemaId;
     private final int level;
 
-    private final FieldStatsArraySerializer keyStatsConverter;
-    private final FieldStatsArraySerializer valueStatsConverter;
+    private final SimpleStatsConverter keyStatsConverter;
+    private final SimpleStatsConverter valueStatsConverter;
     private final InternalRowSerializer keySerializer;
 
     private BinaryRow minKey = null;
     private InternalRow maxKey = null;
     private long minSeqNumber = Long.MAX_VALUE;
     private long maxSeqNumber = Long.MIN_VALUE;
+    private long deleteRecordCount = 0;
 
     public KeyValueDataFileWriter(
             FileIO fileIO,
@@ -75,7 +76,7 @@ public class KeyValueDataFileWriter
             Function<KeyValue, InternalRow> converter,
             RowType keyType,
             RowType valueType,
-            @Nullable TableStatsExtractor tableStatsExtractor,
+            @Nullable SimpleStatsExtractor simpleStatsExtractor,
             long schemaId,
             int level,
             String compression,
@@ -86,7 +87,7 @@ public class KeyValueDataFileWriter
                 path,
                 converter,
                 KeyValue.schema(keyType, valueType),
-                tableStatsExtractor,
+                simpleStatsExtractor,
                 compression,
                 StatsCollectorFactories.createStatsFactories(
                         options, KeyValue.schema(keyType, valueType).getFieldNames()));
@@ -96,8 +97,8 @@ public class KeyValueDataFileWriter
         this.schemaId = schemaId;
         this.level = level;
 
-        this.keyStatsConverter = new FieldStatsArraySerializer(keyType);
-        this.valueStatsConverter = new FieldStatsArraySerializer(valueType);
+        this.keyStatsConverter = new SimpleStatsConverter(keyType);
+        this.valueStatsConverter = new SimpleStatsConverter(valueType);
         this.keySerializer = new InternalRowSerializer(keyType);
     }
 
@@ -110,6 +111,10 @@ public class KeyValueDataFileWriter
 
         updateMinSeqNumber(kv);
         updateMaxSeqNumber(kv);
+
+        if (kv.valueKind().isRetract()) {
+            deleteRecordCount++;
+        }
 
         if (LOG.isDebugEnabled()) {
             LOG.debug("Write to Path " + path + " key value " + kv.toString(keyType, valueType));
@@ -141,15 +146,15 @@ public class KeyValueDataFileWriter
             return null;
         }
 
-        FieldStats[] rowStats = fieldStats();
+        SimpleColStats[] rowStats = fieldStats();
         int numKeyFields = keyType.getFieldCount();
 
-        FieldStats[] keyFieldStats = Arrays.copyOfRange(rowStats, 0, numKeyFields);
-        BinaryTableStats keyStats = keyStatsConverter.toBinary(keyFieldStats);
+        SimpleColStats[] keyFieldStats = Arrays.copyOfRange(rowStats, 0, numKeyFields);
+        SimpleStats keyStats = keyStatsConverter.toBinary(keyFieldStats);
 
-        FieldStats[] valFieldStats =
+        SimpleColStats[] valFieldStats =
                 Arrays.copyOfRange(rowStats, numKeyFields + 2, rowStats.length);
-        BinaryTableStats valueStats = valueStatsConverter.toBinary(valFieldStats);
+        SimpleStats valueStats = valueStatsConverter.toBinary(valFieldStats);
 
         return new DataFileMeta(
                 path.getName(),
@@ -162,6 +167,9 @@ public class KeyValueDataFileWriter
                 minSeqNumber,
                 maxSeqNumber,
                 schemaId,
-                level);
+                level,
+                deleteRecordCount,
+                // TODO: enable file filter for primary key table (e.g. deletion table).
+                null);
     }
 }

@@ -37,7 +37,7 @@ import org.apache.paimon.memory.HeapMemorySegmentPool;
 import org.apache.paimon.options.MemorySize;
 import org.apache.paimon.options.Options;
 import org.apache.paimon.sort.BinaryExternalSortBuffer;
-import org.apache.paimon.table.AbstractFileStoreTable;
+import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.Table;
 import org.apache.paimon.table.sink.PartitionKeyExtractor;
 import org.apache.paimon.table.sink.RowPartitionKeyExtractor;
@@ -67,6 +67,7 @@ import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.BiConsumer;
 import java.util.function.Function;
+import java.util.stream.IntStream;
 
 import static org.apache.paimon.lookup.RocksDBOptions.BLOCK_CACHE_SIZE;
 import static org.apache.paimon.utils.Preconditions.checkArgument;
@@ -78,12 +79,11 @@ public class GlobalIndexAssigner implements Serializable, Closeable {
 
     private static final String INDEX_NAME = "keyIndex";
 
-    private final AbstractFileStoreTable table;
+    private final FileStoreTable table;
 
     private transient IOManager ioManager;
 
     private transient int bucketIndex;
-    private transient ProjectToRowFunction setPartition;
     private transient boolean bootstrap;
     private transient BinaryExternalSortBuffer bootstrapKeys;
     private transient RowBuffer bootstrapRecords;
@@ -103,7 +103,7 @@ public class GlobalIndexAssigner implements Serializable, Closeable {
     private transient ExistingProcessor existingProcessor;
 
     public GlobalIndexAssigner(Table table) {
-        this.table = (AbstractFileStoreTable) table;
+        this.table = (FileStoreTable) table;
     }
 
     // ================== Start Public API ===================
@@ -122,7 +122,8 @@ public class GlobalIndexAssigner implements Serializable, Closeable {
 
         RowType bootstrapType = IndexBootstrap.bootstrapType(table.schema());
         this.bucketIndex = bootstrapType.getFieldCount() - 1;
-        this.setPartition = new ProjectToRowFunction(table.rowType(), table.partitionKeys());
+        ProjectToRowFunction setPartition =
+                new ProjectToRowFunction(table.rowType(), table.partitionKeys());
 
         CoreOptions coreOptions = table.coreOptions();
         this.targetBucketRowNumber = (int) coreOptions.dynamicBucketTargetRowNum();
@@ -169,7 +170,9 @@ public class GlobalIndexAssigner implements Serializable, Closeable {
                         new HeapMemorySegmentPool(
                                 coreOptions.writeBufferSize() / 2, coreOptions.pageSize()),
                         new InternalRowSerializer(table.rowType()),
-                        true);
+                        true,
+                        coreOptions.writeBufferSpillDiskSize(),
+                        coreOptions.spillCompression());
     }
 
     public void bootstrapKey(InternalRow value) throws IOException {
@@ -285,11 +288,13 @@ public class GlobalIndexAssigner implements Serializable, Closeable {
         BinaryExternalSortBuffer keyIdBuffer =
                 BinaryExternalSortBuffer.create(
                         ioManager,
-                        keyWithIdType,
                         keyWithRowType,
+                        IntStream.range(0, keyWithIdType.getFieldCount()).toArray(),
                         coreOptions.writeBufferSize() / 2,
                         coreOptions.pageSize(),
-                        coreOptions.localSortMaxNumFileHandles());
+                        coreOptions.localSortMaxNumFileHandles(),
+                        coreOptions.spillCompression(),
+                        coreOptions.writeBufferSpillDiskSize());
 
         Function<SortOrder, RowIterator> iteratorFunction =
                 sortOrder -> {

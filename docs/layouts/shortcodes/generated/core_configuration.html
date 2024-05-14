@@ -34,15 +34,21 @@ under the License.
         </tr>
         <tr>
             <td><h5>bucket</h5></td>
-            <td style="word-wrap: break-word;">1</td>
+            <td style="word-wrap: break-word;">-1</td>
             <td>Integer</td>
-            <td>Bucket number for file store.</td>
+            <td>Bucket number for file store.<br />It should either be equal to -1 (dynamic bucket mode), or it must be greater than 0 (fixed bucket mode).</td>
         </tr>
         <tr>
             <td><h5>bucket-key</h5></td>
             <td style="word-wrap: break-word;">(none)</td>
             <td>String</td>
             <td>Specify the paimon distribution policy. Data is assigned to each bucket according to the hash value of bucket-key.<br />If you specify multiple fields, delimiter is ','.<br />If not specified, the primary key will be used; if there is no primary key, the full row will be used.</td>
+        </tr>
+        <tr>
+            <td><h5>cache-page-size</h5></td>
+            <td style="word-wrap: break-word;">64 kb</td>
+            <td>MemorySize</td>
+            <td>Memory page size for caching.</td>
         </tr>
         <tr>
             <td><h5>changelog-producer</h5></td>
@@ -55,6 +61,24 @@ under the License.
             <td style="word-wrap: break-word;">false</td>
             <td>Boolean</td>
             <td>Whether to generate -U, +U changelog for the same record. This configuration is only valid for the changelog-producer is lookup or full-compaction.</td>
+        </tr>
+        <tr>
+            <td><h5>changelog.num-retained.max</h5></td>
+            <td style="word-wrap: break-word;">(none)</td>
+            <td>Integer</td>
+            <td>The maximum number of completed changelog to retain. Should be greater than or equal to the minimum number.</td>
+        </tr>
+        <tr>
+            <td><h5>changelog.num-retained.min</h5></td>
+            <td style="word-wrap: break-word;">(none)</td>
+            <td>Integer</td>
+            <td>The minimum number of completed changelog to retain. Should be greater than or equal to 1.</td>
+        </tr>
+        <tr>
+            <td><h5>changelog.time-retained</h5></td>
+            <td style="word-wrap: break-word;">(none)</td>
+            <td>Duration</td>
+            <td>The maximum time of completed changelog to retain.</td>
         </tr>
         <tr>
             <td><h5>commit.callback.#.param</h5></td>
@@ -73,6 +97,12 @@ under the License.
             <td style="word-wrap: break-word;">false</td>
             <td>Boolean</td>
             <td>Whether to force a compaction before commit.</td>
+        </tr>
+        <tr>
+            <td><h5>commit.force-create-snapshot</h5></td>
+            <td style="word-wrap: break-word;">false</td>
+            <td>Boolean</td>
+            <td>Whether to force create snapshot on commit.</td>
         </tr>
         <tr>
             <td><h5>compaction.max-size-amplification-percent</h5></td>
@@ -147,10 +177,16 @@ under the License.
             <td>The TTL in rocksdb index for cross partition upsert (primary keys not contain all partition fields), this can avoid maintaining too many indexes and lead to worse and worse performance, but please note that this may also cause data duplication.</td>
         </tr>
         <tr>
-            <td><h5>deduplicate.ignore-delete</h5></td>
+            <td><h5>delete.force-produce-changelog</h5></td>
             <td style="word-wrap: break-word;">false</td>
             <td>Boolean</td>
-            <td>Whether to ignore delete records in deduplicate mode.</td>
+            <td>Force produce changelog in delete sql, or you can use 'streaming-read-overwrite' to read changelog from overwrite commit.</td>
+        </tr>
+        <tr>
+            <td><h5>deletion-vectors.enabled</h5></td>
+            <td style="word-wrap: break-word;">false</td>
+            <td>Boolean</td>
+            <td>Whether to enable deletion vectors mode. In this mode, index files containing deletion vectors are generated when data is written, which marks the data for deletion. During read operations, by applying these index files, merging can be avoided.</td>
         </tr>
         <tr>
             <td><h5>dynamic-bucket.assigner-parallelism</h5></td>
@@ -177,6 +213,18 @@ under the License.
             <td>Whether only overwrite dynamic partition when overwriting a partitioned table with dynamic partition columns. Works only when the table has partition keys.</td>
         </tr>
         <tr>
+            <td><h5>file-index.in-manifest-threshold</h5></td>
+            <td style="word-wrap: break-word;">500 bytes</td>
+            <td>MemorySize</td>
+            <td>The threshold to store file index bytes in manifest.</td>
+        </tr>
+        <tr>
+            <td><h5>file-index.read.enabled</h5></td>
+            <td style="word-wrap: break-word;">true</td>
+            <td>Boolean</td>
+            <td>Whether enabled read file index.</td>
+        </tr>
+        <tr>
             <td><h5>file-reader-async-threshold</h5></td>
             <td style="word-wrap: break-word;">10 mb</td>
             <td>MemorySize</td>
@@ -196,9 +244,9 @@ under the License.
         </tr>
         <tr>
             <td><h5>file.format</h5></td>
-            <td style="word-wrap: break-word;">orc</td>
-            <td><p>Enum</p></td>
-            <td>Specify the message format of data files, currently orc, parquet and avro are supported.<br /><br />Possible values:<ul><li>"orc": ORC file format.</li><li>"parquet": Parquet file format.</li><li>"avro": Avro file format.</li></ul></td>
+            <td style="word-wrap: break-word;">"orc"</td>
+            <td>String</td>
+            <td>Specify the message format of data files, currently orc, parquet and avro are supported.</td>
         </tr>
         <tr>
             <td><h5>file.format.per.level</h5></td>
@@ -207,16 +255,16 @@ under the License.
             <td>Define different file format for different level, you can add the conf like this: 'file.format.per.level' = '0:avro,3:parquet', if the file format for level is not provided, the default format which set by `file.format` will be used.</td>
         </tr>
         <tr>
-            <td><h5>first-row.ignore-delete</h5></td>
-            <td style="word-wrap: break-word;">false</td>
-            <td>Boolean</td>
-            <td>Whether to ignore delete records in first-row mode.</td>
-        </tr>
-        <tr>
             <td><h5>full-compaction.delta-commits</h5></td>
             <td style="word-wrap: break-word;">(none)</td>
             <td>Integer</td>
             <td>Full compaction will be constantly triggered after delta commits.</td>
+        </tr>
+        <tr>
+            <td><h5>ignore-delete</h5></td>
+            <td style="word-wrap: break-word;">false</td>
+            <td>Boolean</td>
+            <td>Whether to ignore delete records.</td>
         </tr>
         <tr>
             <td><h5>incremental-between</h5></td>
@@ -226,9 +274,9 @@ under the License.
         </tr>
         <tr>
             <td><h5>incremental-between-scan-mode</h5></td>
-            <td style="word-wrap: break-word;">delta</td>
+            <td style="word-wrap: break-word;">auto</td>
             <td><p>Enum</p></td>
-            <td>Scan kind when Read incremental changes between start snapshot (exclusive) and end snapshot, 'delta' for scan newly changed files between snapshots, 'changelog' scan changelog files between snapshots.<br /><br />Possible values:<ul><li>"delta": Scan newly changed files between snapshots.</li><li>"changelog": Scan changelog files between snapshots.</li></ul></td>
+            <td>Scan kind when Read incremental changes between start snapshot (exclusive) and end snapshot. <br /><br />Possible values:<ul><li>"auto": Scan changelog files for the table which produces changelog files. Otherwise, scan newly changed files.</li><li>"delta": Scan newly changed files between snapshots.</li><li>"changelog": Scan changelog files between snapshots.</li></ul></td>
         </tr>
         <tr>
             <td><h5>incremental-between-timestamp</h5></td>
@@ -257,7 +305,7 @@ Mainly to resolve data skew on primary keys. We recommend starting with 64 mb wh
         </tr>
         <tr>
             <td><h5>lookup.cache-max-disk-size</h5></td>
-            <td style="word-wrap: break-word;">9223372036854775807 bytes</td>
+            <td style="word-wrap: break-word;">infinite</td>
             <td>MemorySize</td>
             <td>Max disk size for lookup cache, you can use this option to limit the use of local disks.</td>
         </tr>
@@ -268,6 +316,24 @@ Mainly to resolve data skew on primary keys. We recommend starting with 64 mb wh
             <td>Max memory size for lookup cache.</td>
         </tr>
         <tr>
+            <td><h5>lookup.cache-spill-compression</h5></td>
+            <td style="word-wrap: break-word;">"lz4"</td>
+            <td>String</td>
+            <td>Spill compression for lookup cache, currently none, lz4, lzo and zstd are supported.</td>
+        </tr>
+        <tr>
+            <td><h5>lookup.cache.bloom.filter.enabled</h5></td>
+            <td style="word-wrap: break-word;">true</td>
+            <td>Boolean</td>
+            <td>Whether to enable the bloom filter for lookup cache.</td>
+        </tr>
+        <tr>
+            <td><h5>lookup.cache.bloom.filter.fpp</h5></td>
+            <td style="word-wrap: break-word;">0.05</td>
+            <td>Double</td>
+            <td>Define the default false positive probability for lookup cache bloom filters.</td>
+        </tr>
+        <tr>
             <td><h5>lookup.hash-load-factor</h5></td>
             <td style="word-wrap: break-word;">0.75</td>
             <td>Float</td>
@@ -275,9 +341,9 @@ Mainly to resolve data skew on primary keys. We recommend starting with 64 mb wh
         </tr>
         <tr>
             <td><h5>manifest.format</h5></td>
-            <td style="word-wrap: break-word;">avro</td>
-            <td><p>Enum</p></td>
-            <td>Specify the message format of manifest files.<br /><br />Possible values:<ul><li>"orc": ORC file format.</li><li>"parquet": Parquet file format.</li><li>"avro": Avro file format.</li></ul></td>
+            <td style="word-wrap: break-word;">"avro"</td>
+            <td>String</td>
+            <td>Specify the message format of manifest files.</td>
         </tr>
         <tr>
             <td><h5>manifest.full-compaction-threshold-size</h5></td>
@@ -345,37 +411,7 @@ This config option does not affect the default filesystem metastore.</td>
             <td><h5>num-sorted-run.stop-trigger</h5></td>
             <td style="word-wrap: break-word;">(none)</td>
             <td>Integer</td>
-            <td>The number of sorted runs that trigger the stopping of writes, the default value is 'num-sorted-run.compaction-trigger' + 1.</td>
-        </tr>
-        <tr>
-            <td><h5>orc.bloom.filter.columns</h5></td>
-            <td style="word-wrap: break-word;">(none)</td>
-            <td>String</td>
-            <td>A comma-separated list of columns for which to create a bloom filter when writing.</td>
-        </tr>
-        <tr>
-            <td><h5>orc.bloom.filter.fpp</h5></td>
-            <td style="word-wrap: break-word;">0.05</td>
-            <td>Double</td>
-            <td>Define the default false positive probability for bloom filters.</td>
-        </tr>
-        <tr>
-            <td><h5>orc.column.encoding.direct</h5></td>
-            <td style="word-wrap: break-word;">(none)</td>
-            <td>Integer</td>
-            <td>Comma-separated list of fields for which dictionary encoding is to be skipped in orc.</td>
-        </tr>
-        <tr>
-            <td><h5>orc.dictionary.key.threshold</h5></td>
-            <td style="word-wrap: break-word;">(none)</td>
-            <td>Integer</td>
-            <td>If the number of distinct keys in a dictionary is greater than this fraction of the total number of non-null rows, turn off dictionary encoding in orc.  Use 1 to always use dictionary encoding.</td>
-        </tr>
-        <tr>
-            <td><h5>orc.write.batch-size</h5></td>
-            <td style="word-wrap: break-word;">1024</td>
-            <td>Integer</td>
-            <td>write batch size for orc.</td>
+            <td>The number of sorted runs that trigger the stopping of writes, the default value is 'num-sorted-run.compaction-trigger' + 3.</td>
         </tr>
         <tr>
             <td><h5>page-size</h5></td>
@@ -388,12 +424,6 @@ This config option does not affect the default filesystem metastore.</td>
             <td style="word-wrap: break-word;">(none)</td>
             <td>Integer</td>
             <td>Turn off the dictionary encoding for all fields in parquet.</td>
-        </tr>
-        <tr>
-            <td><h5>partial-update.ignore-delete</h5></td>
-            <td style="word-wrap: break-word;">false</td>
-            <td>Boolean</td>
-            <td>Whether to ignore delete records in partial-update mode.</td>
         </tr>
         <tr>
             <td><h5>partition</h5></td>
@@ -442,6 +472,18 @@ This config option does not affect the default filesystem metastore.</td>
             <td style="word-wrap: break-word;">1024</td>
             <td>Integer</td>
             <td>Read batch size for orc and parquet.</td>
+        </tr>
+        <tr>
+            <td><h5>record-level.expire-time</h5></td>
+            <td style="word-wrap: break-word;">(none)</td>
+            <td>Duration</td>
+            <td>Record level expire time for primary key table, expiration happens in compaction, there is no strong guarantee to expire records in time. You must specific 'record-level.time-field' too.</td>
+        </tr>
+        <tr>
+            <td><h5>record-level.time-field</h5></td>
+            <td style="word-wrap: break-word;">(none)</td>
+            <td>String</td>
+            <td>Time field for record level expire, it should be a seconds INT.</td>
         </tr>
         <tr>
             <td><h5>rowkind.field</h5></td>
@@ -504,10 +546,10 @@ This config option does not affect the default filesystem metastore.</td>
             <td>Optional timestamp used in case of "from-timestamp" scan mode. If there is no snapshot earlier than this time, the earliest snapshot will be chosen.</td>
         </tr>
         <tr>
-            <td><h5>sequence.auto-padding</h5></td>
+            <td><h5>scan.watermark</h5></td>
             <td style="word-wrap: break-word;">(none)</td>
-            <td>String</td>
-            <td>Specify the way of padding precision, if the provided sequence field is used to indicate "time" but doesn't meet the precise.<ul><li>You can specific:</li><li>1. "row-kind-flag": Pads a bit flag to indicate whether it is retract (0) or add (1) message.</li><li>2. "second-to-micro": Pads the sequence field that indicates time with precision of seconds to micro-second.</li><li>3. "millis-to-micro": Pads the sequence field that indicates time with precision of milli-second to micro-second.</li><li>4. Composite pattern: for example, "second-to-micro,row-kind-flag".</li></ul></td>
+            <td>Long</td>
+            <td>Optional watermark used in case of "from-snapshot" scan mode. If there is no snapshot later than this watermark, will throw an exceptions.</td>
         </tr>
         <tr>
             <td><h5>sequence.field</h5></td>
@@ -541,7 +583,7 @@ This config option does not affect the default filesystem metastore.</td>
         </tr>
         <tr>
             <td><h5>snapshot.num-retained.max</h5></td>
-            <td style="word-wrap: break-word;">2147483647</td>
+            <td style="word-wrap: break-word;">infinite</td>
             <td>Integer</td>
             <td>The maximum number of completed snapshots to retain. Should be greater than or equal to the minimum number.</td>
         </tr>
@@ -556,6 +598,25 @@ This config option does not affect the default filesystem metastore.</td>
             <td style="word-wrap: break-word;">1 h</td>
             <td>Duration</td>
             <td>The maximum time of completed snapshots to retain.</td>
+        </tr>
+        <tr>
+            <td><h5>snapshot.watermark-idle-timeout</h5></td>
+            <td style="word-wrap: break-word;">(none)</td>
+            <td>Duration</td>
+            <td>In watermarking, if a source remains idle beyond the specified timeout duration, it triggers snapshot advancement and facilitates tag creation.</td>
+        </tr>
+        <tr>
+            <td><h5>sort-compaction.local-sample.magnification</h5></td>
+            <td style="word-wrap: break-word;">1000</td>
+            <td>Integer</td>
+            <td>The magnification of local sample for sort-compaction.The size of local sample is sink parallelism * magnification.</td>
+        </tr>
+        <tr>
+            <td><h5>sort-compaction.range-strategy</h5></td>
+            <td style="word-wrap: break-word;">QUANTITY</td>
+            <td><p>Enum</p></td>
+            <td>The range strategy of sort compaction, the default value is quantity.
+If the data size allocated for the sorting task is uneven,which may lead to performance bottlenecks, the config can be set to size.<br /><br />Possible values:<ul><li>"SIZE"</li><li>"QUANTITY"</li></ul></td>
         </tr>
         <tr>
             <td><h5>sort-engine</h5></td>
@@ -588,6 +649,12 @@ This config option does not affect the default filesystem metastore.</td>
             <td>Target size of a source split when scanning a bucket.</td>
         </tr>
         <tr>
+            <td><h5>spill-compression</h5></td>
+            <td style="word-wrap: break-word;">"LZ4"</td>
+            <td>String</td>
+            <td>Compression for spill, currently lz4, lzo and zstd are supported.</td>
+        </tr>
+        <tr>
             <td><h5>streaming-read-mode</h5></td>
             <td style="word-wrap: break-word;">(none)</td>
             <td><p>Enum</p></td>
@@ -604,12 +671,6 @@ This config option does not affect the default filesystem metastore.</td>
             <td style="word-wrap: break-word;">none</td>
             <td><p>Enum</p></td>
             <td>Whether to create tag automatically. And how to generate tags.<br /><br />Possible values:<ul><li>"none": No automatically created tags.</li><li>"process-time": Based on the time of the machine, create TAG once the processing time passes period time plus delay.</li><li>"watermark": Based on the watermark of the input, create TAG once the watermark passes period time plus delay.</li><li>"batch": In the batch processing scenario, the tag corresponding to the current snapshot is generated after the task is completed.</li></ul></td>
-        </tr>
-        <tr>
-            <td><h5>tag.period-formatter</h5></td>
-            <td style="word-wrap: break-word;">with_dashes</td>
-            <td><p>Enum</p></td>
-            <td>The date format for tag periods.<br /><br />Possible values:<ul><li>"with_dashes": Dates and hours with dashes, e.g., 'yyyy-MM-dd HH'</li><li>"without_dashes": Dates and hours without dashes, e.g., 'yyyyMMdd HH'</li></ul></td>
         </tr>
         <tr>
             <td><h5>tag.callback.#.param</h5></td>
@@ -636,10 +697,22 @@ This config option does not affect the default filesystem metastore.</td>
             <td>What frequency is used to generate tags.<br /><br />Possible values:<ul><li>"daily": Generate a tag every day.</li><li>"hourly": Generate a tag every hour.</li><li>"two-hours": Generate a tag every two hours.</li></ul></td>
         </tr>
         <tr>
+            <td><h5>tag.default-time-retained</h5></td>
+            <td style="word-wrap: break-word;">(none)</td>
+            <td>Duration</td>
+            <td>The default maximum time retained for newly created tags.</td>
+        </tr>
+        <tr>
             <td><h5>tag.num-retained-max</h5></td>
             <td style="word-wrap: break-word;">(none)</td>
             <td>Integer</td>
             <td>The maximum number of tags to retain.</td>
+        </tr>
+        <tr>
+            <td><h5>tag.period-formatter</h5></td>
+            <td style="word-wrap: break-word;">with_dashes</td>
+            <td><p>Enum</p></td>
+            <td>The date format for tag periods.<br /><br />Possible values:<ul><li>"with_dashes": Dates and hours with dashes, e.g., 'yyyy-MM-dd HH'</li><li>"without_dashes": Dates and hours without dashes, e.g., 'yyyyMMdd HH'</li></ul></td>
         </tr>
         <tr>
             <td><h5>target-file-size</h5></td>
@@ -658,6 +731,12 @@ This config option does not affect the default filesystem metastore.</td>
             <td style="word-wrap: break-word;">256 mb</td>
             <td>MemorySize</td>
             <td>Amount of data to build up in memory before converting to a sorted on-disk file.</td>
+        </tr>
+        <tr>
+            <td><h5>write-buffer-spill.max-disk-size</h5></td>
+            <td style="word-wrap: break-word;">infinite</td>
+            <td>MemorySize</td>
+            <td>The max disk to use for write buffer spill. This only work when the write buffer spill is enabled</td>
         </tr>
         <tr>
             <td><h5>write-buffer-spillable</h5></td>

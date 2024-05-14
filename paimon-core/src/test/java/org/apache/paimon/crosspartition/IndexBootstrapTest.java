@@ -44,6 +44,7 @@ import java.util.function.Consumer;
 
 import static org.apache.paimon.crosspartition.IndexBootstrap.filterSplit;
 import static org.apache.paimon.data.BinaryRow.EMPTY_ROW;
+import static org.apache.paimon.stats.SimpleStats.EMPTY_STATS;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Test for {@link org.apache.paimon.crosspartition.IndexBootstrap}. */
@@ -97,6 +98,11 @@ public class IndexBootstrapTest extends TableTestBase {
                 .containsExactlyInAnyOrder(
                         GenericRow.of(2, 1, 3), GenericRow.of(4, 2, 5), GenericRow.of(6, 3, 7));
         result.clear();
+
+        // In ParallelExecution, latch.countDown first, then close the reader, it may not be closed
+        // here, (this is good, beneficial for query speed) but TableTestBase.after will check leak
+        // streams. So sleep here to avoid unstable.
+        Thread.sleep(1000);
     }
 
     @Test
@@ -112,6 +118,7 @@ public class IndexBootstrapTest extends TableTestBase {
                 .withPartition(EMPTY_ROW)
                 .withBucket(0)
                 .withDataFiles(Arrays.asList(files))
+                .withBucketPath("") // not used
                 .build();
     }
 
@@ -122,7 +129,7 @@ public class IndexBootstrapTest extends TableTestBase {
                 1,
                 DataFileMeta.EMPTY_MIN_KEY,
                 DataFileMeta.EMPTY_MAX_KEY,
-                DataFileMeta.EMPTY_KEY_STATS,
+                EMPTY_STATS,
                 null,
                 0,
                 1,
@@ -132,7 +139,9 @@ public class IndexBootstrapTest extends TableTestBase {
                 Timestamp.fromLocalDateTime(
                         Instant.ofEpochMilli(timeMillis)
                                 .atZone(ZoneId.systemDefault())
-                                .toLocalDateTime()));
+                                .toLocalDateTime()),
+                0L,
+                null);
     }
 
     private Pair<InternalRow, Integer> row(int pt, int col, int pk, int bucket) {

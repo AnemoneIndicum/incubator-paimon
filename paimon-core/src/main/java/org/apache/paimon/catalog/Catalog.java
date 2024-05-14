@@ -19,6 +19,7 @@
 package org.apache.paimon.catalog;
 
 import org.apache.paimon.annotation.Public;
+import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.metastore.MetastoreClient;
 import org.apache.paimon.schema.Schema;
 import org.apache.paimon.schema.SchemaChange;
@@ -45,11 +46,24 @@ public interface Catalog extends AutoCloseable {
     String SYSTEM_TABLE_SPLITTER = "$";
     String SYSTEM_DATABASE_NAME = "sys";
 
+    /** Warehouse root path containing all database directories in this catalog. */
+    String warehouse();
+
+    /** Catalog options. */
+    Map<String, String> options();
+
+    FileIO fileIO();
+
     /**
      * Get lock factory from catalog. Lock is used to support multiple concurrent writes on the
      * object store.
      */
-    Optional<CatalogLock.Factory> lockFactory();
+    Optional<CatalogLockFactory> lockFactory();
+
+    /** Get lock context for lock factory to create a lock. */
+    default Optional<CatalogLockContext> lockContext() {
+        return Optional.empty();
+    }
 
     /** Get metastore client factory for the table specified by {@code identifier}. */
     default Optional<MetastoreClient.Factory> metastoreClientFactory(Identifier identifier) {

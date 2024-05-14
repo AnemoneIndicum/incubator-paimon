@@ -30,9 +30,9 @@ import org.apache.paimon.io.DataFileMeta;
 import org.apache.paimon.migrate.FileMetaUtils;
 import org.apache.paimon.migrate.Migrator;
 import org.apache.paimon.schema.Schema;
-import org.apache.paimon.table.AbstractFileStoreTable;
-import org.apache.paimon.table.AppendOnlyFileStoreTable;
 import org.apache.paimon.table.BucketMode;
+import org.apache.paimon.table.FileStoreTable;
+import org.apache.paimon.table.sink.BatchTableCommit;
 import org.apache.paimon.table.sink.CommitMessage;
 import org.apache.paimon.types.DataField;
 import org.apache.paimon.types.RowType;
@@ -42,6 +42,9 @@ import org.apache.hadoop.hive.metastore.api.FieldSchema;
 import org.apache.hadoop.hive.metastore.api.Partition;
 import org.apache.hadoop.hive.metastore.api.PrimaryKeysRequest;
 import org.apache.hadoop.hive.metastore.api.Table;
+import org.apache.thrift.TException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -60,8 +63,12 @@ import static org.apache.paimon.utils.FileUtils.COMMON_IO_FORK_JOIN_POOL;
 /** Migrate hive table to paimon table. */
 public class HiveMigrator implements Migrator {
 
+    private static final Logger LOG = LoggerFactory.getLogger(HiveMigrator.class);
+
     private static final Predicate<FileStatus> HIDDEN_PATH_FILTER =
             p -> !p.getPath().getName().startsWith("_") && !p.getPath().getName().startsWith(".");
+
+    private static final String PAIMON_SUFFIX = "_paimon_";
 
     private final FileIO fileIO;
     private final HiveCatalog hiveCatalog;
@@ -71,6 +78,7 @@ public class HiveMigrator implements Migrator {
     private final String targetDatabase;
     private final String targetTable;
     private final Map<String, String> options;
+    private Boolean delete = true;
 
     public HiveMigrator(
             HiveCatalog hiveCatalog,
@@ -89,6 +97,32 @@ public class HiveMigrator implements Migrator {
         this.options = options;
     }
 
+    public static List<Migrator> databaseMigrators(
+            HiveCatalog hiveCatalog, String sourceDatabase, Map<String, String> options) {
+        IMetaStoreClient client = hiveCatalog.getHmsClient();
+        try {
+            return client.getAllTables(sourceDatabase).stream()
+                    .map(
+                            sourceTable ->
+                                    new HiveMigrator(
+                                            hiveCatalog,
+                                            sourceDatabase,
+                                            sourceTable,
+                                            sourceDatabase,
+                                            sourceTable + PAIMON_SUFFIX,
+                                            options))
+                    .collect(Collectors.toList());
+        } catch (TException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    @Override
+    public void deleteOriginTable(boolean delete) {
+        this.delete = delete;
+    }
+
+    @Override
     public void executeMigrate() throws Exception {
         if (!client.tableExists(sourceDatabase, sourceTable)) {
             throw new RuntimeException("Source hive table does not exist");
@@ -111,8 +145,7 @@ public class HiveMigrator implements Migrator {
         }
 
         try {
-            AbstractFileStoreTable paimonTable =
-                    (AbstractFileStoreTable) hiveCatalog.getTable(identifier);
+            FileStoreTable paimonTable = (FileStoreTable) hiveCatalog.getTable(identifier);
             checkPaimonTable(paimonTable);
 
             List<String> partitionsNames =
@@ -165,7 +198,9 @@ public class HiveMigrator implements Migrator {
 
                 throw new RuntimeException("Migrating failed because exception happens", e);
             }
-            paimonTable.newBatchWriteBuilder().newCommit().commit(new ArrayList<>(commitMessages));
+            try (BatchTableCommit commit = paimonTable.newBatchWriteBuilder().newCommit()) {
+                commit.commit(new ArrayList<>(commitMessages));
+            }
         } catch (Exception e) {
             if (!alreadyExist) {
                 hiveCatalog.dropTable(identifier, true);
@@ -173,8 +208,18 @@ public class HiveMigrator implements Migrator {
             throw new RuntimeException("Migrating failed", e);
         }
 
-        // if all success, drop the origin table
-        client.dropTable(sourceDatabase, sourceTable, true, true);
+        // if all success, drop the origin table according the delete field
+        if (delete) {
+            client.dropTable(sourceDatabase, sourceTable, true, true);
+        }
+    }
+
+    @Override
+    public void renameTable(boolean ignoreIfNotExists) throws Exception {
+        Identifier targetTableId = Identifier.create(targetDatabase, targetTable);
+        Identifier sourceTableId = Identifier.create(sourceDatabase, sourceTable);
+        LOG.info("Last step: rename {} to {}.", targetTableId, sourceTableId);
+        hiveCatalog.renameTable(targetTableId, sourceTableId, ignoreIfNotExists);
     }
 
     private void checkPrimaryKey() throws Exception {
@@ -184,13 +229,13 @@ public class HiveMigrator implements Migrator {
         }
     }
 
-    private void checkPaimonTable(AbstractFileStoreTable paimonTable) {
-        if (!(paimonTable instanceof AppendOnlyFileStoreTable)) {
+    private void checkPaimonTable(FileStoreTable paimonTable) {
+        if (paimonTable.primaryKeys().size() > 0) {
             throw new IllegalArgumentException(
                     "Hive migrator only support append only table target table");
         }
 
-        if (paimonTable.store().bucketMode() != BucketMode.UNAWARE) {
+        if (paimonTable.store().bucketMode() != BucketMode.BUCKET_UNAWARE) {
             throw new IllegalArgumentException(
                     "Hive migrator only support unaware-bucket target table");
         }
@@ -231,7 +276,7 @@ public class HiveMigrator implements Migrator {
             FileIO fileIO,
             List<String> partitionNames,
             Table sourceTable,
-            AbstractFileStoreTable paimonTable,
+            FileStoreTable paimonTable,
             Map<Path, Path> rollback)
             throws Exception {
         List<MigrateTask> migrateTasks = new ArrayList<>();
@@ -265,7 +310,7 @@ public class HiveMigrator implements Migrator {
     public MigrateTask importUnPartitionedTableTask(
             FileIO fileIO,
             Table sourceTable,
-            AbstractFileStoreTable paimonTable,
+            FileStoreTable paimonTable,
             Map<Path, Path> rollback) {
         String format = parseFormat(sourceTable.getSd().getSerdeInfo().toString());
         String location = sourceTable.getSd().getLocation();
@@ -274,7 +319,7 @@ public class HiveMigrator implements Migrator {
                 fileIO, format, location, paimonTable, BinaryRow.EMPTY_ROW, path, rollback);
     }
 
-    private void checkCompatible(Table sourceHiveTable, AbstractFileStoreTable paimonTable) {
+    private void checkCompatible(Table sourceHiveTable, FileStoreTable paimonTable) {
         List<FieldSchema> sourceFields = new ArrayList<>(sourceHiveTable.getPartitionKeys());
         List<DataField> targetFields =
                 new ArrayList<>(
@@ -321,7 +366,7 @@ public class HiveMigrator implements Migrator {
         private final FileIO fileIO;
         private final String format;
         private final String location;
-        private final AbstractFileStoreTable paimonTable;
+        private final FileStoreTable paimonTable;
         private final BinaryRow partitionRow;
         private final Path newDir;
         private final Map<Path, Path> rollback;
@@ -330,7 +375,7 @@ public class HiveMigrator implements Migrator {
                 FileIO fileIO,
                 String format,
                 String location,
-                AbstractFileStoreTable paimonTable,
+                FileStoreTable paimonTable,
                 BinaryRow partitionRow,
                 Path newDir,
                 Map<Path, Path> rollback) {

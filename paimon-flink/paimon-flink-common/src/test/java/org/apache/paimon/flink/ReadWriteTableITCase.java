@@ -26,7 +26,6 @@ import org.apache.paimon.fs.local.LocalFileIO;
 import org.apache.paimon.schema.Schema;
 import org.apache.paimon.schema.SchemaManager;
 import org.apache.paimon.schema.TableSchema;
-import org.apache.paimon.testutils.assertj.AssertionUtils;
 import org.apache.paimon.types.DataTypes;
 import org.apache.paimon.utils.BlockingIterator;
 
@@ -55,16 +54,15 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -73,7 +71,6 @@ import static org.apache.paimon.CoreOptions.BUCKET;
 import static org.apache.paimon.CoreOptions.CHANGELOG_PRODUCER;
 import static org.apache.paimon.CoreOptions.ChangelogProducer.LOOKUP;
 import static org.apache.paimon.CoreOptions.MERGE_ENGINE;
-import static org.apache.paimon.CoreOptions.MergeEngine.DEDUPLICATE;
 import static org.apache.paimon.CoreOptions.MergeEngine.FIRST_ROW;
 import static org.apache.paimon.CoreOptions.SOURCE_SPLIT_OPEN_FILE_COST;
 import static org.apache.paimon.CoreOptions.SOURCE_SPLIT_TARGET_SIZE;
@@ -102,6 +99,7 @@ import static org.apache.paimon.flink.util.ReadWriteTableTestUtil.testBatchRead;
 import static org.apache.paimon.flink.util.ReadWriteTableTestUtil.testStreamingRead;
 import static org.apache.paimon.flink.util.ReadWriteTableTestUtil.validateStreamingReadResult;
 import static org.apache.paimon.flink.util.ReadWriteTableTestUtil.warehouse;
+import static org.apache.paimon.testutils.assertj.PaimonAssertions.anyCauseMatches;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -138,6 +136,7 @@ public class ReadWriteTableITCase extends AbstractTestBase {
                 createTable(
                         Arrays.asList("currency STRING", "rate BIGINT", "dt String"),
                         Arrays.asList("currency", "dt"),
+                        Collections.emptyList(),
                         Collections.singletonList("dt"));
 
         insertInto(
@@ -268,6 +267,7 @@ public class ReadWriteTableITCase extends AbstractTestBase {
                 createTable(
                         Arrays.asList("currency STRING", "rate BIGINT", "dt String"),
                         Collections.emptyList(),
+                        Collections.singletonList("currency"),
                         Collections.singletonList("dt"));
 
         insertInto(
@@ -326,6 +326,7 @@ public class ReadWriteTableITCase extends AbstractTestBase {
                 createTable(
                         Arrays.asList("currency STRING", "rate BIGINT"),
                         Collections.singletonList("currency"),
+                        Collections.emptyList(),
                         Collections.emptyList());
 
         insertInto(table, "('US Dollar', 102)", "('Yen', 1)", "('Euro', 119)");
@@ -381,6 +382,7 @@ public class ReadWriteTableITCase extends AbstractTestBase {
                 createTable(
                         Arrays.asList("currency STRING", "rate BIGINT"),
                         Collections.emptyList(),
+                        Collections.singletonList("currency"),
                         Collections.emptyList());
 
         insertInto(
@@ -461,6 +463,7 @@ public class ReadWriteTableITCase extends AbstractTestBase {
                 createTable(
                         Arrays.asList("currency STRING", "rate BIGINT", "dt STRING"),
                         Arrays.asList("currency", "dt"),
+                        Collections.emptyList(),
                         Collections.singletonList("dt"));
 
         insertIntoFromTable(temporaryTable, table);
@@ -531,6 +534,7 @@ public class ReadWriteTableITCase extends AbstractTestBase {
                 createTable(
                         Arrays.asList("currency STRING", "rate BIGINT"),
                         Collections.singletonList("currency"),
+                        Collections.emptyList(),
                         Collections.emptyList());
 
         insertIntoFromTable(temporaryTable, table);
@@ -571,6 +575,7 @@ public class ReadWriteTableITCase extends AbstractTestBase {
                 createTable(
                         Arrays.asList("pk INT", "part0 INT", "part1 STRING", "v STRING"),
                         Arrays.asList("pk", "part0", "part1"),
+                        Collections.emptyList(),
                         Arrays.asList("part0", "part1"),
                         streamingReadOverwrite);
 
@@ -640,6 +645,7 @@ public class ReadWriteTableITCase extends AbstractTestBase {
                 createTable(
                         Arrays.asList("k0 INT", "k1 STRING", "v STRING"),
                         Collections.emptyList(),
+                        Collections.singletonList("k0"),
                         Collections.emptyList(),
                         staticPartitionOverwrite);
 
@@ -655,6 +661,7 @@ public class ReadWriteTableITCase extends AbstractTestBase {
                 createTable(
                         fieldsSpec,
                         Collections.emptyList(),
+                        Collections.singletonList("k1"),
                         Collections.singletonList("k0"),
                         staticPartitionOverwrite);
 
@@ -672,6 +679,7 @@ public class ReadWriteTableITCase extends AbstractTestBase {
                 createTable(
                         fieldsSpec,
                         Collections.emptyList(),
+                        Collections.singletonList("v"),
                         Arrays.asList("k0", "k1"),
                         staticPartitionOverwrite);
 
@@ -689,6 +697,7 @@ public class ReadWriteTableITCase extends AbstractTestBase {
                 createTable(
                         fieldsSpec,
                         Collections.emptyList(),
+                        Collections.singletonList("v"),
                         Arrays.asList("k0", "k1"),
                         staticPartitionOverwrite);
 
@@ -713,6 +722,7 @@ public class ReadWriteTableITCase extends AbstractTestBase {
                 createTable(
                         Arrays.asList("currency STRING", "rate BIGINT", "dt String"),
                         Arrays.asList("currency", "dt"),
+                        Collections.emptyList(),
                         Collections.singletonList("dt"),
                         streamingReadOverwrite);
 
@@ -759,6 +769,7 @@ public class ReadWriteTableITCase extends AbstractTestBase {
                         Arrays.asList("currency STRING", "rate BIGINT", "dt STRING"),
                         Collections.singletonList("currency"),
                         Collections.emptyList(),
+                        Collections.emptyList(),
                         streamingReadOverwrite);
 
         insertInto(
@@ -796,10 +807,11 @@ public class ReadWriteTableITCase extends AbstractTestBase {
                                         Arrays.asList(
                                                 "currency STRING", "rate BIGINT", "dt String"),
                                         Collections.emptyList(),
+                                        Collections.singletonList("currency"),
                                         Collections.singletonList("dt"),
                                         streamingReadOverwrite))
                 .satisfies(
-                        AssertionUtils.anyCauseMatches(
+                        anyCauseMatches(
                                 RuntimeException.class,
                                 "Doesn't support streaming read the changes from overwrite when the primary keys are not defined."));
     }
@@ -814,6 +826,7 @@ public class ReadWriteTableITCase extends AbstractTestBase {
                 createTable(
                         Arrays.asList("f0 INT", "f1 STRING"),
                         Collections.emptyList(),
+                        Collections.singletonList("f0"),
                         Collections.emptyList());
 
         // insert multiple times
@@ -906,6 +919,7 @@ public class ReadWriteTableITCase extends AbstractTestBase {
                 createTable(
                         Arrays.asList("f0 INT", "f1 STRING"),
                         Collections.emptyList(),
+                        Collections.singletonList("f0"),
                         Collections.emptyList());
 
         insertInto(
@@ -952,6 +966,7 @@ public class ReadWriteTableITCase extends AbstractTestBase {
                 createTable(
                         Arrays.asList("currency STRING", "rate BIGINT", "dt STRING"),
                         Arrays.asList("currency", "dt"),
+                        Collections.emptyList(),
                         Collections.singletonList("dt"));
 
         insertInto(
@@ -989,6 +1004,7 @@ public class ReadWriteTableITCase extends AbstractTestBase {
                 createTable(
                         Arrays.asList("currency STRING", "rate BIGINT"),
                         Collections.emptyList(),
+                        Collections.singletonList("currency"),
                         Collections.emptyList(),
                         Collections.singletonMap(INFER_SCAN_PARALLELISM.key(), "false"));
 
@@ -1027,6 +1043,7 @@ public class ReadWriteTableITCase extends AbstractTestBase {
                 createTable(
                         Arrays.asList("currency STRING", "rate BIGINT"),
                         Collections.emptyList(),
+                        Collections.singletonList("currency"),
                         Collections.emptyList(),
                         new HashMap<String, String>() {
                             {
@@ -1178,7 +1195,8 @@ public class ReadWriteTableITCase extends AbstractTestBase {
                                 + " dt STRING\n"
                                 + ") PARTITIONED BY (dt)\n"
                                 + "WITH (\n"
-                                + " 'bucket' = '2'\n"
+                                + " 'bucket' = '2',\n"
+                                + " 'bucket-key' = 'currency'\n"
                                 + ")",
                         table));
 
@@ -1197,6 +1215,7 @@ public class ReadWriteTableITCase extends AbstractTestBase {
                 createTable(
                         Arrays.asList("currency STRING", "rate BIGINT", "dt String"),
                         Collections.emptyList(),
+                        Collections.singletonList("currency"),
                         Collections.singletonList("dt"));
 
         assertThatThrownBy(
@@ -1330,17 +1349,11 @@ public class ReadWriteTableITCase extends AbstractTestBase {
     // ----------------------------------------------------------------------------------------------------------------
 
     @ParameterizedTest
-    @EnumSource(CoreOptions.MergeEngine.class)
-    public void testUpdateWithPrimaryKey(CoreOptions.MergeEngine mergeEngine) throws Exception {
-        Set<CoreOptions.MergeEngine> supportUpdateEngines = new HashSet<>();
-        supportUpdateEngines.add(DEDUPLICATE);
-        supportUpdateEngines.add(CoreOptions.MergeEngine.PARTIAL_UPDATE);
+    @ValueSource(strings = {"deduplicate", "partial-update"})
+    public void testUpdateWithPrimaryKey(String mergeEngine) throws Exception {
         // Step1: define table schema
         Map<String, String> options = new HashMap<>();
-        options.put(MERGE_ENGINE.key(), mergeEngine.toString());
-        if (mergeEngine == FIRST_ROW) {
-            options.put(CHANGELOG_PRODUCER.key(), LOOKUP.toString());
-        }
+        options.put(MERGE_ENGINE.key(), mergeEngine);
         String table =
                 createTable(
                         Arrays.asList(
@@ -1349,6 +1362,7 @@ public class ReadWriteTableITCase extends AbstractTestBase {
                                 "rate BIGINT",
                                 "dt String"),
                         Arrays.asList("id", "dt"),
+                        Collections.emptyList(),
                         Collections.singletonList("dt"),
                         options);
 
@@ -1360,36 +1374,28 @@ public class ReadWriteTableITCase extends AbstractTestBase {
                 "(3, 'Euro', 114, '2022-01-01')",
                 "(3, 'Euro', 119, '2022-01-02')");
 
-        // Step3: prepare expected data.
-        String rowKind = mergeEngine == CoreOptions.MergeEngine.PARTIAL_UPDATE ? "+I" : "+U";
-        List<Row> expectedRecords =
+        // Step3: prepare update statement
+        String updateStatement =
+                String.format(
+                        "UPDATE %s "
+                                + "SET currency = 'Yen', "
+                                + "rate = 1 "
+                                + "WHERE currency = 'UNKNOWN' and dt = '2022-01-01'",
+                        table);
+
+        // Step4: execute update statement and verify result
+        bEnv.executeSql(updateStatement).await();
+        String querySql = String.format("SELECT * FROM %s", table);
+        String rowKind = mergeEngine.equals("deduplicate") ? "+U" : "+I";
+        testBatchRead(
+                querySql,
                 Arrays.asList(
                         // part = 2022-01-01
                         changelogRow("+I", 1L, "US Dollar", 114L, "2022-01-01"),
                         changelogRow(rowKind, 2L, "Yen", 1L, "2022-01-01"),
                         changelogRow("+I", 3L, "Euro", 114L, "2022-01-01"),
                         // part = 2022-01-02
-                        changelogRow("+I", 3L, "Euro", 119L, "2022-01-02"));
-
-        // Step4: prepare update statement
-        String updateStatement =
-                String.format(
-                        ""
-                                + "UPDATE %s "
-                                + "SET currency = 'Yen', "
-                                + "rate = 1 "
-                                + "WHERE currency = 'UNKNOWN' and dt = '2022-01-01'",
-                        table);
-
-        // Step5: execute update statement and verify result
-        if (supportUpdateEngines.contains(mergeEngine)) {
-            bEnv.executeSql(updateStatement).await();
-            String querySql = String.format("SELECT * FROM %s", table);
-            testBatchRead(querySql, expectedRecords);
-        } else {
-            assertThatThrownBy(() -> bEnv.executeSql(updateStatement).await())
-                    .satisfies(AssertionUtils.anyCauseMatches(UnsupportedOperationException.class));
-        }
+                        changelogRow("+I", 3L, "Euro", 119L, "2022-01-02")));
     }
 
     @Test
@@ -1406,6 +1412,7 @@ public class ReadWriteTableITCase extends AbstractTestBase {
                                 "rate BIGINT",
                                 "dt String"),
                         Collections.emptyList(),
+                        Collections.singletonList("id"),
                         Collections.emptyList(),
                         options);
         insertInto(
@@ -1444,6 +1451,7 @@ public class ReadWriteTableITCase extends AbstractTestBase {
                                 "rate BIGINT",
                                 "dt String"),
                         Lists.newArrayList("id", "dt"),
+                        Collections.emptyList(),
                         Lists.newArrayList("dt"),
                         options);
         insertInto(
@@ -1473,6 +1481,7 @@ public class ReadWriteTableITCase extends AbstractTestBase {
                                 "rate BIGINT",
                                 "dt String"),
                         Collections.emptyList(),
+                        Collections.singletonList("id"),
                         Collections.singletonList("dt"),
                         options);
 
@@ -1496,25 +1505,16 @@ public class ReadWriteTableITCase extends AbstractTestBase {
 
         // Step4: execute update statement
         assertThatThrownBy(() -> bEnv.executeSql(updateStatement).await())
-                .satisfies(AssertionUtils.anyCauseMatches(UnsupportedOperationException.class));
+                .satisfies(anyCauseMatches(UnsupportedOperationException.class));
     }
 
     // ----------------------------------------------------------------------------------------------------------------
     // Delete statement
     // ----------------------------------------------------------------------------------------------------------------
 
-    @ParameterizedTest
-    @EnumSource(CoreOptions.MergeEngine.class)
-    public void testDeleteWithPrimaryKey(CoreOptions.MergeEngine mergeEngine) throws Exception {
-        Set<CoreOptions.MergeEngine> supportUpdateEngines = new HashSet<>();
-        supportUpdateEngines.add(DEDUPLICATE);
-
+    @Test
+    public void testDeleteWithPrimaryKey() throws Exception {
         // Step1: define table schema
-        Map<String, String> options = new HashMap<>();
-        options.put(MERGE_ENGINE.key(), mergeEngine.toString());
-        if (mergeEngine == FIRST_ROW) {
-            options.put(CHANGELOG_PRODUCER.key(), LOOKUP.toString());
-        }
         String table =
                 createTable(
                         Arrays.asList(
@@ -1523,8 +1523,9 @@ public class ReadWriteTableITCase extends AbstractTestBase {
                                 "rate BIGINT",
                                 "dt String"),
                         Arrays.asList("id", "dt"),
+                        Collections.emptyList(),
                         Collections.singletonList("dt"),
-                        options);
+                        Collections.emptyMap());
 
         // Step2: batch write some historical data
         insertInto(
@@ -1537,18 +1538,13 @@ public class ReadWriteTableITCase extends AbstractTestBase {
         String deleteStatement = String.format("DELETE FROM %s WHERE currency = 'UNKNOWN'", table);
 
         // Step4: execute delete statement and verify result
-        List<Row> expectedRecords =
+        bEnv.executeSql(deleteStatement).await();
+        String querySql = String.format("SELECT * FROM %s", table);
+        testBatchRead(
+                querySql,
                 Arrays.asList(
                         changelogRow("+I", 1L, "US Dollar", 114L, "2022-01-01"),
-                        changelogRow("+I", 3L, "Euro", 119L, "2022-01-02"));
-        if (supportUpdateEngines.contains(mergeEngine)) {
-            bEnv.executeSql(deleteStatement).await();
-            String querySql = String.format("SELECT * FROM %s", table);
-            testBatchRead(querySql, expectedRecords);
-        } else {
-            assertThatThrownBy(() -> bEnv.executeSql(deleteStatement).await())
-                    .satisfies(AssertionUtils.anyCauseMatches(UnsupportedOperationException.class));
-        }
+                        changelogRow("+I", 3L, "Euro", 119L, "2022-01-02")));
     }
 
     @Test
@@ -1563,6 +1559,7 @@ public class ReadWriteTableITCase extends AbstractTestBase {
                                 "rate BIGINT",
                                 "dt String"),
                         Collections.emptyList(),
+                        Collections.singletonList("id"),
                         Collections.singletonList("dt"),
                         options);
 
@@ -1577,28 +1574,13 @@ public class ReadWriteTableITCase extends AbstractTestBase {
         String deleteStatement = String.format("DELETE FROM %s WHERE currency = 'UNKNOWN'", table);
 
         // Step4: execute delete statement and verify result
-        List<Row> expectedRecords =
-                Arrays.asList(
-                        changelogRow("+I", 1L, "US Dollar", 114L, "2022-01-01"),
-                        changelogRow("+I", 3L, "Euro", 119L, "2022-01-02"));
-
         assertThatThrownBy(() -> bEnv.executeSql(deleteStatement).await())
-                .satisfies(AssertionUtils.anyCauseMatches(UnsupportedOperationException.class));
+                .satisfies(anyCauseMatches(UnsupportedOperationException.class));
     }
 
-    @ParameterizedTest
-    @EnumSource(CoreOptions.MergeEngine.class)
-    public void testDeletePushDownWithPrimaryKey(CoreOptions.MergeEngine mergeEngine)
-            throws Exception {
-        Set<CoreOptions.MergeEngine> supportUpdateEngines = new HashSet<>();
-        supportUpdateEngines.add(CoreOptions.MergeEngine.DEDUPLICATE);
-
+    @Test
+    public void testDeleteWithPrimaryKeyFilter() throws Exception {
         // Step1: define table schema
-        Map<String, String> options = new HashMap<>();
-        options.put(MERGE_ENGINE.key(), mergeEngine.toString());
-        if (mergeEngine == FIRST_ROW) {
-            options.put(CHANGELOG_PRODUCER.key(), LOOKUP.toString());
-        }
         String table =
                 createTable(
                         Arrays.asList(
@@ -1607,8 +1589,9 @@ public class ReadWriteTableITCase extends AbstractTestBase {
                                 "rate BIGINT",
                                 "dt String"),
                         Arrays.asList("id", "dt"),
+                        Collections.emptyList(),
                         Collections.singletonList("dt"),
-                        options);
+                        Collections.emptyMap());
 
         // Step2: batch write some historical data
         insertInto(
@@ -1634,51 +1617,24 @@ public class ReadWriteTableITCase extends AbstractTestBase {
                         changelogRow("+I", 6L, "CAD", 119L, "2022-01-03"),
                         changelogRow("+I", 7L, "INR", 119L, "2022-01-03"),
                         changelogRow("+I", 8L, "MOP", 119L, "2022-01-03"));
-        if (supportUpdateEngines.contains(mergeEngine)) {
-            bEnv.executeSql(deleteStatement).await();
-            String querySql = String.format("SELECT * FROM %s", table);
-            testBatchRead(querySql, expectedRecords);
-        } else {
-            assertThatThrownBy(() -> bEnv.executeSql(deleteStatement).await())
-                    .satisfies(AssertionUtils.anyCauseMatches(UnsupportedOperationException.class));
-        }
+        bEnv.executeSql(deleteStatement).await();
+        String querySql = String.format("SELECT * FROM %s", table);
+        testBatchRead(querySql, expectedRecords);
 
         // Test2 delete statement no where
         String deleteStatement2 = String.format("DELETE FROM %s", table);
-        if (supportUpdateEngines.contains(mergeEngine)) {
-            bEnv.executeSql(deleteStatement2).await();
-            String querySql = String.format("SELECT * FROM %s", table);
-            testBatchRead(querySql, Collections.emptyList());
-        } else {
-            assertThatThrownBy(() -> bEnv.executeSql(deleteStatement2).await())
-                    .satisfies(AssertionUtils.anyCauseMatches(UnsupportedOperationException.class));
-        }
+        bEnv.executeSql(deleteStatement2).await();
+        testBatchRead(String.format("SELECT * FROM %s", table), Collections.emptyList());
 
         // Test3 delete statement where pt
         String deleteStatement3 = String.format("DELETE FROM %s WHERE dt = '2022-01-03'", table);
-        if (supportUpdateEngines.contains(mergeEngine)) {
-            bEnv.executeSql(deleteStatement3).await();
-            String querySql = String.format("SELECT * FROM %s", table);
-            testBatchRead(querySql, Collections.emptyList());
-        } else {
-            assertThatThrownBy(() -> bEnv.executeSql(deleteStatement3).await())
-                    .satisfies(AssertionUtils.anyCauseMatches(UnsupportedOperationException.class));
-        }
+        bEnv.executeSql(deleteStatement3).await();
+        testBatchRead(String.format("SELECT * FROM %s", table), Collections.emptyList());
     }
 
-    @ParameterizedTest
-    @EnumSource(CoreOptions.MergeEngine.class)
-    public void testDeletePushDownWithPartitionKey(CoreOptions.MergeEngine mergeEngine)
-            throws Exception {
-        Set<CoreOptions.MergeEngine> supportUpdateEngines = new HashSet<>();
-        supportUpdateEngines.add(CoreOptions.MergeEngine.DEDUPLICATE);
-
+    @Test
+    public void testDeletePushDownWithPartitionKey() throws Exception {
         // Step1: define table schema
-        Map<String, String> options = new HashMap<>();
-        options.put(MERGE_ENGINE.key(), mergeEngine.toString());
-        if (mergeEngine == FIRST_ROW) {
-            options.put(CHANGELOG_PRODUCER.key(), LOOKUP.toString());
-        }
         String table =
                 createTable(
                         Arrays.asList(
@@ -1688,8 +1644,9 @@ public class ReadWriteTableITCase extends AbstractTestBase {
                                 "dt String",
                                 "hh String"),
                         Arrays.asList("id", "dt", "hh"),
+                        Collections.emptyList(),
                         Arrays.asList("dt", "hh"),
-                        options);
+                        Collections.emptyMap());
 
         // Step2: batch write some historical data
         insertInto(
@@ -1717,14 +1674,9 @@ public class ReadWriteTableITCase extends AbstractTestBase {
                         changelogRow("+I", 6L, "CAD", 119L, "2022-01-03", "16"),
                         changelogRow("+I", 7L, "INR", 119L, "2022-01-03", "17"),
                         changelogRow("+I", 8L, "MOP", 119L, "2022-01-03", "18"));
-        if (supportUpdateEngines.contains(mergeEngine)) {
-            bEnv.executeSql(deleteStatement).await();
-            String querySql = String.format("SELECT * FROM %s", table);
-            testBatchRead(querySql, expectedRecords);
-        } else {
-            assertThatThrownBy(() -> bEnv.executeSql(deleteStatement).await())
-                    .satisfies(AssertionUtils.anyCauseMatches(UnsupportedOperationException.class));
-        }
+        bEnv.executeSql(deleteStatement).await();
+        String querySql = String.format("SELECT * FROM %s", table);
+        testBatchRead(querySql, expectedRecords);
 
         // Step5: partition key not push down
         String deleteStatement1 =
@@ -1736,14 +1688,8 @@ public class ReadWriteTableITCase extends AbstractTestBase {
                         changelogRow("+I", 6L, "CAD", 119L, "2022-01-03", "16"),
                         changelogRow("+I", 7L, "INR", 119L, "2022-01-03", "17"),
                         changelogRow("+I", 8L, "MOP", 119L, "2022-01-03", "18"));
-        if (supportUpdateEngines.contains(mergeEngine)) {
-            bEnv.executeSql(deleteStatement1).await();
-            String querySql = String.format("SELECT * FROM %s", table);
-            testBatchRead(querySql, expectedRecords1);
-        } else {
-            assertThatThrownBy(() -> bEnv.executeSql(deleteStatement1).await())
-                    .satisfies(AssertionUtils.anyCauseMatches(UnsupportedOperationException.class));
-        }
+        bEnv.executeSql(deleteStatement1).await();
+        testBatchRead(String.format("SELECT * FROM %s", table), expectedRecords1);
 
         // Step6: partition key delete push down
         String deleteStatement2 =
@@ -1756,14 +1702,8 @@ public class ReadWriteTableITCase extends AbstractTestBase {
                         changelogRow("+I", 2L, "UNKNOWN", -1L, "2022-01-01", "12"),
                         changelogRow("+I", 7L, "INR", 119L, "2022-01-03", "17"),
                         changelogRow("+I", 8L, "MOP", 119L, "2022-01-03", "18"));
-        if (supportUpdateEngines.contains(mergeEngine)) {
-            bEnv.executeSql(deleteStatement2).await();
-            String querySql = String.format("SELECT * FROM %s", table);
-            testBatchRead(querySql, expectedRecords2);
-        } else {
-            assertThatThrownBy(() -> bEnv.executeSql(deleteStatement2).await())
-                    .satisfies(AssertionUtils.anyCauseMatches(UnsupportedOperationException.class));
-        }
+        bEnv.executeSql(deleteStatement2).await();
+        testBatchRead(String.format("SELECT * FROM %s", table), expectedRecords2);
 
         // Step8: partition key delete push down
         String deleteStatement3 = String.format("DELETE FROM %s WHERE dt = '2022-01-03'", table);
@@ -1773,14 +1713,8 @@ public class ReadWriteTableITCase extends AbstractTestBase {
                 Arrays.asList(
                         changelogRow("+I", 1L, "US Dollar", 114L, "2022-01-01", "11"),
                         changelogRow("+I", 2L, "UNKNOWN", -1L, "2022-01-01", "12"));
-        if (supportUpdateEngines.contains(mergeEngine)) {
-            bEnv.executeSql(deleteStatement3).await();
-            String querySql = String.format("SELECT * FROM %s", table);
-            testBatchRead(querySql, expectedRecords3);
-        } else {
-            assertThatThrownBy(() -> bEnv.executeSql(deleteStatement3).await())
-                    .satisfies(AssertionUtils.anyCauseMatches(UnsupportedOperationException.class));
-        }
+        bEnv.executeSql(deleteStatement3).await();
+        testBatchRead(String.format("SELECT * FROM %s", table), expectedRecords3);
     }
 
     // ----------------------------------------------------------------------------------------------------------------
@@ -1838,6 +1772,8 @@ public class ReadWriteTableITCase extends AbstractTestBase {
             options.put(SINK_PARALLELISM.key(), configParallelism.toString());
         }
         options.put("path", getTempFilePath(UUID.randomUUID().toString()));
+        options.put("bucket", "1");
+        options.put("bucket-key", "a");
 
         DynamicTableFactory.Context context =
                 new FactoryUtil.DefaultDynamicTableContext(

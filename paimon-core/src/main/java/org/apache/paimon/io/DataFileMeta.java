@@ -22,8 +22,8 @@ import org.apache.paimon.CoreOptions;
 import org.apache.paimon.data.BinaryRow;
 import org.apache.paimon.data.Timestamp;
 import org.apache.paimon.fs.Path;
-import org.apache.paimon.stats.BinaryTableStats;
-import org.apache.paimon.stats.FieldStatsArraySerializer;
+import org.apache.paimon.stats.SimpleStats;
+import org.apache.paimon.stats.SimpleStatsConverter;
 import org.apache.paimon.types.ArrayType;
 import org.apache.paimon.types.BigIntType;
 import org.apache.paimon.types.DataField;
@@ -31,15 +31,19 @@ import org.apache.paimon.types.DataTypes;
 import org.apache.paimon.types.IntType;
 import org.apache.paimon.types.RowType;
 
+import javax.annotation.Nullable;
+
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
 import static org.apache.paimon.data.BinaryRow.EMPTY_ROW;
+import static org.apache.paimon.stats.SimpleStats.EMPTY_STATS;
 import static org.apache.paimon.utils.Preconditions.checkArgument;
 import static org.apache.paimon.utils.SerializationUtils.newBytesType;
 import static org.apache.paimon.utils.SerializationUtils.newStringType;
@@ -47,22 +51,20 @@ import static org.apache.paimon.utils.SerializationUtils.newStringType;
 /** Metadata of a data file. */
 public class DataFileMeta {
 
-    // Append only data files don't have any key columns and meaningful level value. it will use
-    // the following dummy values.
-    public static final BinaryTableStats EMPTY_KEY_STATS =
-            new BinaryTableStats(EMPTY_ROW, EMPTY_ROW, new Long[0]);
     public static final BinaryRow EMPTY_MIN_KEY = EMPTY_ROW;
     public static final BinaryRow EMPTY_MAX_KEY = EMPTY_ROW;
     public static final int DUMMY_LEVEL = 0;
 
     private final String fileName;
     private final long fileSize;
+
+    // total number of rows (including add & delete) in this file
     private final long rowCount;
 
     private final BinaryRow minKey;
     private final BinaryRow maxKey;
-    private final BinaryTableStats keyStats;
-    private final BinaryTableStats valueStats;
+    private final SimpleStats keyStats;
+    private final SimpleStats valueStats;
 
     private final long minSequenceNumber;
     private final long maxSequenceNumber;
@@ -72,26 +74,61 @@ public class DataFileMeta {
     private final List<String> extraFiles;
     private final Timestamp creationTime;
 
+    // rowCount = addRowCount + deleteRowCount
+    // Why don't we keep addRowCount and deleteRowCount?
+    // Because in previous versions of DataFileMeta, we only keep rowCount.
+    // We have to keep the compatibility.
+    private final @Nullable Long deleteRowCount;
+
+    // file index filter bytes, if it is small, store in data file meta
+    private final @Nullable byte[] embeddedIndex;
+
     public static DataFileMeta forAppend(
             String fileName,
             long fileSize,
             long rowCount,
-            BinaryTableStats rowStats,
+            SimpleStats rowStats,
             long minSequenceNumber,
             long maxSequenceNumber,
             long schemaId) {
+        return forAppend(
+                fileName,
+                fileSize,
+                rowCount,
+                rowStats,
+                minSequenceNumber,
+                maxSequenceNumber,
+                schemaId,
+                Collections.emptyList(),
+                null);
+    }
+
+    public static DataFileMeta forAppend(
+            String fileName,
+            long fileSize,
+            long rowCount,
+            SimpleStats rowStats,
+            long minSequenceNumber,
+            long maxSequenceNumber,
+            long schemaId,
+            List<String> extraFiles,
+            @Nullable byte[] embeddedIndex) {
         return new DataFileMeta(
                 fileName,
                 fileSize,
                 rowCount,
                 EMPTY_MIN_KEY,
                 EMPTY_MAX_KEY,
-                EMPTY_KEY_STATS,
+                EMPTY_STATS,
                 rowStats,
                 minSequenceNumber,
                 maxSequenceNumber,
                 schemaId,
-                DUMMY_LEVEL);
+                DUMMY_LEVEL,
+                extraFiles,
+                Timestamp.fromLocalDateTime(LocalDateTime.now()).toMillisTimestamp(),
+                0L,
+                embeddedIndex);
     }
 
     public DataFileMeta(
@@ -100,12 +137,14 @@ public class DataFileMeta {
             long rowCount,
             BinaryRow minKey,
             BinaryRow maxKey,
-            BinaryTableStats keyStats,
-            BinaryTableStats valueStats,
+            SimpleStats keyStats,
+            SimpleStats valueStats,
             long minSequenceNumber,
             long maxSequenceNumber,
             long schemaId,
-            int level) {
+            int level,
+            @Nullable Long deleteRowCount,
+            @Nullable byte[] embeddedIndex) {
         this(
                 fileName,
                 fileSize,
@@ -119,7 +158,9 @@ public class DataFileMeta {
                 schemaId,
                 level,
                 Collections.emptyList(),
-                Timestamp.fromLocalDateTime(LocalDateTime.now()).toMillisTimestamp());
+                Timestamp.fromLocalDateTime(LocalDateTime.now()).toMillisTimestamp(),
+                deleteRowCount,
+                embeddedIndex);
     }
 
     public DataFileMeta(
@@ -128,18 +169,22 @@ public class DataFileMeta {
             long rowCount,
             BinaryRow minKey,
             BinaryRow maxKey,
-            BinaryTableStats keyStats,
-            BinaryTableStats valueStats,
+            SimpleStats keyStats,
+            SimpleStats valueStats,
             long minSequenceNumber,
             long maxSequenceNumber,
             long schemaId,
             int level,
             List<String> extraFiles,
-            Timestamp creationTime) {
+            Timestamp creationTime,
+            @Nullable Long deleteRowCount,
+            @Nullable byte[] embeddedIndex) {
         this.fileName = fileName;
         this.fileSize = fileSize;
+
         this.rowCount = rowCount;
 
+        this.embeddedIndex = embeddedIndex;
         this.minKey = minKey;
         this.maxKey = maxKey;
         this.keyStats = keyStats;
@@ -151,6 +196,8 @@ public class DataFileMeta {
         this.schemaId = schemaId;
         this.extraFiles = Collections.unmodifiableList(extraFiles);
         this.creationTime = creationTime;
+
+        this.deleteRowCount = deleteRowCount;
     }
 
     public String fileName() {
@@ -165,6 +212,18 @@ public class DataFileMeta {
         return rowCount;
     }
 
+    public Optional<Long> addRowCount() {
+        return Optional.ofNullable(deleteRowCount).map(c -> rowCount - c);
+    }
+
+    public Optional<Long> deleteRowCount() {
+        return Optional.ofNullable(deleteRowCount);
+    }
+
+    public byte[] embeddedIndex() {
+        return embeddedIndex;
+    }
+
     public BinaryRow minKey() {
         return minKey;
     }
@@ -173,11 +232,11 @@ public class DataFileMeta {
         return maxKey;
     }
 
-    public BinaryTableStats keyStats() {
+    public SimpleStats keyStats() {
         return keyStats;
     }
 
-    public BinaryTableStats valueStats() {
+    public SimpleStats valueStats() {
         return valueStats;
     }
 
@@ -204,7 +263,7 @@ public class DataFileMeta {
      *   <li>Paimon 0.2
      *       <ul>
      *         <li>Stores changelog files for {@link CoreOptions.ChangelogProducer#INPUT}. Changelog
-     *             files are moved to {@link NewFilesIncrement} since Paimon 0.3.
+     *             files are moved to {@link DataIncrement} since Paimon 0.3.
      *       </ul>
      * </ul>
      */
@@ -224,14 +283,12 @@ public class DataFileMeta {
                 .toEpochMilli();
     }
 
-    public Optional<CoreOptions.FileFormatType> fileFormat() {
+    public String fileFormat() {
         String[] split = fileName.split("\\.");
-        try {
-            return Optional.of(
-                    CoreOptions.FileFormatType.valueOf(split[split.length - 1].toUpperCase()));
-        } catch (IllegalArgumentException e) {
-            return Optional.empty();
+        if (split.length == 1) {
+            throw new RuntimeException("Can't find format from file: " + fileName());
         }
+        return split[split.length - 1];
     }
 
     public DataFileMeta upgrade(int newLevel) {
@@ -249,7 +306,9 @@ public class DataFileMeta {
                 schemaId,
                 newLevel,
                 extraFiles,
-                creationTime);
+                creationTime,
+                deleteRowCount,
+                embeddedIndex);
     }
 
     public List<Path> collectFiles(DataFilePathFactory pathFactory) {
@@ -273,11 +332,16 @@ public class DataFileMeta {
                 schemaId,
                 level,
                 newExtraFiles,
-                creationTime);
+                creationTime,
+                deleteRowCount,
+                embeddedIndex);
     }
 
     @Override
     public boolean equals(Object o) {
+        if (o == this) {
+            return true;
+        }
         if (!(o instanceof DataFileMeta)) {
             return false;
         }
@@ -285,6 +349,7 @@ public class DataFileMeta {
         return Objects.equals(fileName, that.fileName)
                 && fileSize == that.fileSize
                 && rowCount == that.rowCount
+                && Arrays.equals(embeddedIndex, that.embeddedIndex)
                 && Objects.equals(minKey, that.minKey)
                 && Objects.equals(maxKey, that.maxKey)
                 && Objects.equals(keyStats, that.keyStats)
@@ -294,7 +359,8 @@ public class DataFileMeta {
                 && schemaId == that.schemaId
                 && level == that.level
                 && Objects.equals(extraFiles, that.extraFiles)
-                && Objects.equals(creationTime, that.creationTime);
+                && Objects.equals(creationTime, that.creationTime)
+                && Objects.equals(deleteRowCount, that.deleteRowCount);
     }
 
     @Override
@@ -303,6 +369,7 @@ public class DataFileMeta {
                 fileName,
                 fileSize,
                 rowCount,
+                Arrays.hashCode(embeddedIndex),
                 minKey,
                 maxKey,
                 keyStats,
@@ -312,16 +379,21 @@ public class DataFileMeta {
                 schemaId,
                 level,
                 extraFiles,
-                creationTime);
+                creationTime,
+                deleteRowCount);
     }
 
     @Override
     public String toString() {
         return String.format(
-                "{%s, %d, %d, %s, %s, %s, %s, %d, %d, %d, %d, %s, %s}",
+                "{fileName: %s, fileSize: %d, rowCount: %d, embeddedIndex: %s, "
+                        + "minKey: %s, maxKey: %s, keyStats: %s, valueStats: %s, "
+                        + "minSequenceNumber: %d, maxSequenceNumber: %d, "
+                        + "schemaId: %d, level: %d, extraFiles: %s, creationTime: %s, deleteRowCount: %d}",
                 fileName,
                 fileSize,
                 rowCount,
+                Arrays.toString(embeddedIndex),
                 minKey,
                 maxKey,
                 keyStats,
@@ -331,7 +403,8 @@ public class DataFileMeta {
                 schemaId,
                 level,
                 extraFiles,
-                creationTime);
+                creationTime,
+                deleteRowCount);
     }
 
     public static RowType schema() {
@@ -341,14 +414,16 @@ public class DataFileMeta {
         fields.add(new DataField(2, "_ROW_COUNT", new BigIntType(false)));
         fields.add(new DataField(3, "_MIN_KEY", newBytesType(false)));
         fields.add(new DataField(4, "_MAX_KEY", newBytesType(false)));
-        fields.add(new DataField(5, "_KEY_STATS", FieldStatsArraySerializer.schema()));
-        fields.add(new DataField(6, "_VALUE_STATS", FieldStatsArraySerializer.schema()));
+        fields.add(new DataField(5, "_KEY_STATS", SimpleStatsConverter.schema()));
+        fields.add(new DataField(6, "_VALUE_STATS", SimpleStatsConverter.schema()));
         fields.add(new DataField(7, "_MIN_SEQUENCE_NUMBER", new BigIntType(false)));
         fields.add(new DataField(8, "_MAX_SEQUENCE_NUMBER", new BigIntType(false)));
         fields.add(new DataField(9, "_SCHEMA_ID", new BigIntType(false)));
         fields.add(new DataField(10, "_LEVEL", new IntType(false)));
         fields.add(new DataField(11, "_EXTRA_FILES", new ArrayType(false, newStringType(false))));
         fields.add(new DataField(12, "_CREATION_TIME", DataTypes.TIMESTAMP_MILLIS()));
+        fields.add(new DataField(13, "_DELETE_ROW_COUNT", new BigIntType(true)));
+        fields.add(new DataField(14, "_EMBEDDED_FILE_INDEX", newBytesType(true)));
         return new RowType(fields);
     }
 

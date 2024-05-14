@@ -46,7 +46,7 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
-import java.util.SortedMap;
+import java.util.List;
 
 /**
  * Commit {@link Committable} for snapshot using the {@link CommitterOperator}. When the task is
@@ -114,15 +114,21 @@ public class BatchWriteGeneratorTagOperator<CommitT, GlobalCommitT>
         try {
             // If the tag already exists, delete the tag
             if (tagManager.tagExists(tagName)) {
-                tagManager.deleteTag(tagName, tagDeletion, snapshotManager);
+                tagManager.deleteTag(
+                        tagName, tagDeletion, snapshotManager, table.store().createTagCallbacks());
             }
             // Create a new tag
-            tagManager.createTag(snapshot, tagName, table.store().createTagCallbacks());
+            tagManager.createTag(
+                    snapshot,
+                    tagName,
+                    table.coreOptions().tagDefaultTimeRetained(),
+                    table.store().createTagCallbacks());
             // Expire the tag
             expireTag();
         } catch (Exception e) {
             if (tagManager.tagExists(tagName)) {
-                tagManager.deleteTag(tagName, tagDeletion, snapshotManager);
+                tagManager.deleteTag(
+                        tagName, tagDeletion, snapshotManager, table.store().createTagCallbacks());
             }
         }
     }
@@ -136,14 +142,27 @@ public class BatchWriteGeneratorTagOperator<CommitT, GlobalCommitT>
             }
             TagManager tagManager = table.tagManager();
             TagDeletion tagDeletion = table.store().newTagDeletion();
-            SortedMap<Snapshot, String> tags = tagManager.tags();
-            if (tags.size() > tagNumRetainedMax) {
-                int toDelete = tags.size() - tagNumRetainedMax;
-                int i = 0;
-                for (String tag : tags.values()) {
-                    tagManager.deleteTag(tag, tagDeletion, snapshotManager);
-                    i++;
-                    if (i == toDelete) {
+            long tagCount = tagManager.tagCount();
+
+            while (tagCount > tagNumRetainedMax) {
+                for (List<String> tagNames : tagManager.tags().values()) {
+                    if (tagCount - tagNames.size() >= tagNumRetainedMax) {
+                        tagManager.deleteAllTagsOfOneSnapshot(
+                                tagNames, tagDeletion, snapshotManager);
+                        tagCount = tagCount - tagNames.size();
+                    } else {
+                        List<String> sortedTagNames = tagManager.sortTagsOfOneSnapshot(tagNames);
+                        for (String toBeDeleted : sortedTagNames) {
+                            tagManager.deleteTag(
+                                    toBeDeleted,
+                                    tagDeletion,
+                                    snapshotManager,
+                                    table.store().createTagCallbacks());
+                            tagCount--;
+                            if (tagCount == tagNumRetainedMax) {
+                                break;
+                            }
+                        }
                         break;
                     }
                 }

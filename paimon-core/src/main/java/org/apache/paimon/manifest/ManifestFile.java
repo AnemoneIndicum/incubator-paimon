@@ -7,7 +7,7 @@
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -23,13 +23,13 @@ import org.apache.paimon.annotation.VisibleForTesting;
 import org.apache.paimon.format.FileFormat;
 import org.apache.paimon.format.FormatReaderFactory;
 import org.apache.paimon.format.FormatWriterFactory;
-import org.apache.paimon.format.TableStatsCollector;
+import org.apache.paimon.format.SimpleStatsCollector;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.Path;
 import org.apache.paimon.io.RollingFileWriter;
 import org.apache.paimon.io.SingleFileWriter;
 import org.apache.paimon.schema.SchemaManager;
-import org.apache.paimon.stats.FieldStatsArraySerializer;
+import org.apache.paimon.stats.SimpleStatsConverter;
 import org.apache.paimon.types.RowType;
 import org.apache.paimon.utils.FileStorePathFactory;
 import org.apache.paimon.utils.ObjectsFile;
@@ -81,14 +81,7 @@ public class ManifestFile extends ObjectsFile<ManifestEntry> {
      * <p>NOTE: This method is atomic.
      */
     public List<ManifestFileMeta> write(List<ManifestEntry> entries) {
-        RollingFileWriter<ManifestEntry, ManifestFileMeta> writer =
-                new RollingFileWriter<>(
-                        () ->
-                                new ManifestEntryWriter(
-                                        writerFactory,
-                                        pathFactory.newPath(),
-                                        CoreOptions.FILE_COMPRESSION.defaultValue()),
-                        suggestedFileSize);
+        RollingFileWriter<ManifestEntry, ManifestFileMeta> writer = createRollingWriter();
         try {
             writer.write(entries);
             writer.close();
@@ -98,10 +91,20 @@ public class ManifestFile extends ObjectsFile<ManifestEntry> {
         return writer.result();
     }
 
+    public RollingFileWriter<ManifestEntry, ManifestFileMeta> createRollingWriter() {
+        return new RollingFileWriter<>(
+                () ->
+                        new ManifestEntryWriter(
+                                writerFactory,
+                                pathFactory.newPath(),
+                                CoreOptions.FILE_COMPRESSION.defaultValue()),
+                suggestedFileSize);
+    }
+
     private class ManifestEntryWriter extends SingleFileWriter<ManifestEntry, ManifestFileMeta> {
 
-        private final TableStatsCollector partitionStatsCollector;
-        private final FieldStatsArraySerializer partitionStatsSerializer;
+        private final SimpleStatsCollector partitionStatsCollector;
+        private final SimpleStatsConverter partitionStatsSerializer;
 
         private long numAddedFiles = 0;
         private long numDeletedFiles = 0;
@@ -110,8 +113,8 @@ public class ManifestFile extends ObjectsFile<ManifestEntry> {
         ManifestEntryWriter(FormatWriterFactory factory, Path path, String fileCompression) {
             super(ManifestFile.this.fileIO, factory, path, serializer::toRow, fileCompression);
 
-            this.partitionStatsCollector = new TableStatsCollector(partitionType);
-            this.partitionStatsSerializer = new FieldStatsArraySerializer(partitionType);
+            this.partitionStatsCollector = new SimpleStatsCollector(partitionType);
+            this.partitionStatsSerializer = new SimpleStatsConverter(partitionType);
         }
 
         @Override
@@ -186,6 +189,17 @@ public class ManifestFile extends ObjectsFile<ManifestEntry> {
                     fileFormat.createWriterFactory(entryType),
                     pathFactory.manifestFileFactory(),
                     suggestedFileSize,
+                    cache);
+        }
+
+        public ObjectsFile<SimpleFileEntry> createSimpleFileEntryReader() {
+            RowType entryType = VersionedObjectSerializer.versionType(ManifestEntry.schema());
+            return new ObjectsFile<>(
+                    fileIO,
+                    new SimpleFileEntrySerializer(),
+                    fileFormat.createReaderFactory(entryType),
+                    fileFormat.createWriterFactory(entryType),
+                    pathFactory.manifestFileFactory(),
                     cache);
         }
     }

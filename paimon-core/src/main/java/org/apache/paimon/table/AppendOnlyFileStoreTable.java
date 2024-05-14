@@ -24,11 +24,11 @@ import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.Path;
 import org.apache.paimon.manifest.ManifestCacheFilter;
-import org.apache.paimon.operation.AppendOnlyFileStoreRead;
 import org.apache.paimon.operation.AppendOnlyFileStoreScan;
 import org.apache.paimon.operation.AppendOnlyFileStoreWrite;
 import org.apache.paimon.operation.FileStoreScan;
 import org.apache.paimon.operation.Lock;
+import org.apache.paimon.operation.RawFileSplitRead;
 import org.apache.paimon.predicate.Predicate;
 import org.apache.paimon.reader.RecordReader;
 import org.apache.paimon.schema.TableSchema;
@@ -47,7 +47,7 @@ import java.io.IOException;
 import java.util.function.BiConsumer;
 
 /** {@link FileStoreTable} for append table. */
-public class AppendOnlyFileStoreTable extends AbstractFileStoreTable {
+class AppendOnlyFileStoreTable extends AbstractFileStoreTable {
 
     private static final long serialVersionUID = 1L;
 
@@ -66,7 +66,7 @@ public class AppendOnlyFileStoreTable extends AbstractFileStoreTable {
     }
 
     @Override
-    protected FileStoreTable copy(TableSchema newTableSchema) {
+    public FileStoreTable copy(TableSchema newTableSchema) {
         return new AppendOnlyFileStoreTable(fileIO, path, newTableSchema, catalogEnvironment);
     }
 
@@ -77,7 +77,7 @@ public class AppendOnlyFileStoreTable extends AbstractFileStoreTable {
                     new AppendOnlyFileStore(
                             fileIO,
                             schemaManager(),
-                            tableSchema.id(),
+                            tableSchema,
                             new CoreOptions(tableSchema.options()),
                             tableSchema.logicalPartitionType(),
                             tableSchema.logicalBucketKeyType(),
@@ -89,7 +89,7 @@ public class AppendOnlyFileStoreTable extends AbstractFileStoreTable {
     }
 
     @Override
-    public SplitGenerator splitGenerator() {
+    protected SplitGenerator splitGenerator() {
         return new AppendOnlySplitGenerator(
                 store().options().splitTargetSize(),
                 store().options().splitOpenFileCost(),
@@ -106,14 +106,20 @@ public class AppendOnlyFileStoreTable extends AbstractFileStoreTable {
     }
 
     @Override
-    public BiConsumer<FileStoreScan, Predicate> nonPartitionFilterConsumer() {
+    protected BiConsumer<FileStoreScan, Predicate> nonPartitionFilterConsumer() {
         return (scan, predicate) -> ((AppendOnlyFileStoreScan) scan).withFilter(predicate);
     }
 
     @Override
     public InnerTableRead newRead() {
-        AppendOnlyFileStoreRead read = store().newRead();
-        return new AbstractDataTableRead<InternalRow>(read, schema()) {
+        RawFileSplitRead read = store().newRead();
+        return new AbstractDataTableRead<InternalRow>(schema()) {
+
+            @Override
+            protected InnerTableRead innerWithFilter(Predicate predicate) {
+                read.withFilter(predicate);
+                return this;
+            }
 
             @Override
             public void projection(int[][] projection) {
@@ -147,7 +153,8 @@ public class AppendOnlyFileStoreTable extends AbstractFileStoreTable {
                             "Append only writer can not accept row with RowKind %s",
                             record.row().getRowKind());
                     return record.row();
-                });
+                },
+                CoreOptions.fromMap(tableSchema.options()).ignoreDelete());
     }
 
     @Override

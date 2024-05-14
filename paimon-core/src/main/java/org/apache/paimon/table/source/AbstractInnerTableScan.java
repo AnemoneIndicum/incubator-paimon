@@ -43,11 +43,13 @@ import org.apache.paimon.table.source.snapshot.StartingScanner;
 import org.apache.paimon.table.source.snapshot.StaticFromSnapshotStartingScanner;
 import org.apache.paimon.table.source.snapshot.StaticFromTagStartingScanner;
 import org.apache.paimon.table.source.snapshot.StaticFromTimestampStartingScanner;
+import org.apache.paimon.table.source.snapshot.StaticFromWatermarkStartingScanner;
 import org.apache.paimon.utils.Filter;
 import org.apache.paimon.utils.Pair;
 import org.apache.paimon.utils.SnapshotManager;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import static org.apache.paimon.CoreOptions.FULL_COMPACTION_DELTA_COMMITS;
@@ -70,8 +72,21 @@ public abstract class AbstractInnerTableScan implements InnerTableScan {
         return this;
     }
 
+    @Override
     public AbstractInnerTableScan withBucketFilter(Filter<Integer> bucketFilter) {
         snapshotReader.withBucketFilter(bucketFilter);
+        return this;
+    }
+
+    @Override
+    public AbstractInnerTableScan withPartitionFilter(Map<String, String> partitionSpec) {
+        snapshotReader.withPartitionFilter(partitionSpec);
+        return this;
+    }
+
+    @Override
+    public AbstractInnerTableScan withLevelFilter(Filter<Integer> levelFilter) {
+        snapshotReader.withLevelFilter(levelFilter);
         return this;
     }
 
@@ -100,12 +115,15 @@ public abstract class AbstractInnerTableScan implements InnerTableScan {
 
         // read from consumer id
         String consumerId = options.consumerId();
-        if (consumerId != null && !options.consumerIgnoreProgress()) {
+        if (isStreaming && consumerId != null && !options.consumerIgnoreProgress()) {
             ConsumerManager consumerManager = snapshotReader.consumerManager();
             Optional<Consumer> consumer = consumerManager.consumer(consumerId);
             if (consumer.isPresent()) {
                 return new ContinuousFromSnapshotStartingScanner(
-                        snapshotManager, consumer.get().nextSnapshot());
+                        snapshotManager,
+                        consumer.get().nextSnapshot(),
+                        options.changelogProducer() != ChangelogProducer.NONE,
+                        options.changelogLifecycleDecoupled());
             }
         }
 
@@ -131,7 +149,11 @@ public abstract class AbstractInnerTableScan implements InnerTableScan {
             case FROM_TIMESTAMP:
                 Long startupMillis = options.scanTimestampMills();
                 return isStreaming
-                        ? new ContinuousFromTimestampStartingScanner(snapshotManager, startupMillis)
+                        ? new ContinuousFromTimestampStartingScanner(
+                                snapshotManager,
+                                startupMillis,
+                                options.changelogProducer() != ChangelogProducer.NONE,
+                                options.changelogLifecycleDecoupled())
                         : new StaticFromTimestampStartingScanner(snapshotManager, startupMillis);
             case FROM_FILE_CREATION_TIME:
                 Long fileCreationTimeMills = options.scanFileCreationTimeMills();
@@ -140,13 +162,22 @@ public abstract class AbstractInnerTableScan implements InnerTableScan {
                 if (options.scanSnapshotId() != null) {
                     return isStreaming
                             ? new ContinuousFromSnapshotStartingScanner(
-                                    snapshotManager, options.scanSnapshotId())
+                                    snapshotManager,
+                                    options.scanSnapshotId(),
+                                    options.changelogProducer() != ChangelogProducer.NONE,
+                                    options.changelogLifecycleDecoupled())
                             : new StaticFromSnapshotStartingScanner(
                                     snapshotManager, options.scanSnapshotId());
-                } else {
+                } else if (options.scanWatermark() != null) {
+                    checkArgument(!isStreaming, "Cannot scan from watermark in streaming mode.");
+                    return new StaticFromWatermarkStartingScanner(
+                            snapshotManager, options().scanWatermark());
+                } else if (options.scanTagName() != null) {
                     checkArgument(!isStreaming, "Cannot scan from tag in streaming mode.");
                     return new StaticFromTagStartingScanner(
                             snapshotManager, options().scanTagName());
+                } else {
+                    throw new UnsupportedOperationException("Unknown snapshot read mode");
                 }
             case FROM_SNAPSHOT_FULL:
                 return isStreaming
@@ -161,6 +192,12 @@ public abstract class AbstractInnerTableScan implements InnerTableScan {
                         options.incrementalBetweenScanMode();
                 ScanMode scanMode;
                 switch (scanType) {
+                    case AUTO:
+                        scanMode =
+                                options.changelogProducer() == ChangelogProducer.NONE
+                                        ? ScanMode.DELTA
+                                        : ScanMode.CHANGELOG;
+                        break;
                     case DELTA:
                         scanMode = ScanMode.DELTA;
                         break;

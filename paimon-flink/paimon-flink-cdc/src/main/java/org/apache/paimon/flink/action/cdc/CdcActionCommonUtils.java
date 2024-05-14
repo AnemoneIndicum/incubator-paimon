@@ -54,6 +54,7 @@ public class CdcActionCommonUtils {
     public static final String KAFKA_CONF = "kafka_conf";
     public static final String MONGODB_CONF = "mongodb_conf";
     public static final String MYSQL_CONF = "mysql_conf";
+    public static final String POSTGRES_CONF = "postgres_conf";
     public static final String PULSAR_CONF = "pulsar_conf";
     public static final String TABLE_PREFIX = "table_prefix";
     public static final String TABLE_SUFFIX = "table_suffix";
@@ -97,6 +98,26 @@ public class CdcActionCommonUtils {
             }
         }
         return true;
+    }
+
+    public static List<DataField> fieldNameCaseConvert(
+            List<DataField> origin, boolean caseSensitive, String tableName) {
+        Set<String> existedFields = new HashSet<>();
+        Function<String, String> columnDuplicateErrMsg =
+                columnDuplicateErrMsg(tableName == null ? "UNKNOWN" : tableName);
+        return origin.stream()
+                .map(
+                        field -> {
+                            if (caseSensitive) {
+                                return field;
+                            }
+                            String columnLowerCase = field.name().toLowerCase();
+                            checkArgument(
+                                    existedFields.add(columnLowerCase),
+                                    columnDuplicateErrMsg.apply(field.name()));
+                            return field.newName(columnLowerCase);
+                        })
+                .collect(Collectors.toList());
     }
 
     public static <T> LinkedHashMap<String, T> mapKeyCaseConvert(

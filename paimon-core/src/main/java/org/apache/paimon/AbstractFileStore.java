@@ -19,6 +19,7 @@
 package org.apache.paimon;
 
 import org.apache.paimon.data.InternalRow;
+import org.apache.paimon.deletionvectors.DeletionVectorsIndexFile;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.index.HashIndexFile;
 import org.apache.paimon.index.IndexFileHandler;
@@ -33,13 +34,14 @@ import org.apache.paimon.operation.SnapshotDeletion;
 import org.apache.paimon.operation.TagDeletion;
 import org.apache.paimon.options.MemorySize;
 import org.apache.paimon.schema.SchemaManager;
+import org.apache.paimon.schema.TableSchema;
 import org.apache.paimon.service.ServiceManager;
 import org.apache.paimon.stats.StatsFile;
 import org.apache.paimon.stats.StatsFileHandler;
 import org.apache.paimon.table.CatalogEnvironment;
 import org.apache.paimon.table.sink.CallbackUtils;
 import org.apache.paimon.table.sink.TagCallback;
-import org.apache.paimon.tag.TagAutoCreation;
+import org.apache.paimon.tag.TagAutoManager;
 import org.apache.paimon.types.RowType;
 import org.apache.paimon.utils.FileStorePathFactory;
 import org.apache.paimon.utils.SegmentsCache;
@@ -53,32 +55,34 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 
+import static org.apache.paimon.utils.BranchManager.DEFAULT_MAIN_BRANCH;
+
 /**
  * Base {@link FileStore} implementation.
  *
  * @param <T> type of record to read and write.
  */
-public abstract class AbstractFileStore<T> implements FileStore<T> {
+abstract class AbstractFileStore<T> implements FileStore<T> {
 
     protected final FileIO fileIO;
     protected final SchemaManager schemaManager;
-    protected final long schemaId;
+    protected final TableSchema schema;
     protected final CoreOptions options;
     protected final RowType partitionType;
     private final CatalogEnvironment catalogEnvironment;
 
     @Nullable private final SegmentsCache<String> writeManifestCache;
 
-    public AbstractFileStore(
+    protected AbstractFileStore(
             FileIO fileIO,
             SchemaManager schemaManager,
-            long schemaId,
+            TableSchema schema,
             CoreOptions options,
             RowType partitionType,
             CatalogEnvironment catalogEnvironment) {
         this.fileIO = fileIO;
         this.schemaManager = schemaManager;
-        this.schemaId = schemaId;
+        this.schema = schema;
         this.options = options;
         this.partitionType = partitionType;
         this.catalogEnvironment = catalogEnvironment;
@@ -140,8 +144,10 @@ public abstract class AbstractFileStore<T> implements FileStore<T> {
     public IndexFileHandler newIndexFileHandler() {
         return new IndexFileHandler(
                 snapshotManager(),
+                pathFactory().indexFileFactory(),
                 indexManifestFileFactory().create(),
-                new HashIndexFile(fileIO, pathFactory().indexFileFactory()));
+                new HashIndexFile(fileIO, pathFactory().indexFileFactory()),
+                new DeletionVectorsIndexFile(fileIO, pathFactory().indexFileFactory()));
     }
 
     @Override
@@ -169,6 +175,10 @@ public abstract class AbstractFileStore<T> implements FileStore<T> {
 
     @Override
     public FileStoreCommitImpl newCommit(String commitUser) {
+        return newCommit(commitUser, DEFAULT_MAIN_BRANCH);
+    }
+
+    public FileStoreCommitImpl newCommit(String commitUser, String branchName) {
         return new FileStoreCommitImpl(
                 fileIO,
                 schemaManager,
@@ -186,6 +196,7 @@ public abstract class AbstractFileStore<T> implements FileStore<T> {
                 options.manifestMergeMinCount(),
                 partitionType.getFieldCount() > 0 && options.dynamicPartitionOverwrite(),
                 newKeyComparator(),
+                branchName,
                 newStatsFileHandler());
     }
 
@@ -196,7 +207,8 @@ public abstract class AbstractFileStore<T> implements FileStore<T> {
                 pathFactory(),
                 manifestFileFactory().create(),
                 manifestListFactory().create(),
-                newIndexFileHandler());
+                newIndexFileHandler(),
+                newStatsFileHandler());
     }
 
     @Override
@@ -211,7 +223,8 @@ public abstract class AbstractFileStore<T> implements FileStore<T> {
                 pathFactory(),
                 manifestFileFactory().create(),
                 manifestListFactory().create(),
-                newIndexFileHandler());
+                newIndexFileHandler(),
+                newStatsFileHandler());
     }
 
     public abstract Comparator<InternalRow> newKeyComparator();
@@ -235,9 +248,8 @@ public abstract class AbstractFileStore<T> implements FileStore<T> {
     }
 
     @Override
-    @Nullable
-    public TagAutoCreation newTagCreationManager() {
-        return TagAutoCreation.create(
+    public TagAutoManager newTagCreationManager() {
+        return TagAutoManager.create(
                 options,
                 snapshotManager(),
                 newTagManager(),

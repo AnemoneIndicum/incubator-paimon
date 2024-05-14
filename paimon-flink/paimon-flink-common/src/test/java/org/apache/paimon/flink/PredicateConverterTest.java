@@ -19,9 +19,11 @@
 package org.apache.paimon.flink;
 
 import org.apache.paimon.data.BinaryString;
-import org.apache.paimon.format.FieldStats;
+import org.apache.paimon.data.GenericRow;
+import org.apache.paimon.format.SimpleColStats;
 import org.apache.paimon.predicate.Predicate;
 import org.apache.paimon.predicate.PredicateBuilder;
+import org.apache.paimon.predicate.SimpleColStatsTestUtils;
 
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.expressions.CallExpression;
@@ -252,19 +254,23 @@ public class PredicateConverterTest {
             List<Object[]> valuesList,
             List<Boolean> expectedForValues,
             List<Long> rowCountList,
-            List<FieldStats[]> statsList,
+            List<SimpleColStats[]> statsList,
             List<Boolean> expectedForStats) {
         Predicate predicate =
                 callExpression.accept(new PredicateConverter(RowType.of(new VarCharType())));
         IntStream.range(0, valuesList.size())
                 .forEach(
                         i ->
-                                assertThat(predicate.test(valuesList.get(i)))
+                                assertThat(predicate.test(GenericRow.of(valuesList.get(i))))
                                         .isEqualTo(expectedForValues.get(i)));
         IntStream.range(0, rowCountList.size())
                 .forEach(
                         i ->
-                                assertThat(predicate.test(rowCountList.get(i), statsList.get(i)))
+                                assertThat(
+                                                SimpleColStatsTestUtils.test(
+                                                        predicate,
+                                                        rowCountList.get(i),
+                                                        statsList.get(i)))
                                         .isEqualTo(expectedForStats.get(i)));
     }
 
@@ -288,18 +294,18 @@ public class PredicateConverterTest {
         List<Boolean> expectedForValues1 =
                 Arrays.asList(false, false, false, true, true, true, true, true, true);
         List<Long> rowCountList1 = Arrays.asList(0L, 3L, 3L, 3L);
-        List<FieldStats[]> statsList1 =
+        List<SimpleColStats[]> statsList1 =
                 Arrays.asList(
-                        new FieldStats[] {new FieldStats(null, null, 0L)},
-                        new FieldStats[] {new FieldStats(null, null, 3L)},
-                        new FieldStats[] {
-                            new FieldStats(
+                        new SimpleColStats[] {new SimpleColStats(null, null, 0L)},
+                        new SimpleColStats[] {new SimpleColStats(null, null, 3L)},
+                        new SimpleColStats[] {
+                            new SimpleColStats(
                                     BinaryString.fromString("ab"),
                                     BinaryString.fromString("abc123"),
                                     1L)
                         },
-                        new FieldStats[] {
-                            new FieldStats(
+                        new SimpleColStats[] {
+                            new SimpleColStats(
                                     BinaryString.fromString("abc"),
                                     BinaryString.fromString("abe"),
                                     1L)
@@ -320,10 +326,10 @@ public class PredicateConverterTest {
                         new Object[] {BinaryString.fromString("test__")});
         List<Boolean> expectedForValues2 = Arrays.asList(false, true, true, true);
         List<Long> rowCountList2 = Collections.singletonList(3L);
-        List<FieldStats[]> statsList2 =
+        List<SimpleColStats[]> statsList2 =
                 Collections.singletonList(
-                        new FieldStats[] {
-                            new FieldStats(
+                        new SimpleColStats[] {
+                            new SimpleColStats(
                                     BinaryString.fromString("test_123"),
                                     BinaryString.fromString("test_789"),
                                     0L)
@@ -344,10 +350,10 @@ public class PredicateConverterTest {
                         new Object[] {BinaryString.fromString("[a-c]xyz")});
         List<Boolean> expectedForValues3 = Arrays.asList(false, false, false, true);
         List<Long> rowCountList3 = Collections.singletonList(3L);
-        List<FieldStats[]> statsList3 =
+        List<SimpleColStats[]> statsList3 =
                 Collections.singletonList(
-                        new FieldStats[] {
-                            new FieldStats(
+                        new SimpleColStats[] {
+                            new SimpleColStats(
                                     BinaryString.fromString("[a-c]xyz"),
                                     BinaryString.fromString("[a-c]xyzz"),
                                     0L)
@@ -367,10 +373,10 @@ public class PredicateConverterTest {
                         new Object[] {BinaryString.fromString("[^a-d]xyz")});
         List<Boolean> expectedForValues4 = Arrays.asList(false, false, false, true);
         List<Long> rowCountList4 = Collections.singletonList(3L);
-        List<FieldStats[]> statsList4 =
+        List<SimpleColStats[]> statsList4 =
                 Collections.singletonList(
-                        new FieldStats[] {
-                            new FieldStats(
+                        new SimpleColStats[] {
+                            new SimpleColStats(
                                     BinaryString.fromString("[^a-d]xyz"),
                                     BinaryString.fromString("[^a-d]xyzz"),
                                     1L)

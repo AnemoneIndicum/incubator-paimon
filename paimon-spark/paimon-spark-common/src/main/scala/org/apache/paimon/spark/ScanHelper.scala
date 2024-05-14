@@ -15,11 +15,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.paimon.spark
 
 import org.apache.paimon.CoreOptions
 import org.apache.paimon.io.DataFileMeta
-import org.apache.paimon.table.source.{DataSplit, RawFile, Split}
+import org.apache.paimon.table.source.{DataSplit, DeletionFile, RawFile, Split}
 
 import org.apache.spark.sql.SparkSession
 
@@ -31,6 +32,8 @@ trait ScanHelper {
   private val spark = SparkSession.active
 
   val coreOptions: CoreOptions
+
+  private lazy val deletionVectors: Boolean = coreOptions.deletionVectorsEnabled()
 
   private lazy val openCostInBytes: Long = coreOptions.splitOpenFileCost()
 
@@ -60,23 +63,23 @@ trait ScanHelper {
 
     var currentSplit: Option[DataSplit] = None
     val currentDataFiles = new ArrayBuffer[DataFileMeta]
-    val currentRawFiles = new ArrayBuffer[RawFile]
+    val currentDeletionFiles = new ArrayBuffer[DeletionFile]
     var currentSize = 0L
 
     def closeDataSplit(): Unit = {
       if (currentSplit.nonEmpty && currentDataFiles.nonEmpty) {
-        val newSplit = copyDataSplit(currentSplit.get, currentDataFiles, currentRawFiles)
+        val newSplit =
+          copyDataSplit(currentSplit.get, currentDataFiles, currentDeletionFiles)
         newSplits += newSplit
       }
       currentDataFiles.clear()
-      currentRawFiles.clear()
+      currentDeletionFiles.clear()
       currentSize = 0
     }
 
     splits.foreach {
       split =>
         currentSplit = Some(split)
-        val hasRawFiles = split.convertToRawFiles().isPresent
 
         split.dataFiles().asScala.zipWithIndex.foreach {
           case (file, idx) =>
@@ -85,8 +88,8 @@ trait ScanHelper {
             }
             currentSize += file.fileSize + openCostInBytes
             currentDataFiles += file
-            if (hasRawFiles) {
-              currentRawFiles += split.convertToRawFiles().get().get(idx)
+            if (deletionVectors) {
+              currentDeletionFiles += split.deletionFiles().get().get(idx)
             }
         }
         closeDataSplit()
@@ -106,14 +109,18 @@ trait ScanHelper {
   private def copyDataSplit(
       split: DataSplit,
       dataFiles: Seq[DataFileMeta],
-      rawFiles: Seq[RawFile]): DataSplit = {
+      deletionFiles: Seq[DeletionFile]): DataSplit = {
     val builder = DataSplit
       .builder()
       .withSnapshot(split.snapshotId())
       .withPartition(split.partition())
       .withBucket(split.bucket())
       .withDataFiles(dataFiles.toList.asJava)
-      .rawFiles(rawFiles.toList.asJava)
+      .rawConvertible(split.rawConvertible())
+      .withBucketPath(split.bucketPath)
+    if (deletionVectors) {
+      builder.withDataDeletionFiles(deletionFiles.toList.asJava)
+    }
     builder.build()
   }
 

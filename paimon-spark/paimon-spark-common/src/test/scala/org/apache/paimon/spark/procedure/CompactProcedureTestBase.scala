@@ -15,11 +15,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.paimon.spark.procedure
 
 import org.apache.paimon.Snapshot.CommitKind
+import org.apache.paimon.fs.Path
 import org.apache.paimon.spark.PaimonSparkTestBase
-import org.apache.paimon.table.AbstractFileStoreTable
+import org.apache.paimon.table.FileStoreTable
 
 import org.apache.spark.sql.{Dataset, Row}
 import org.apache.spark.sql.execution.streaming.MemoryStream
@@ -313,7 +315,7 @@ abstract class CompactProcedureTestBase extends PaimonSparkTestBase with StreamT
           spark.sql(s"INSERT INTO T VALUES (1, 'a', 'p1'), (2, 'b', 'p2')")
           spark.sql(s"INSERT INTO T VALUES (3, 'c', 'p1'), (4, 'd', 'p2')")
 
-          spark.sql(s"CALL sys.compact(table => 'T', partitions => 'pt=p1')")
+          spark.sql("CALL sys.compact(table => 'T', partitions => 'pt=\"p1\"')")
           Assertions.assertThat(lastSnapshotCommand(table).equals(CommitKind.COMPACT)).isTrue
           Assertions.assertThat(lastSnapshotId(table)).isEqualTo(3)
 
@@ -372,7 +374,7 @@ abstract class CompactProcedureTestBase extends PaimonSparkTestBase with StreamT
     spark.sql(s"INSERT INTO T VALUES (3, 'c', 'p1'), (4, 'd', 'p2')")
     spark.sql(s"INSERT INTO T VALUES (5, 'e', 'p1'), (6, 'f', 'p2')")
 
-    spark.sql(s"CALL sys.compact(table => 'T', partitions => 'pt=p1')")
+    spark.sql("CALL sys.compact(table => 'T', partitions => 'pt=\"p1\"')")
     Assertions.assertThat(lastSnapshotCommand(table).equals(CommitKind.COMPACT)).isTrue
     Assertions.assertThat(lastSnapshotId(table)).isEqualTo(4)
 
@@ -412,6 +414,63 @@ abstract class CompactProcedureTestBase extends PaimonSparkTestBase with StreamT
     checkAnswer(spark.sql(s"SELECT COUNT(*) FROM T"), Row(count) :: Nil)
   }
 
+  test("Paimon Procedure: compact with wrong usage") {
+    spark.sql(s"""
+                 |CREATE TABLE T (id INT, value STRING, pt STRING)
+                 |TBLPROPERTIES ('bucket'='-1', 'write-only'='true')
+                 |PARTITIONED BY (pt)
+                 |""".stripMargin)
+
+    assert(intercept[IllegalArgumentException] {
+      spark.sql(
+        "CALL sys.compact(table => 'T', partitions => 'pt = \"p1\"', where => 'pt = \"p1\"')")
+    }.getMessage.contains("partitions and where cannot be used together"))
+
+    assert(intercept[IllegalArgumentException] {
+      spark.sql("CALL sys.compact(table => 'T', partitions => 'id = 1')")
+    }.getMessage.contains("Only partition predicate is supported"))
+
+    assert(intercept[IllegalArgumentException] {
+      spark.sql("CALL sys.compact(table => 'T', where => 'id > 1 AND pt = \"p1\"')")
+    }.getMessage.contains("Only partition predicate is supported"))
+  }
+
+  test("Paimon Procedure: compact with where") {
+    spark.sql(
+      s"""
+         |CREATE TABLE T (id INT, value STRING, dt STRING, hh INT)
+         |TBLPROPERTIES ('bucket'='1', 'bucket-key'='id', 'write-only'='true', 'compaction.min.file-num'='1', 'compaction.max.file-num'='2')
+         |PARTITIONED BY (dt, hh)
+         |""".stripMargin)
+
+    val table = loadTable("T")
+    val fileIO = table.fileIO()
+
+    spark.sql(s"INSERT INTO T VALUES (1, '1', '2024-01-01', 0), (2, '2', '2024-01-01', 1)")
+    spark.sql(s"INSERT INTO T VALUES (3, '3', '2024-01-01', 0), (4, '4', '2024-01-01', 1)")
+    spark.sql(s"INSERT INTO T VALUES (5, '5', '2024-01-02', 0), (6, '6', '2024-01-02', 1)")
+    spark.sql(s"INSERT INTO T VALUES (7, '7', '2024-01-02', 0), (8, '8', '2024-01-02', 1)")
+
+    spark.sql("CALL sys.compact(table => 'T', where => 'dt = \"2024-01-01\" and hh >= 1')")
+    Assertions.assertThat(lastSnapshotCommand(table).equals(CommitKind.COMPACT)).isTrue
+    Assertions
+      .assertThat(
+        fileIO.listStatus(new Path(table.location(), "dt=2024-01-01/hh=0/bucket-0")).length)
+      .isEqualTo(2)
+    Assertions
+      .assertThat(
+        fileIO.listStatus(new Path(table.location(), "dt=2024-01-01/hh=1/bucket-0")).length)
+      .isEqualTo(3)
+    Assertions
+      .assertThat(
+        fileIO.listStatus(new Path(table.location(), "dt=2024-01-02/hh=0/bucket-0")).length)
+      .isEqualTo(2)
+    Assertions
+      .assertThat(
+        fileIO.listStatus(new Path(table.location(), "dt=2024-01-02/hh=1/bucket-0")).length)
+      .isEqualTo(2)
+  }
+
   test("Paimon test: toWhere method in CompactProcedure") {
     val conditions = "f0=0,f1=0,f2=0;f0=1,f1=1,f2=1;f0=1,f1=2,f2=2;f3=3"
 
@@ -422,11 +481,11 @@ abstract class CompactProcedureTestBase extends PaimonSparkTestBase with StreamT
     Assertions.assertThat(where).isEqualTo(whereExpected)
   }
 
-  def lastSnapshotCommand(table: AbstractFileStoreTable): CommitKind = {
+  def lastSnapshotCommand(table: FileStoreTable): CommitKind = {
     table.snapshotManager().latestSnapshot().commitKind()
   }
 
-  def lastSnapshotId(table: AbstractFileStoreTable): Long = {
+  def lastSnapshotId(table: FileStoreTable): Long = {
     table.snapshotManager().latestSnapshotId()
   }
 }

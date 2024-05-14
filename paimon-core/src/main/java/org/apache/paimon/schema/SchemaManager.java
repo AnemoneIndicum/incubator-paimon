@@ -56,6 +56,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -64,6 +65,7 @@ import java.util.stream.Collectors;
 
 import static org.apache.paimon.catalog.AbstractCatalog.DB_SUFFIX;
 import static org.apache.paimon.catalog.Identifier.UNKNOWN_DATABASE;
+import static org.apache.paimon.utils.BranchManager.DEFAULT_MAIN_BRANCH;
 import static org.apache.paimon.utils.BranchManager.getBranchPath;
 import static org.apache.paimon.utils.FileUtils.listVersionedFiles;
 import static org.apache.paimon.utils.Preconditions.checkState;
@@ -91,8 +93,16 @@ public class SchemaManager implements Serializable {
 
     /** @return latest schema. */
     public Optional<TableSchema> latest() {
+        return latest(DEFAULT_MAIN_BRANCH);
+    }
+
+    public Optional<TableSchema> latest(String branchName) {
+        Path directoryPath =
+                branchName.equals(DEFAULT_MAIN_BRANCH)
+                        ? schemaDirectory()
+                        : branchSchemaDirectory(branchName);
         try {
-            return listVersionedFiles(fileIO, schemaDirectory(), SCHEMA_PREFIX)
+            return listVersionedFiles(fileIO, directoryPath, SCHEMA_PREFIX)
                     .reduce(Math::max)
                     .map(this::schema);
         } catch (IOException e) {
@@ -117,14 +127,28 @@ public class SchemaManager implements Serializable {
 
     /** Create a new schema from {@link Schema}. */
     public TableSchema createTable(Schema schema) throws Exception {
+        return createTable(schema, false);
+    }
+
+    public TableSchema createTable(Schema schema, boolean ignoreIfExistsSame) throws Exception {
         while (true) {
-            latest().ifPresent(
-                            latest -> {
-                                throw new IllegalStateException(
-                                        "Schema in filesystem exists, please use updating,"
-                                                + " latest schema is: "
-                                                + latest());
-                            });
+            Optional<TableSchema> latest = latest();
+            if (latest.isPresent()) {
+                TableSchema oldSchema = latest.get();
+                boolean isSame =
+                        Objects.equals(oldSchema.fields(), schema.fields())
+                                && Objects.equals(oldSchema.partitionKeys(), schema.partitionKeys())
+                                && Objects.equals(oldSchema.primaryKeys(), schema.primaryKeys())
+                                && Objects.equals(oldSchema.options(), schema.options());
+                if (ignoreIfExistsSame && isSame) {
+                    return oldSchema;
+                }
+
+                throw new IllegalStateException(
+                        "Schema in filesystem exists, please use updating,"
+                                + " latest schema is: "
+                                + oldSchema);
+            }
 
             List<DataField> fields = schema.fields();
             List<String> partitionKeys = schema.partitionKeys();
@@ -480,6 +504,10 @@ public class SchemaManager implements Serializable {
     @VisibleForTesting
     public Path toSchemaPath(long id) {
         return new Path(tableRoot + "/schema/" + SCHEMA_PREFIX + id);
+    }
+
+    public Path branchSchemaDirectory(String branchName) {
+        return new Path(getBranchPath(tableRoot, branchName) + "/schema");
     }
 
     public Path branchSchemaPath(String branchName, long schemaId) {

@@ -103,6 +103,7 @@ public abstract class E2eTestBase {
                         .withEnv("NETWORK_ID", ((Network.NetworkImpl) network).getName())
                         .withLogConsumer("jobmanager_1", new LogConsumer(LOG))
                         .withLogConsumer("taskmanager_1", new LogConsumer(LOG))
+                        .withStartupTimeout(Duration.ofMinutes(3))
                         .withLocalCompose(true);
         if (withKafka) {
             List<String> kafkaServices = Arrays.asList("zookeeper", "kafka");
@@ -241,7 +242,29 @@ public abstract class E2eTestBase {
             Pattern.compile(
                     "SQL update statement has been successfully submitted to the cluster:\\s+Job ID: (\\S+)");
 
-    protected String runSql(String sql) throws Exception {
+    protected String runStreamingSql(String sql, String... ddls) throws Exception {
+        return runStreamingSql(String.join("\n", ddls) + "\n" + sql);
+    }
+
+    protected String runStreamingSql(String sql) throws Exception {
+        sql = "SET 'execution.checkpointing.interval' = '1s';\n" + "\n" + sql;
+        return runSql(sql);
+    }
+
+    protected String runBatchSql(String sql, String... ddls) throws Exception {
+        return runBatchSql(String.join("\n", ddls) + "\n" + sql);
+    }
+
+    protected String runBatchSql(String sql) throws Exception {
+        sql =
+                "SET 'execution.runtime-mode' = 'batch';\n"
+                        + "SET 'table.dml-sync' = 'true';\n"
+                        + "\n"
+                        + sql;
+        return runSql(sql);
+    }
+
+    private String runSql(String sql) throws Exception {
         String fileName = UUID.randomUUID() + ".sql";
         writeSharedFile(fileName, sql);
         Container.ExecResult execResult =

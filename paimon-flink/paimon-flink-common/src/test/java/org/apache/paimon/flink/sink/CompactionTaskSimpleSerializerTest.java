@@ -31,7 +31,7 @@ import java.util.List;
 import java.util.UUID;
 
 import static org.apache.paimon.mergetree.compact.MergeTreeCompactManagerTest.row;
-import static org.apache.paimon.stats.StatsTestUtils.newTableStats;
+import static org.apache.paimon.stats.StatsTestUtils.newSimpleStats;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Test for {@link CompactionTaskSimpleSerializer}. */
@@ -69,11 +69,13 @@ public class CompactionTaskSimpleSerializerTest {
                 1,
                 row(0),
                 row(0),
-                newTableStats(0, 1),
-                newTableStats(0, 1),
+                newSimpleStats(0, 1),
+                newSimpleStats(0, 1),
                 0,
                 1,
                 0,
-                0);
+                0,
+                0L,
+                null);
     }
 }

@@ -20,13 +20,23 @@ package org.apache.paimon.table;
 
 import org.apache.paimon.CoreOptions;
 import org.apache.paimon.data.BinaryRow;
+import org.apache.paimon.data.BinaryString;
+import org.apache.paimon.data.GenericMap;
+import org.apache.paimon.data.GenericRow;
 import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.data.serializer.InternalRowSerializer;
+import org.apache.paimon.fileindex.FileIndexOptions;
+import org.apache.paimon.fileindex.bloomfilter.BloomFilterFileIndex;
 import org.apache.paimon.fs.FileIOFinder;
+import org.apache.paimon.fs.Path;
 import org.apache.paimon.fs.local.LocalFileIO;
+import org.apache.paimon.io.DataFileMeta;
 import org.apache.paimon.options.Options;
+import org.apache.paimon.predicate.Equal;
+import org.apache.paimon.predicate.LeafPredicate;
 import org.apache.paimon.predicate.Predicate;
 import org.apache.paimon.predicate.PredicateBuilder;
+import org.apache.paimon.reader.RecordReader;
 import org.apache.paimon.schema.Schema;
 import org.apache.paimon.schema.SchemaManager;
 import org.apache.paimon.schema.SchemaUtils;
@@ -40,6 +50,9 @@ import org.apache.paimon.table.source.ScanMode;
 import org.apache.paimon.table.source.Split;
 import org.apache.paimon.table.source.StreamTableScan;
 import org.apache.paimon.table.source.TableRead;
+import org.apache.paimon.table.source.TableScan;
+import org.apache.paimon.types.DataTypes;
+import org.apache.paimon.types.RowType;
 
 import org.junit.jupiter.api.Test;
 
@@ -54,12 +67,38 @@ import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+import static org.apache.paimon.CoreOptions.BUCKET;
+import static org.apache.paimon.CoreOptions.BUCKET_KEY;
+import static org.apache.paimon.CoreOptions.FILE_INDEX_IN_MANIFEST_THRESHOLD;
+import static org.apache.paimon.io.DataFileTestUtils.row;
 import static org.apache.paimon.table.sink.KeyAndBucketExtractor.bucket;
 import static org.apache.paimon.table.sink.KeyAndBucketExtractor.bucketKeyHashCode;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for {@link AppendOnlyFileStoreTable}. */
 public class AppendOnlyFileStoreTableTest extends FileStoreTableTestBase {
+
+    @Test
+    public void testReadDeletedFiles() throws Exception {
+        writeData();
+        FileStoreTable table = createFileStoreTable();
+        List<Split> splits = toSplits(table.newSnapshotReader().read().dataSplits());
+        TableRead read = table.newRead();
+
+        // delete one file
+        DataSplit split = (DataSplit) splits.get(0);
+        Path path =
+                table.store()
+                        .pathFactory()
+                        .createDataFilePathFactory(split.partition(), split.bucket())
+                        .toPath(split.dataFiles().get(0).fileName());
+        table.fileIO().deleteQuietly(path);
+
+        // read
+        assertThatThrownBy(() -> getResult(read, splits, BATCH_ROW_TO_STRING))
+                .hasMessageContaining("snapshot expires too fast");
+    }
 
     @Test
     public void testBatchReadWrite() throws Exception {
@@ -67,6 +106,30 @@ public class AppendOnlyFileStoreTableTest extends FileStoreTableTestBase {
         FileStoreTable table = createFileStoreTable();
 
         List<Split> splits = toSplits(table.newSnapshotReader().read().dataSplits());
+        TableRead read = table.newRead();
+        assertThat(getResult(read, splits, binaryRow(1), 0, BATCH_ROW_TO_STRING))
+                .hasSameElementsAs(
+                        Arrays.asList(
+                                "1|10|100|binary|varbinary|mapKey:mapVal|multiset",
+                                "1|11|101|binary|varbinary|mapKey:mapVal|multiset",
+                                "1|12|102|binary|varbinary|mapKey:mapVal|multiset",
+                                "1|11|101|binary|varbinary|mapKey:mapVal|multiset",
+                                "1|12|102|binary|varbinary|mapKey:mapVal|multiset"));
+        assertThat(getResult(read, splits, binaryRow(2), 0, BATCH_ROW_TO_STRING))
+                .hasSameElementsAs(
+                        Arrays.asList(
+                                "2|20|200|binary|varbinary|mapKey:mapVal|multiset",
+                                "2|21|201|binary|varbinary|mapKey:mapVal|multiset",
+                                "2|22|202|binary|varbinary|mapKey:mapVal|multiset",
+                                "2|21|201|binary|varbinary|mapKey:mapVal|multiset"));
+    }
+
+    @Test
+    public void testBranchBatchReadWrite() throws Exception {
+        FileStoreTable table = createFileStoreTable();
+        generateBranch(table);
+        writeBranchData(table);
+        List<Split> splits = toSplits(table.newSnapshotReader(BRANCH_NAME).read().dataSplits());
         TableRead read = table.newRead();
         assertThat(getResult(read, splits, binaryRow(1), 0, BATCH_ROW_TO_STRING))
                 .hasSameElementsAs(
@@ -242,6 +305,31 @@ public class AppendOnlyFileStoreTableTest extends FileStoreTableTestBase {
     }
 
     @Test
+    public void testBranchStreamingReadWrite() throws Exception {
+        FileStoreTable table = createFileStoreTable();
+        generateBranch(table);
+        writeBranchData(table);
+
+        List<Split> splits =
+                toSplits(
+                        table.newSnapshotReader(BRANCH_NAME)
+                                .withMode(ScanMode.DELTA)
+                                .read()
+                                .dataSplits());
+        TableRead read = table.newRead();
+
+        assertThat(getResult(read, splits, binaryRow(1), 0, STREAMING_ROW_TO_STRING))
+                .isEqualTo(
+                        Arrays.asList(
+                                "+1|11|101|binary|varbinary|mapKey:mapVal|multiset",
+                                "+1|12|102|binary|varbinary|mapKey:mapVal|multiset"));
+        assertThat(getResult(read, splits, binaryRow(2), 0, STREAMING_ROW_TO_STRING))
+                .isEqualTo(
+                        Collections.singletonList(
+                                "+2|21|201|binary|varbinary|mapKey:mapVal|multiset"));
+    }
+
+    @Test
     public void testStreamingSplitInUnawareBucketMode() throws Exception {
         // in unaware-bucket mode, we split files into splits all the time
         FileStoreTable table =
@@ -274,6 +362,269 @@ public class AppendOnlyFileStoreTableTest extends FileStoreTableTestBase {
 
         write.close();
         commit.close();
+    }
+
+    @Test
+    public void testBloomFilterInMemory() throws Exception {
+        RowType rowType =
+                RowType.builder()
+                        .field("id", DataTypes.INT())
+                        .field("index_column", DataTypes.STRING())
+                        .field("index_column2", DataTypes.INT())
+                        .field("index_column3", DataTypes.BIGINT())
+                        .build();
+        // in unaware-bucket mode, we split files into splits all the time
+        FileStoreTable table =
+                createUnawareBucketFileStoreTable(
+                        rowType,
+                        options -> {
+                            options.set(
+                                    FileIndexOptions.FILE_INDEX
+                                            + "."
+                                            + BloomFilterFileIndex.BLOOM_FILTER
+                                            + "."
+                                            + CoreOptions.COLUMNS,
+                                    "index_column, index_column2, index_column3");
+                            options.set(
+                                    FileIndexOptions.FILE_INDEX
+                                            + "."
+                                            + BloomFilterFileIndex.BLOOM_FILTER
+                                            + ".index_column.items",
+                                    "150");
+                            options.set(
+                                    FileIndexOptions.FILE_INDEX
+                                            + "."
+                                            + BloomFilterFileIndex.BLOOM_FILTER
+                                            + ".index_column2.items",
+                                    "150");
+                            options.set(
+                                    FileIndexOptions.FILE_INDEX
+                                            + "."
+                                            + BloomFilterFileIndex.BLOOM_FILTER
+                                            + ".index_column3.items",
+                                    "150");
+                            options.set(FILE_INDEX_IN_MANIFEST_THRESHOLD.key(), "500 B");
+                        });
+
+        StreamTableWrite write = table.newWrite(commitUser);
+        StreamTableCommit commit = table.newCommit(commitUser);
+        List<CommitMessage> result = new ArrayList<>();
+        write.write(GenericRow.of(1, BinaryString.fromString("a"), 2, 3L));
+        write.write(GenericRow.of(1, BinaryString.fromString("c"), 2, 3L));
+        result.addAll(write.prepareCommit(true, 0));
+        write.write(GenericRow.of(1, BinaryString.fromString("b"), 2, 3L));
+        result.addAll(write.prepareCommit(true, 0));
+        commit.commit(0, result);
+        result.clear();
+
+        TableScan.Plan plan =
+                table.newScan()
+                        .withFilter(
+                                new PredicateBuilder(rowType)
+                                        .equal(1, BinaryString.fromString("b")))
+                        .plan();
+        List<DataFileMeta> metas =
+                plan.splits().stream()
+                        .flatMap(split -> ((DataSplit) split).dataFiles().stream())
+                        .collect(Collectors.toList());
+        assertThat(metas.size()).isEqualTo(1);
+    }
+
+    @Test
+    public void testBloomFilterInDisk() throws Exception {
+        RowType rowType =
+                RowType.builder()
+                        .field("id", DataTypes.INT())
+                        .field("index_column", DataTypes.STRING())
+                        .field("index_column2", DataTypes.INT())
+                        .field("index_column3", DataTypes.BIGINT())
+                        .build();
+        // in unaware-bucket mode, we split files into splits all the time
+        FileStoreTable table =
+                createUnawareBucketFileStoreTable(
+                        rowType,
+                        options -> {
+                            options.set(
+                                    FileIndexOptions.FILE_INDEX
+                                            + "."
+                                            + BloomFilterFileIndex.BLOOM_FILTER
+                                            + "."
+                                            + CoreOptions.COLUMNS,
+                                    "index_column, index_column2, index_column3");
+                            options.set(FILE_INDEX_IN_MANIFEST_THRESHOLD.key(), "50 B");
+                        });
+
+        StreamTableWrite write = table.newWrite(commitUser);
+        StreamTableCommit commit = table.newCommit(commitUser);
+        List<CommitMessage> result = new ArrayList<>();
+        write.write(GenericRow.of(1, BinaryString.fromString("a"), 2, 3L));
+        write.write(GenericRow.of(1, BinaryString.fromString("c"), 2, 3L));
+        result.addAll(write.prepareCommit(true, 0));
+        write.write(GenericRow.of(1, BinaryString.fromString("b"), 2, 3L));
+        result.addAll(write.prepareCommit(true, 0));
+        commit.commit(0, result);
+        result.clear();
+
+        TableScan.Plan plan =
+                table.newScan()
+                        .withFilter(
+                                new PredicateBuilder(rowType)
+                                        .equal(1, BinaryString.fromString("b")))
+                        .plan();
+        List<DataFileMeta> metas =
+                plan.splits().stream()
+                        .flatMap(split -> ((DataSplit) split).dataFiles().stream())
+                        .collect(Collectors.toList());
+        assertThat(metas.size()).isEqualTo(2);
+
+        RecordReader<InternalRow> reader =
+                table.newRead()
+                        .withFilter(
+                                new PredicateBuilder(rowType)
+                                        .equal(1, BinaryString.fromString("b")))
+                        .createReader(plan.splits());
+        reader.forEachRemaining(row -> assertThat(row.getString(1).toString()).isEqualTo("b"));
+    }
+
+    @Test
+    public void testBloomFilterForMapField() throws Exception {
+        RowType rowType =
+                RowType.builder()
+                        .field("id", DataTypes.INT())
+                        .field("index_column", DataTypes.STRING())
+                        .field("index_column2", DataTypes.INT())
+                        .field(
+                                "index_column3",
+                                DataTypes.MAP(DataTypes.STRING(), DataTypes.STRING()))
+                        .build();
+        // in unaware-bucket mode, we split files into splits all the time
+        FileStoreTable table =
+                createUnawareBucketFileStoreTable(
+                        rowType,
+                        options -> {
+                            options.set(
+                                    FileIndexOptions.FILE_INDEX
+                                            + "."
+                                            + BloomFilterFileIndex.BLOOM_FILTER
+                                            + "."
+                                            + CoreOptions.COLUMNS,
+                                    "index_column, index_column2, index_column3[a], index_column3[b], index_column3[c], index_column3[d]");
+                            options.set(
+                                    FileIndexOptions.FILE_INDEX
+                                            + "."
+                                            + BloomFilterFileIndex.BLOOM_FILTER
+                                            + ".index_column.items",
+                                    "150");
+                            options.set(
+                                    FileIndexOptions.FILE_INDEX
+                                            + "."
+                                            + BloomFilterFileIndex.BLOOM_FILTER
+                                            + ".index_column2.items",
+                                    "150");
+                            options.set(
+                                    FileIndexOptions.FILE_INDEX
+                                            + "."
+                                            + BloomFilterFileIndex.BLOOM_FILTER
+                                            + ".index_column3.items",
+                                    "150");
+                            options.set(
+                                    FileIndexOptions.FILE_INDEX
+                                            + "."
+                                            + BloomFilterFileIndex.BLOOM_FILTER
+                                            + ".index_column3[a].items",
+                                    "10000");
+                        });
+
+        StreamTableWrite write = table.newWrite(commitUser);
+        StreamTableCommit commit = table.newCommit(commitUser);
+        List<CommitMessage> result = new ArrayList<>();
+        write.write(
+                GenericRow.of(
+                        1,
+                        BinaryString.fromString("a"),
+                        2,
+                        new GenericMap(
+                                new HashMap<BinaryString, BinaryString>() {
+                                    {
+                                        put(
+                                                BinaryString.fromString("a"),
+                                                BinaryString.fromString("10086"));
+                                        put(
+                                                BinaryString.fromString("b"),
+                                                BinaryString.fromString("1008611"));
+                                        put(
+                                                BinaryString.fromString("c"),
+                                                BinaryString.fromString("1008612"));
+                                        put(
+                                                BinaryString.fromString("d"),
+                                                BinaryString.fromString("1008613"));
+                                    }
+                                })));
+        write.write(
+                GenericRow.of(
+                        1,
+                        BinaryString.fromString("c"),
+                        2,
+                        new GenericMap(
+                                new HashMap<BinaryString, BinaryString>() {
+                                    {
+                                        put(
+                                                BinaryString.fromString("a"),
+                                                BinaryString.fromString("我是一个粉刷匠"));
+                                        put(
+                                                BinaryString.fromString("b"),
+                                                BinaryString.fromString("啦啦啦"));
+                                        put(
+                                                BinaryString.fromString("c"),
+                                                BinaryString.fromString("快乐的粉刷匠"));
+                                        put(
+                                                BinaryString.fromString("d"),
+                                                BinaryString.fromString("大风大雨去刷墙"));
+                                    }
+                                })));
+        result.addAll(write.prepareCommit(true, 0));
+        write.write(
+                GenericRow.of(
+                        1,
+                        BinaryString.fromString("b"),
+                        2,
+                        new GenericMap(
+                                new HashMap<BinaryString, BinaryString>() {
+                                    {
+                                        put(
+                                                BinaryString.fromString("a"),
+                                                BinaryString.fromString("I am a good girl"));
+                                        put(
+                                                BinaryString.fromString("b"),
+                                                BinaryString.fromString("A good girl"));
+                                        put(
+                                                BinaryString.fromString("c"),
+                                                BinaryString.fromString("Good girl"));
+                                        put(
+                                                BinaryString.fromString("d"),
+                                                BinaryString.fromString("Girl"));
+                                    }
+                                })));
+        result.addAll(write.prepareCommit(true, 0));
+        commit.commit(0, result);
+        result.clear();
+        Predicate predicate =
+                new LeafPredicate(
+                        Equal.INSTANCE,
+                        DataTypes.MAP(DataTypes.STRING(), DataTypes.STRING()),
+                        3,
+                        "index_column3[a]",
+                        Collections.singletonList(BinaryString.fromString("I am a good girl")));
+        TableScan.Plan plan = table.newScan().withFilter(predicate).plan();
+        List<DataFileMeta> metas =
+                plan.splits().stream()
+                        .flatMap(split -> ((DataSplit) split).dataFiles().stream())
+                        .collect(Collectors.toList());
+        assertThat(metas.size()).isEqualTo(2);
+
+        RecordReader<InternalRow> reader =
+                table.newRead().withFilter(predicate).createReader(plan.splits());
+        reader.forEachRemaining(row -> assertThat(row.getString(1).toString()).isEqualTo("b"));
     }
 
     @Test
@@ -333,7 +684,7 @@ public class AppendOnlyFileStoreTableTest extends FileStoreTableTestBase {
                         serializer
                                 .toBinaryRow(rowData(i, random.nextInt(), random.nextLong()))
                                 .copy();
-                int bucket = bucket(bucketKeyHashCode(data), numOfBucket);
+                int bucket = bucket(bucketKeyHashCode(row(data.getInt(1))), numOfBucket);
                 dataPerBucket.compute(
                         bucket,
                         (k, v) -> {
@@ -451,11 +802,37 @@ public class AppendOnlyFileStoreTableTest extends FileStoreTableTestBase {
         commit.close();
     }
 
+    private void writeBranchData(FileStoreTable table) throws Exception {
+        StreamTableWrite write = table.newWrite(commitUser);
+        StreamTableCommit commit = table.newCommit(commitUser, BRANCH_NAME);
+
+        write.write(rowData(1, 10, 100L));
+        write.write(rowData(2, 20, 200L));
+        write.write(rowData(1, 11, 101L));
+        commit.commit(0, write.prepareCommit(true, 0));
+
+        write.write(rowData(1, 12, 102L));
+        write.write(rowData(2, 21, 201L));
+        write.write(rowData(2, 22, 202L));
+        commit.commit(1, write.prepareCommit(true, 1));
+
+        write.write(rowData(1, 11, 101L));
+        write.write(rowData(2, 21, 201L));
+        write.write(rowData(1, 12, 102L));
+        commit.commit(2, write.prepareCommit(true, 2));
+
+        write.close();
+        commit.close();
+    }
+
     @Override
     protected FileStoreTable createFileStoreTable(Consumer<Options> configure) throws Exception {
         Options conf = new Options();
         conf.set(CoreOptions.PATH, tablePath.toString());
         configure.accept(conf);
+        if (!conf.contains(BUCKET_KEY) && conf.get(BUCKET) != -1) {
+            conf.set(BUCKET_KEY, "a");
+        }
         TableSchema tableSchema =
                 SchemaUtils.forceCommit(
                         new SchemaManager(LocalFileIO.create(), tablePath),
@@ -495,6 +872,24 @@ public class AppendOnlyFileStoreTableTest extends FileStoreTableTestBase {
                         new SchemaManager(LocalFileIO.create(), tablePath),
                         new Schema(
                                 ROW_TYPE.getFields(),
+                                Collections.emptyList(),
+                                Collections.emptyList(),
+                                conf.toMap(),
+                                ""));
+        return new AppendOnlyFileStoreTable(FileIOFinder.find(tablePath), tablePath, tableSchema);
+    }
+
+    protected FileStoreTable createUnawareBucketFileStoreTable(
+            RowType rowType, Consumer<Options> configure) throws Exception {
+        Options conf = new Options();
+        conf.set(CoreOptions.PATH, tablePath.toString());
+        conf.set(CoreOptions.BUCKET, -1);
+        configure.accept(conf);
+        TableSchema tableSchema =
+                SchemaUtils.forceCommit(
+                        new SchemaManager(LocalFileIO.create(), tablePath),
+                        new Schema(
+                                rowType.getFields(),
                                 Collections.emptyList(),
                                 Collections.emptyList(),
                                 conf.toMap(),

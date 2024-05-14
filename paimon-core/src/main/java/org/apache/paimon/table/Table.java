@@ -20,12 +20,14 @@ package org.apache.paimon.table;
 
 import org.apache.paimon.annotation.Experimental;
 import org.apache.paimon.annotation.Public;
+import org.apache.paimon.stats.Statistics;
 import org.apache.paimon.table.sink.BatchWriteBuilder;
 import org.apache.paimon.table.sink.StreamWriteBuilder;
 import org.apache.paimon.table.source.ReadBuilder;
 import org.apache.paimon.types.RowType;
 
 import java.io.Serializable;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -58,6 +60,10 @@ public interface Table extends Serializable {
     /** Optional comment of this table. */
     Optional<String> comment();
 
+    /** Optional statistics of this table. */
+    @Experimental
+    Optional<Statistics> statistics();
+
     // ================= Table Operations ====================
 
     /** Copy this table with adding dynamic options. */
@@ -71,9 +77,15 @@ public interface Table extends Serializable {
     @Experimental
     void createTag(String tagName, long fromSnapshotId);
 
+    @Experimental
+    void createTag(String tagName, long fromSnapshotId, Duration timeRetained);
+
     /** Create a tag from latest snapshot. */
     @Experimental
     void createTag(String tagName);
+
+    @Experimental
+    void createTag(String tagName, Duration timeRetained);
 
     /** Delete a tag by name. */
     @Experimental
@@ -83,6 +95,14 @@ public interface Table extends Serializable {
     @Experimental
     void rollbackTo(String tagName);
 
+    /** Create a empty branch. */
+    @Experimental
+    void createBranch(String branchName);
+
+    /** Create a branch from given snapshot. */
+    @Experimental
+    void createBranch(String branchName, long snapshotId);
+
     /** Create a branch from given tag. */
     @Experimental
     void createBranch(String branchName, String tagName);
@@ -91,7 +111,12 @@ public interface Table extends Serializable {
     @Experimental
     void deleteBranch(String branchName);
 
+    /** Manually expire snapshots, parameters can be controlled independently of table options. */
+    @Experimental
     ExpireSnapshots newExpireSnapshots();
+
+    @Experimental
+    ExpireSnapshots newExpireChangelog();
 
     // =============== Read & Write Operations ==================
 

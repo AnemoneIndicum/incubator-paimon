@@ -32,7 +32,6 @@ import org.apache.paimon.flink.sink.StoreMultiCommitter;
 import org.apache.paimon.flink.sink.StoreSinkWrite;
 import org.apache.paimon.flink.sink.StoreSinkWriteImpl;
 import org.apache.paimon.flink.sink.WrappedManifestCommittableSerializer;
-import org.apache.paimon.flink.utils.StreamExecutionEnvironmentUtils;
 import org.apache.paimon.manifest.WrappedManifestCommittable;
 import org.apache.paimon.options.MemorySize;
 import org.apache.paimon.options.Options;
@@ -65,14 +64,17 @@ public class FlinkCdcMultiTableSink implements Serializable {
     private final Catalog.Loader catalogLoader;
     private final double commitCpuCores;
     @Nullable private final MemorySize commitHeapMemory;
+    private final boolean commitChaining;
 
     public FlinkCdcMultiTableSink(
             Catalog.Loader catalogLoader,
             double commitCpuCores,
-            @Nullable MemorySize commitHeapMemory) {
+            @Nullable MemorySize commitHeapMemory,
+            boolean commitChaining) {
         this.catalogLoader = catalogLoader;
         this.commitCpuCores = commitCpuCores;
         this.commitHeapMemory = commitHeapMemory;
+        this.commitChaining = commitChaining;
     }
 
     private StoreSinkWrite.WithWriteBufferProvider createWriteProvider() {
@@ -128,15 +130,13 @@ public class FlinkCdcMultiTableSink implements Serializable {
                                 typeInfo,
                                 new CommitterOperator<>(
                                         true,
+                                        false,
+                                        commitChaining,
                                         commitUser,
                                         createCommitterFactory(),
                                         createCommittableStateManager()))
                         .setParallelism(input.getParallelism());
-        configureGlobalCommitter(
-                committed,
-                commitCpuCores,
-                commitHeapMemory,
-                StreamExecutionEnvironmentUtils.getConfiguration(env));
+        configureGlobalCommitter(committed, commitCpuCores, commitHeapMemory);
         return committed.addSink(new DiscardingSink<>()).name("end").setParallelism(1);
     }
 
@@ -153,7 +153,7 @@ public class FlinkCdcMultiTableSink implements Serializable {
         // commit new files list even if they're empty.
         // Otherwise we can't tell if the commit is successful after
         // a restart.
-        return (user, metricGroup) -> new StoreMultiCommitter(catalogLoader, user, metricGroup);
+        return context -> new StoreMultiCommitter(catalogLoader, context);
     }
 
     protected CommittableStateManager<WrappedManifestCommittable> createCommittableStateManager() {

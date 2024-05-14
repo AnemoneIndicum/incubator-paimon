@@ -18,33 +18,34 @@
 
 package org.apache.paimon.flink.sink;
 
+import org.apache.paimon.CoreOptions;
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.flink.VersionedSerializerWrapper;
-import org.apache.paimon.flink.utils.StreamExecutionEnvironmentUtils;
 import org.apache.paimon.manifest.WrappedManifestCommittable;
 import org.apache.paimon.options.Options;
 
 import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.configuration.ExecutionOptions;
 import org.apache.flink.configuration.ReadableConfig;
-import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.DataStreamSink;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.CheckpointConfig;
-import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.sink.DiscardingSink;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.table.data.RowData;
 
 import java.io.Serializable;
+import java.util.Map;
 import java.util.UUID;
 
+import static org.apache.paimon.flink.FlinkConnectorOptions.SINK_COMMITTER_OPERATOR_CHAINING;
 import static org.apache.paimon.flink.FlinkConnectorOptions.SINK_MANAGED_WRITER_BUFFER_MEMORY;
 import static org.apache.paimon.flink.FlinkConnectorOptions.SINK_USE_MANAGED_MEMORY;
+import static org.apache.paimon.flink.sink.FlinkSink.assertBatchConfiguration;
+import static org.apache.paimon.flink.sink.FlinkSink.assertStreamingConfiguration;
 import static org.apache.paimon.flink.utils.ManagedMemoryUtils.declareManagedMemory;
-import static org.apache.paimon.utils.Preconditions.checkArgument;
 
 /** A sink for processing multi-tables in dedicated compaction job. */
 public class MultiTablesCompactorSink implements Serializable {
@@ -87,8 +88,7 @@ public class MultiTablesCompactorSink implements Serializable {
             DataStream<RowData> input, String commitUser, Integer parallelism) {
         StreamExecutionEnvironment env = input.getExecutionEnvironment();
         boolean isStreaming =
-                StreamExecutionEnvironmentUtils.getConfiguration(env)
-                                .get(ExecutionOptions.RUNTIME_MODE)
+                env.getConfiguration().get(ExecutionOptions.RUNTIME_MODE)
                         == RuntimeExecutionMode.STREAMING;
 
         SingleOutputStreamOperator<MultiTableCommittable> written =
@@ -112,7 +112,7 @@ public class MultiTablesCompactorSink implements Serializable {
     protected DataStreamSink<?> doCommit(
             DataStream<MultiTableCommittable> written, String commitUser) {
         StreamExecutionEnvironment env = written.getExecutionEnvironment();
-        ReadableConfig conf = StreamExecutionEnvironmentUtils.getConfiguration(env);
+        ReadableConfig conf = env.getConfiguration();
         CheckpointConfig checkpointConfig = env.getCheckpointConfig();
         boolean isStreaming =
                 conf.get(ExecutionOptions.RUNTIME_MODE) == RuntimeExecutionMode.STREAMING;
@@ -121,43 +121,20 @@ public class MultiTablesCompactorSink implements Serializable {
         if (streamingCheckpointEnabled) {
             assertStreamingConfiguration(env);
         }
-
         SingleOutputStreamOperator<?> committed =
                 written.transform(
                                 GLOBAL_COMMITTER_NAME,
                                 new MultiTableCommittableTypeInfo(),
                                 new CommitterOperator<>(
                                         streamingCheckpointEnabled,
+                                        false,
+                                        options.get(SINK_COMMITTER_OPERATOR_CHAINING),
                                         commitUser,
                                         createCommitterFactory(),
                                         createCommittableStateManager()))
                         .setParallelism(1)
                         .setMaxParallelism(1);
         return committed.addSink(new DiscardingSink<>()).name("end").setParallelism(1);
-    }
-
-    public static void assertStreamingConfiguration(StreamExecutionEnvironment env) {
-        checkArgument(
-                !env.getCheckpointConfig().isUnalignedCheckpointsEnabled(),
-                "Paimon sink currently does not support unaligned checkpoints. Please set "
-                        + ExecutionCheckpointingOptions.ENABLE_UNALIGNED.key()
-                        + " to false.");
-        checkArgument(
-                env.getCheckpointConfig().getCheckpointingMode() == CheckpointingMode.EXACTLY_ONCE,
-                "Paimon sink currently only supports EXACTLY_ONCE checkpoint mode. Please set "
-                        + ExecutionCheckpointingOptions.CHECKPOINTING_MODE.key()
-                        + " to exactly-once");
-    }
-
-    private void assertBatchConfiguration(StreamExecutionEnvironment env, int sinkParallelism) {
-        try {
-            checkArgument(
-                    sinkParallelism != -1 || !AdaptiveParallelism.isEnabled(env),
-                    "Paimon Sink does not support Flink's Adaptive Parallelism mode. "
-                            + "Please manually turn it off or set Paimon `sink.parallelism` manually.");
-        } catch (NoClassDefFoundError ignored) {
-            // before 1.17, there is no adaptive parallelism
-        }
     }
 
     // TODO:refactor FlinkSink to adopt this sink
@@ -174,8 +151,9 @@ public class MultiTablesCompactorSink implements Serializable {
 
     protected Committer.Factory<MultiTableCommittable, WrappedManifestCommittable>
             createCommitterFactory() {
-        return (user, metricGroup) ->
-                new StoreMultiCommitter(catalogLoader, user, metricGroup, true);
+        Map<String, String> dynamicOptions = options.toMap();
+        dynamicOptions.put(CoreOptions.WRITE_ONLY.key(), "false");
+        return context -> new StoreMultiCommitter(catalogLoader, context, true, dynamicOptions);
     }
 
     protected CommittableStateManager<WrappedManifestCommittable> createCommittableStateManager() {
