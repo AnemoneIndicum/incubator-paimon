@@ -16,28 +16,13 @@
  * limitations under the License.
  */
 
-package org.apache.paimon.lookup;
+package org.apache.paimon.table.source;
 
-/** Strategy for lookup. */
-public class LookupStrategy {
+/** Singleton split use for system table, in which, scan always just produce one split. */
+public abstract class SingletonSplit implements Split {
 
-    public final boolean needLookup;
-
-    public final boolean isFirstRow;
-
-    public final boolean produceChangelog;
-
-    public final boolean deletionVector;
-
-    private LookupStrategy(boolean isFirstRow, boolean produceChangelog, boolean deletionVector) {
-        this.isFirstRow = isFirstRow;
-        this.produceChangelog = produceChangelog;
-        this.deletionVector = deletionVector;
-        this.needLookup = produceChangelog || deletionVector || isFirstRow;
-    }
-
-    public static LookupStrategy from(
-            boolean isFirstRow, boolean produceChangelog, boolean deletionVector) {
-        return new LookupStrategy(isFirstRow, produceChangelog, deletionVector);
+    @Override
+    public long rowCount() {
+        return 1;
     }
 }
