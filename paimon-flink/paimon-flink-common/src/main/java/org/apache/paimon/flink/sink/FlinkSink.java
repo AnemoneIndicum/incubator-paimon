@@ -20,6 +20,7 @@ package org.apache.paimon.flink.sink;
 
 import org.apache.paimon.CoreOptions.ChangelogProducer;
 import org.apache.paimon.CoreOptions.TagCreationMode;
+import org.apache.paimon.flink.FlinkConnectorOptions;
 import org.apache.paimon.manifest.ManifestCommittable;
 import org.apache.paimon.options.MemorySize;
 import org.apache.paimon.options.Options;
@@ -50,10 +51,11 @@ import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.Queue;
 import java.util.Set;
-import java.util.UUID;
 
 import static org.apache.paimon.CoreOptions.FULL_COMPACTION_DELTA_COMMITS;
+import static org.apache.paimon.CoreOptions.createCommitUser;
 import static org.apache.paimon.flink.FlinkConnectorOptions.CHANGELOG_PRODUCER_FULL_COMPACTION_TRIGGER_INTERVAL;
+import static org.apache.paimon.flink.FlinkConnectorOptions.END_INPUT_WATERMARK;
 import static org.apache.paimon.flink.FlinkConnectorOptions.SINK_AUTO_TAG_FOR_SAVEPOINT;
 import static org.apache.paimon.flink.FlinkConnectorOptions.SINK_COMMITTER_CPU;
 import static org.apache.paimon.flink.FlinkConnectorOptions.SINK_COMMITTER_MEMORY;
@@ -94,12 +96,12 @@ public abstract class FlinkSink<T> implements Serializable {
                                                 .key(),
                                         ExecutionConfigOptions.UpsertMaterialize.NONE.name()));
 
+        Options options = table.coreOptions().toConfiguration();
+        ChangelogProducer changelogProducer = table.coreOptions().changelogProducer();
         boolean waitCompaction;
         if (table.coreOptions().writeOnly()) {
             waitCompaction = false;
         } else {
-            Options options = table.coreOptions().toConfiguration();
-            ChangelogProducer changelogProducer = table.coreOptions().changelogProducer();
             waitCompaction = prepareCommitWaitCompaction(options);
             int deltaCommits = -1;
             if (options.contains(FULL_COMPACTION_DELTA_COMMITS)) {
@@ -132,6 +134,23 @@ public abstract class FlinkSink<T> implements Serializable {
             }
         }
 
+        if (changelogProducer == ChangelogProducer.LOOKUP
+                && !options.get(FlinkConnectorOptions.CHANGELOG_PRODUCER_LOOKUP_WAIT)) {
+            return (table, commitUser, state, ioManager, memoryPool, metricGroup) -> {
+                assertNoSinkMaterializer.run();
+                return new AsyncLookupSinkWrite(
+                        table,
+                        commitUser,
+                        state,
+                        ioManager,
+                        ignorePreviousFiles,
+                        waitCompaction,
+                        isStreaming,
+                        memoryPool,
+                        metricGroup);
+            };
+        }
+
         return (table, commitUser, state, ioManager, memoryPool, metricGroup) -> {
             assertNoSinkMaterializer.run();
             return new StoreSinkWriteImpl(
@@ -153,8 +172,7 @@ public abstract class FlinkSink<T> implements Serializable {
         // commit operators.
         // When the job restarts, commitUser will be recovered from states and this value is
         // ignored.
-        String initialCommitUser = UUID.randomUUID().toString();
-        return sinkFrom(input, initialCommitUser);
+        return sinkFrom(input, createCommitUser(table.coreOptions().toConfiguration()));
     }
 
     public DataStreamSink<?> sinkFrom(DataStream<T> input, String initialCommitUser) {
@@ -234,7 +252,8 @@ public abstract class FlinkSink<T> implements Serializable {
                         options.get(SINK_COMMITTER_OPERATOR_CHAINING),
                         commitUser,
                         createCommitterFactory(),
-                        createCommittableStateManager());
+                        createCommittableStateManager(),
+                        options.get(END_INPUT_WATERMARK));
 
         if (options.get(SINK_AUTO_TAG_FOR_SAVEPOINT)) {
             committerOperator =
