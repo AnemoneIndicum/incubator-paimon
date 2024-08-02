@@ -20,7 +20,7 @@ package org.apache.paimon.flink.procedure;
 
 import org.apache.paimon.catalog.Identifier;
 import org.apache.paimon.flink.utils.TableMigrationUtils;
-import org.apache.paimon.hive.HiveCatalog;
+import org.apache.paimon.migrate.Migrator;
 
 import org.apache.flink.table.procedure.ProcedureContext;
 
@@ -40,9 +40,27 @@ public class MigrateFileProcedure extends ProcedureBase {
             String sourceTablePath,
             String targetPaimonTablePath)
             throws Exception {
-        if (!(catalog instanceof HiveCatalog)) {
-            throw new IllegalArgumentException("Only support Hive Catalog");
-        }
+        call(procedureContext, connector, sourceTablePath, targetPaimonTablePath, true);
+        return new String[] {"Success"};
+    }
+
+    public String[] call(
+            ProcedureContext procedureContext,
+            String connector,
+            String sourceTablePath,
+            String targetPaimonTablePath,
+            boolean deleteOrigin)
+            throws Exception {
+        migrateHandle(connector, sourceTablePath, targetPaimonTablePath, deleteOrigin);
+        return new String[] {"Success"};
+    }
+
+    public void migrateHandle(
+            String connector,
+            String sourceTablePath,
+            String targetPaimonTablePath,
+            boolean deleteOrigin)
+            throws Exception {
         Identifier sourceTableId = Identifier.fromString(sourceTablePath);
         Identifier targetTableId = Identifier.fromString(targetPaimonTablePath);
 
@@ -51,15 +69,16 @@ public class MigrateFileProcedure extends ProcedureBase {
                     "Target paimon table does not exist: " + targetPaimonTablePath);
         }
 
-        TableMigrationUtils.getImporter(
+        Migrator importer =
+                TableMigrationUtils.getImporter(
                         connector,
-                        (HiveCatalog) catalog,
+                        catalog,
                         sourceTableId.getDatabaseName(),
                         sourceTableId.getObjectName(),
                         targetTableId.getDatabaseName(),
                         targetTableId.getObjectName(),
-                        Collections.emptyMap())
-                .executeMigrate();
-        return new String[] {"Success"};
+                        Collections.emptyMap());
+        importer.deleteOriginTable(deleteOrigin);
+        importer.executeMigrate();
     }
 }

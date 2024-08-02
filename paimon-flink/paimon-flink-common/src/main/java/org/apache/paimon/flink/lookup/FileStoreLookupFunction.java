@@ -94,6 +94,8 @@ public class FileStoreLookupFunction implements Serializable, Closeable {
     // timestamp when cache expires
     private transient long nextLoadTime;
 
+    protected FunctionContext functionContext;
+
     public FileStoreLookupFunction(
             Table table, int[] projection, int[] joinKeyIndex, @Nullable Predicate predicate) {
         TableScanUtils.streamingReadingValidate(table);
@@ -107,10 +109,6 @@ public class FileStoreLookupFunction implements Serializable, Closeable {
                         .mapToObj(i -> table.rowType().getFieldNames().get(projection[i]))
                         .collect(Collectors.toList());
 
-        if (partitionLoader != null) {
-            partitionLoader.addJoinKeys(joinKeys);
-        }
-
         this.projectFields =
                 Arrays.stream(projection)
                         .mapToObj(i -> table.rowType().getFieldNames().get(i))
@@ -123,10 +121,15 @@ public class FileStoreLookupFunction implements Serializable, Closeable {
             }
         }
 
+        if (partitionLoader != null) {
+            partitionLoader.addPartitionKeysTo(joinKeys, projectFields);
+        }
+
         this.predicate = predicate;
     }
 
     public void open(FunctionContext context) throws Exception {
+        this.functionContext = context;
         String tmpDirectory = getTmpDirectory(context);
         open(tmpDirectory);
     }
@@ -352,7 +355,7 @@ public class FileStoreLookupFunction implements Serializable, Closeable {
      *
      * @return the set of bucket IDs to be cached
      */
-    private Set<Integer> getRequireCachedBucketIds() {
+    protected Set<Integer> getRequireCachedBucketIds() {
         // TODO: Implement the method when Flink support bucket shuffle for lookup join.
         return null;
     }

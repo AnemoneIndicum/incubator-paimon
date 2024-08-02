@@ -216,7 +216,7 @@ Please note that too short retain time or too small retain number may result in:
 - Batch queries cannot find the file. For example, the table is relatively large and
   the batch query takes 10 minutes to read, but the snapshot from 10 minutes ago
   expires, at which point the batch query will read a deleted snapshot.
-- Streaming reading jobs on table files (without the external log system) fail to restart.
+- Streaming reading jobs on table files fail to restart.
   When the job restarts, the snapshot it recorded may have expired. (You can use
   [Consumer Id]({{< ref "flink/sql-query#consumer-id" >}}) to protect streaming reading
   in a small retain time of snapshot expiration).
@@ -296,7 +296,15 @@ submit a `remove_orphan_files` job to clean them:
 
 {{< tabs "remove_orphan_files" >}}
 
-{{< tab "Flink" >}}
+{{< tab "Spark SQL/Flink SQL" >}}
+```sql
+CALL sys.remove_orphan_files(table => "my_db.my_table", [older_than => "2023-10-31 12:00:00"])
+
+CALL sys.remove_orphan_files(table => "my_db.*", [older_than => "2023-10-31 12:00:00"])
+```
+{{< /tab >}}
+
+{{< tab "Flink Action" >}}
 
 ```bash
 <FLINK_HOME>/bin/flink run \
@@ -305,7 +313,8 @@ submit a `remove_orphan_files` job to clean them:
     --warehouse <warehouse-path> \
     --database <database-name> \ 
     --table <table-name> \
-    [--older_than <timestamp>] 
+    [--older_than <timestamp>] \
+    [--dry_run <false/true>] 
 ```
 
 To avoid deleting files that are newly added by other writing jobs, this action only deletes orphan files older than
@@ -321,12 +330,8 @@ To avoid deleting files that are newly added by other writing jobs, this action 
     --older_than '2023-10-31 12:00:00'
 ```
 
-{{< /tab >}}
+The table can be `*` to clean all tables in the database.
 
-{{< tab "Spark" >}}
-```sql
-CALL sys.remove_orphan_files(table => "tableId", [older_than => "2023-10-31 12:00:00"])
-```
 {{< /tab >}}
 
 {{< /tabs >}}

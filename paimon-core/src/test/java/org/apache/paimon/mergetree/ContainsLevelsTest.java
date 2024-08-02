@@ -62,8 +62,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
-import static org.apache.paimon.CoreOptions.TARGET_FILE_SIZE;
 import static org.apache.paimon.io.DataFileTestUtils.row;
+import static org.apache.paimon.options.MemorySize.VALUE_128_MB;
 import static org.apache.paimon.utils.FileStorePathFactoryTest.createNonPartFactory;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -192,12 +192,11 @@ public class ContainsLevelsTest {
                         createReaderFactory()
                                 .createRecordReader(
                                         0, file.fileName(), file.fileSize(), file.level()),
-                () -> new File(tempDir.toFile(), LOOKUP_FILE_PREFIX + UUID.randomUUID()),
+                file -> new File(tempDir.toFile(), LOOKUP_FILE_PREFIX + UUID.randomUUID()),
                 new HashLookupStoreFactory(
                         new CacheManager(MemorySize.ofMebiBytes(1)), 2048, 0.75, "none"),
-                Duration.ofHours(1),
-                maxDiskSize,
-                rowCount -> BloomFilter.builder(rowCount, 0.01));
+                rowCount -> BloomFilter.builder(rowCount, 0.01),
+                LookupFile.createCache(Duration.ofHours(1), maxDiskSize));
     }
 
     private KeyValue kv(int key, int value) {
@@ -227,7 +226,7 @@ public class ContainsLevelsTest {
                         rowType,
                         new FlushingFileFormat(identifier),
                         pathFactoryMap,
-                        TARGET_FILE_SIZE.defaultValue().getBytes())
+                        VALUE_128_MB.getBytes())
                 .build(BinaryRow.EMPTY_ROW, 0, new CoreOptions(new Options()));
     }
 

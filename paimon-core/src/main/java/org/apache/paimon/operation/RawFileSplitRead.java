@@ -37,6 +37,7 @@ import org.apache.paimon.mergetree.compact.ConcatRecordReader;
 import org.apache.paimon.partition.PartitionUtils;
 import org.apache.paimon.predicate.Predicate;
 import org.apache.paimon.reader.EmptyRecordReader;
+import org.apache.paimon.reader.ReaderSupplier;
 import org.apache.paimon.reader.RecordReader;
 import org.apache.paimon.schema.IndexCastMapping;
 import org.apache.paimon.schema.SchemaEvolutionUtil;
@@ -57,10 +58,12 @@ import javax.annotation.Nullable;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import static org.apache.paimon.predicate.PredicateBuilder.excludePredicateWithFields;
 import static org.apache.paimon.predicate.PredicateBuilder.splitAnd;
 
 /** A {@link SplitRead} to read raw file directly from {@link DataSplit}. */
@@ -129,7 +132,7 @@ public class RawFileSplitRead implements SplitRead<InternalRow> {
     public RecordReader<InternalRow> createReader(DataSplit split) throws IOException {
         DataFilePathFactory dataFilePathFactory =
                 pathFactory.createDataFilePathFactory(split.partition(), split.bucket());
-        List<ConcatRecordReader.ReaderSupplier<InternalRow>> suppliers = new ArrayList<>();
+        List<ReaderSupplier<InternalRow>> suppliers = new ArrayList<>();
         if (split.beforeFiles().size() > 0) {
             LOG.info("Ignore split before files: " + split.beforeFiles());
         }
@@ -181,6 +184,9 @@ public class RawFileSplitRead implements SplitRead<InternalRow> {
                         ? filters
                         : SchemaEvolutionUtil.createDataFilters(
                                 tableSchema.fields(), dataSchema.fields(), filters);
+        // Skip pushing down partition filters to reader
+        List<Predicate> nonPartitionFilters =
+                excludePredicateWithFields(dataFilters, new HashSet<>(dataSchema.partitionKeys()));
 
         Pair<int[], RowType> partitionPair = null;
         if (!dataSchema.partitionKeys().isEmpty()) {
@@ -205,7 +211,7 @@ public class RawFileSplitRead implements SplitRead<InternalRow> {
                 partitionPair,
                 formatDiscover
                         .discover(key.format)
-                        .createReaderFactory(projectedRowType, dataFilters),
+                        .createReaderFactory(projectedRowType, nonPartitionFilters),
                 dataSchema,
                 dataFilters);
     }

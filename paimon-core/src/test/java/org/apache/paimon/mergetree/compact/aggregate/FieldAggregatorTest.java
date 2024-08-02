@@ -40,9 +40,12 @@ import org.apache.paimon.types.RowType;
 import org.apache.paimon.types.SmallIntType;
 import org.apache.paimon.types.TinyIntType;
 import org.apache.paimon.types.VarCharType;
+import org.apache.paimon.utils.RoaringBitmap32;
+import org.apache.paimon.utils.RoaringBitmap64;
 
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.math.BigDecimal;
 import java.util.Arrays;
 import java.util.Collections;
@@ -52,6 +55,7 @@ import java.util.Map;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
+import static org.apache.paimon.utils.ThetaSketch.sketchOf;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** test whether {@link FieldAggregator}' subclasses behaviors are expected. */
@@ -154,11 +158,33 @@ public class FieldAggregatorTest {
 
     @Test
     public void testFieldCountIntAgg() {
-        FieldCountAgg fieldCountAgg = new FieldCountAgg(new IntType());
-        assertThat(fieldCountAgg.agg(null, 10)).isEqualTo(1);
-        assertThat(fieldCountAgg.agg(1, 5)).isEqualTo(2);
-        assertThat(fieldCountAgg.agg(2, 15)).isEqualTo(3);
-        assertThat(fieldCountAgg.agg(3, 25)).isEqualTo(4);
+        FieldCountAgg fieldCountAggInt = new FieldCountAgg(new IntType());
+        assertThat(fieldCountAggInt.agg(null, null)).isEqualTo(0);
+        assertThat(fieldCountAggInt.agg(1, null)).isEqualTo(1);
+        assertThat(fieldCountAggInt.agg(null, 15)).isEqualTo(1);
+        assertThat(fieldCountAggInt.agg(1, 0)).isEqualTo(2);
+        assertThat(fieldCountAggInt.agg(3, 6)).isEqualTo(4);
+
+        FieldCountAgg fieldCountAggLong = new FieldCountAgg(new BigIntType());
+        assertThat(fieldCountAggLong.agg(null, null)).isEqualTo(0);
+        assertThat(fieldCountAggLong.agg((long) 1, null)).isEqualTo((long) 1);
+        assertThat(fieldCountAggLong.agg(null, (long) 15)).isEqualTo(1);
+        assertThat(fieldCountAggLong.agg((long) 1, 0)).isEqualTo((long) 2);
+        assertThat(fieldCountAggLong.agg((long) 3, (long) 6)).isEqualTo((long) 4);
+
+        FieldCountAgg fieldCountAggByte = new FieldCountAgg(new TinyIntType());
+        assertThat(fieldCountAggByte.agg(null, null)).isEqualTo(0);
+        assertThat(fieldCountAggByte.agg((byte) 1, null)).isEqualTo((byte) 1);
+        assertThat(fieldCountAggByte.agg(null, (byte) 15)).isEqualTo(1);
+        assertThat(fieldCountAggByte.agg((byte) 1, 0)).isEqualTo((byte) 2);
+        assertThat(fieldCountAggByte.agg((byte) 3, (byte) 6)).isEqualTo((byte) 4);
+
+        FieldCountAgg fieldCountAggShort = new FieldCountAgg(new SmallIntType());
+        assertThat(fieldCountAggShort.agg(null, null)).isEqualTo(0);
+        assertThat(fieldCountAggShort.agg((short) 1, null)).isEqualTo((short) 1);
+        assertThat(fieldCountAggShort.agg(null, (short) 15)).isEqualTo(1);
+        assertThat(fieldCountAggShort.agg((short) 1, 0)).isEqualTo((short) 2);
+        assertThat(fieldCountAggShort.agg((short) 3, (short) 6)).isEqualTo((short) 4);
     }
 
     @Test
@@ -701,6 +727,75 @@ public class FieldAggregatorTest {
                         new GenericMap(toMap(1, "A", 2, "B", 3, "C")),
                         new GenericMap(toMap(1, "A", 2, "A")));
         assertThat(toJavaMap(result)).containsExactlyInAnyOrderEntriesOf(toMap(3, "C"));
+    }
+
+    @Test
+    public void testFieldThetaSketchAgg() {
+        FieldThetaSketchAgg agg = new FieldThetaSketchAgg(DataTypes.VARBINARY(20));
+
+        byte[] inputVal = sketchOf(1);
+        byte[] acc1 = sketchOf(2, 3);
+        byte[] acc2 = sketchOf(1, 2, 3);
+
+        assertThat(agg.agg(null, null)).isNull();
+
+        byte[] result1 = (byte[]) agg.agg(null, inputVal);
+        assertThat(inputVal).isEqualTo(result1);
+
+        byte[] result2 = (byte[]) agg.agg(acc1, null);
+        assertThat(result2).isEqualTo(acc1);
+
+        byte[] result3 = (byte[]) agg.agg(acc1, inputVal);
+        assertThat(result3).isEqualTo(acc2);
+
+        byte[] result4 = (byte[]) agg.agg(acc2, inputVal);
+        assertThat(result4).isEqualTo(acc2);
+    }
+
+    @Test
+    public void testFieldRoaringBitmap32Agg() {
+        FieldRoaringBitmap32Agg agg = new FieldRoaringBitmap32Agg(DataTypes.VARBINARY(20));
+
+        byte[] inputVal = RoaringBitmap32.bitmapOf(1).serialize();
+        byte[] acc1 = RoaringBitmap32.bitmapOf(2, 3).serialize();
+        byte[] acc2 = RoaringBitmap32.bitmapOf(1, 2, 3).serialize();
+
+        assertThat(agg.agg(null, null)).isNull();
+
+        byte[] result1 = (byte[]) agg.agg(null, inputVal);
+        assertThat(inputVal).isEqualTo(result1);
+
+        byte[] result2 = (byte[]) agg.agg(acc1, null);
+        assertThat(result2).isEqualTo(acc1);
+
+        byte[] result3 = (byte[]) agg.agg(acc1, inputVal);
+        assertThat(result3).isEqualTo(acc2);
+
+        byte[] result4 = (byte[]) agg.agg(acc2, inputVal);
+        assertThat(result4).isEqualTo(acc2);
+    }
+
+    @Test
+    public void testFieldRoaringBitmap64Agg() throws IOException {
+        FieldRoaringBitmap64Agg agg = new FieldRoaringBitmap64Agg(DataTypes.VARBINARY(20));
+
+        byte[] inputVal = RoaringBitmap64.bitmapOf(1L).serialize();
+        byte[] acc1 = RoaringBitmap64.bitmapOf(2L, 3L).serialize();
+        byte[] acc2 = RoaringBitmap64.bitmapOf(1L, 2L, 3L).serialize();
+
+        assertThat(agg.agg(null, null)).isNull();
+
+        byte[] result1 = (byte[]) agg.agg(null, inputVal);
+        assertThat(inputVal).isEqualTo(result1);
+
+        byte[] result2 = (byte[]) agg.agg(acc1, null);
+        assertThat(result2).isEqualTo(acc1);
+
+        byte[] result3 = (byte[]) agg.agg(acc1, inputVal);
+        assertThat(result3).isEqualTo(acc2);
+
+        byte[] result4 = (byte[]) agg.agg(acc2, inputVal);
+        assertThat(result4).isEqualTo(acc2);
     }
 
     private Map<Object, Object> toMap(Object... kvs) {

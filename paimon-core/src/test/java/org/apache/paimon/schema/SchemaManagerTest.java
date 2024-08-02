@@ -19,11 +19,21 @@
 package org.apache.paimon.schema;
 
 import org.apache.paimon.CoreOptions;
+import org.apache.paimon.data.BinaryString;
+import org.apache.paimon.data.GenericRow;
+import org.apache.paimon.data.InternalRow;
+import org.apache.paimon.disk.IOManager;
 import org.apache.paimon.fs.FileIOFinder;
 import org.apache.paimon.fs.Path;
 import org.apache.paimon.fs.local.LocalFileIO;
+import org.apache.paimon.reader.RecordReaderIterator;
+import org.apache.paimon.table.FileStoreTable;
+import org.apache.paimon.table.FileStoreTableFactory;
+import org.apache.paimon.table.sink.TableCommitImpl;
+import org.apache.paimon.table.sink.TableWriteImpl;
 import org.apache.paimon.types.BigIntType;
 import org.apache.paimon.types.DataField;
+import org.apache.paimon.types.DataTypes;
 import org.apache.paimon.types.DoubleType;
 import org.apache.paimon.types.IntType;
 import org.apache.paimon.types.MapType;
@@ -32,6 +42,7 @@ import org.apache.paimon.types.VarCharType;
 import org.apache.paimon.utils.FailingFileIO;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -42,6 +53,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -296,5 +308,223 @@ public class SchemaManagerTest {
 
         manager.deleteSchema(manager.latest().get().id());
         assertThat(manager.latest().get().toString()).isEqualTo(schemaContent);
+    }
+
+    @Test
+    public void testApplyMoveFirstAndLast() {
+        // Create the initial list of fields
+        List<DataField> fields = new LinkedList<>();
+        fields.add(new DataField(0, "f0", DataTypes.INT()));
+        fields.add(new DataField(1, "f1", DataTypes.BIGINT()));
+        fields.add(new DataField(2, "f2", DataTypes.STRING()));
+        fields.add(new DataField(3, "f3", DataTypes.SMALLINT()));
+
+        // Use factory methods to create Move objects
+        SchemaChange.Move moveFirst = SchemaChange.Move.first("f2");
+        SchemaChange.Move moveLast = SchemaChange.Move.last("f0");
+
+        // Test FIRST operation
+        manager.applyMove(fields, moveFirst);
+        Assertions.assertEquals(
+                2,
+                fields.get(0).id(),
+                "The field id should remain as 2 after moving f2 to the first position");
+        Assertions.assertEquals(
+                fields.get(0).name(), "f2", "f2 should be moved to the first position");
+
+        // Reset fields to initial state
+        fields = new LinkedList<>();
+        fields.add(new DataField(0, "f0", DataTypes.INT()));
+        fields.add(new DataField(1, "f1", DataTypes.BIGINT()));
+        fields.add(new DataField(2, "f2", DataTypes.STRING()));
+        fields.add(new DataField(3, "f3", DataTypes.SMALLINT()));
+
+        // Test LAST operation
+        manager.applyMove(fields, moveLast);
+        Assertions.assertEquals(
+                0,
+                fields.get(fields.size() - 1).id(),
+                "The field id should remain as 0 after moving f0 to the last position");
+        Assertions.assertEquals(
+                "f0",
+                fields.get(fields.size() - 1).name(),
+                "f0 should be moved to the last position");
+    }
+
+    @Test
+    public void testMoveAfter() {
+        // Create the initial list of fields
+        List<DataField> fields = new LinkedList<>();
+        fields.add(new DataField(0, "f0", DataTypes.INT()));
+        fields.add(new DataField(1, "f1", DataTypes.BIGINT()));
+        fields.add(new DataField(2, "f2", DataTypes.STRING()));
+        fields.add(new DataField(3, "f3", DataTypes.SMALLINT()));
+
+        // Test AFTER operation
+        SchemaChange.Move moveAfter = SchemaChange.Move.after("f1", "f2");
+        manager.applyMove(fields, moveAfter);
+        Assertions.assertEquals(
+                1, fields.get(2).id(), "The field id should remain as 1 after moving f1 after f2");
+        Assertions.assertEquals("f1", fields.get(2).name(), "f1 should be after f2");
+
+        // Reset fields to initial state
+        fields = new LinkedList<>();
+        fields.add(new DataField(0, "f0", DataTypes.INT()));
+        fields.add(new DataField(1, "f1", DataTypes.BIGINT()));
+        fields.add(new DataField(2, "f2", DataTypes.STRING()));
+        fields.add(new DataField(3, "f3", DataTypes.SMALLINT()));
+
+        moveAfter = SchemaChange.Move.after("f3", "f1");
+        // Test AFTER operation
+        manager.applyMove(fields, moveAfter);
+        Assertions.assertEquals(
+                3, fields.get(2).id(), "The field id should remain as 3 after moving f3 after f1");
+        Assertions.assertEquals("f3", fields.get(2).name(), "f3 should be after f1");
+
+        // Reset fields to initial state
+        fields = new LinkedList<>();
+        fields.add(new DataField(0, "f0", DataTypes.INT()));
+        fields.add(new DataField(1, "f1", DataTypes.BIGINT()));
+        fields.add(new DataField(2, "f2", DataTypes.STRING()));
+        fields.add(new DataField(3, "f3", DataTypes.SMALLINT()));
+
+        moveAfter = SchemaChange.Move.after("f0", "f2");
+        // Test move column after last column
+        manager.applyMove(fields, moveAfter);
+        Assertions.assertEquals(
+                0, fields.get(2).id(), "The field id should remain as 0 after moving f0 after f2");
+        Assertions.assertEquals("f0", fields.get(2).name(), "f0 should be after f2");
+
+        // Reset fields to initial state
+        fields = new LinkedList<>();
+        fields.add(new DataField(0, "f0", DataTypes.INT()));
+        fields.add(new DataField(1, "f1", DataTypes.BIGINT()));
+        fields.add(new DataField(2, "f2", DataTypes.STRING()));
+        fields.add(new DataField(3, "f3", DataTypes.SMALLINT()));
+
+        moveAfter = SchemaChange.Move.after("f0", "f3");
+        // Test move column after last column
+        manager.applyMove(fields, moveAfter);
+        Assertions.assertEquals(
+                0, fields.get(3).id(), "The field id should remain as 0 after moving f0 after f3");
+        Assertions.assertEquals("f0", fields.get(3).name(), "f0 should be after f3");
+    }
+
+    @Test
+    public void testMoveBefore() {
+        // Create the initial list of fields
+        List<DataField> fields = new LinkedList<>();
+        fields.add(new DataField(0, "f0", DataTypes.INT()));
+        fields.add(new DataField(1, "f1", DataTypes.BIGINT()));
+        fields.add(new DataField(2, "f2", DataTypes.STRING()));
+        fields.add(new DataField(3, "f3", DataTypes.SMALLINT()));
+
+        SchemaChange.Move moveBefore = SchemaChange.Move.before("f2", "f1");
+        manager.applyMove(fields, moveBefore);
+        Assertions.assertEquals(
+                2, fields.get(1).id(), "The field id should remain as 2 after moving f2 before f1");
+        Assertions.assertEquals("f2", fields.get(1).name(), "f2 should be before f1");
+
+        // Reset fields to initial state
+        fields = new LinkedList<>();
+        fields.add(new DataField(0, "f0", DataTypes.INT()));
+        fields.add(new DataField(1, "f1", DataTypes.BIGINT()));
+        fields.add(new DataField(2, "f2", DataTypes.STRING()));
+        fields.add(new DataField(3, "f3", DataTypes.SMALLINT()));
+
+        moveBefore = SchemaChange.Move.before("f1", "f3");
+        manager.applyMove(fields, moveBefore);
+        Assertions.assertEquals(
+                1, fields.get(2).id(), "The field id should remain as 1 after moving f1 before f3");
+        Assertions.assertEquals("f1", fields.get(2).name(), "f1 should be before f3");
+
+        // Reset fields to initial state
+        fields = new LinkedList<>();
+        fields.add(new DataField(0, "f0", DataTypes.INT()));
+        fields.add(new DataField(1, "f1", DataTypes.BIGINT()));
+        fields.add(new DataField(2, "f2", DataTypes.STRING()));
+        fields.add(new DataField(3, "f3", DataTypes.SMALLINT()));
+
+        moveBefore = SchemaChange.Move.before("f2", "f0");
+        manager.applyMove(fields, moveBefore);
+        Assertions.assertEquals(
+                2, fields.get(0).id(), "The field id should remain as 2 after moving f2 before f0");
+    }
+
+    @Test
+    public void testAlterImmutableOptionsOnEmptyTable() throws Exception {
+        // create table without primary keys
+        Schema schema =
+                new Schema(
+                        rowType.getFields(),
+                        Collections.emptyList(),
+                        Collections.emptyList(),
+                        options,
+                        "");
+        Path tableRoot = new Path(tempDir.toString(), "table");
+        SchemaManager manager = new SchemaManager(LocalFileIO.create(), tableRoot);
+        manager.createTable(schema);
+
+        // set immutable options and set primary keys
+        manager.commitChanges(
+                SchemaChange.setOption("primary-key", "f0, f1"),
+                SchemaChange.setOption("partition", "f0"),
+                SchemaChange.setOption("bucket", "2"),
+                SchemaChange.setOption("merge-engine", "first-row"));
+
+        FileStoreTable table = FileStoreTableFactory.create(LocalFileIO.create(), tableRoot);
+        assertThat(table.schema().partitionKeys()).containsExactly("f0");
+        assertThat(table.schema().primaryKeys()).containsExactly("f0", "f1");
+
+        // read and write data to check that table is really a primary key table with first-row
+        // merge engine
+        String commitUser = UUID.randomUUID().toString();
+        TableWriteImpl<?> write =
+                table.newWrite(commitUser).withIOManager(IOManager.create(tempDir + "/io"));
+        TableCommitImpl commit = table.newCommit(commitUser);
+        write.write(GenericRow.of(1, 10L, BinaryString.fromString("apple")));
+        write.write(GenericRow.of(1, 20L, BinaryString.fromString("banana")));
+        write.write(GenericRow.of(2, 10L, BinaryString.fromString("cat")));
+        write.write(GenericRow.of(2, 20L, BinaryString.fromString("dog")));
+        commit.commit(1, write.prepareCommit(false, 1));
+        write.write(GenericRow.of(1, 20L, BinaryString.fromString("peach")));
+        write.write(GenericRow.of(1, 30L, BinaryString.fromString("mango")));
+        write.write(GenericRow.of(2, 20L, BinaryString.fromString("tiger")));
+        write.write(GenericRow.of(2, 30L, BinaryString.fromString("wolf")));
+        commit.commit(2, write.prepareCommit(false, 2));
+        write.close();
+        commit.close();
+
+        List<String> actual = new ArrayList<>();
+        try (RecordReaderIterator<InternalRow> it =
+                new RecordReaderIterator<>(
+                        table.newRead().createReader(table.newSnapshotReader().read()))) {
+            while (it.hasNext()) {
+                InternalRow row = it.next();
+                actual.add(
+                        String.format(
+                                "%s %d %d %s",
+                                row.getRowKind().shortString(),
+                                row.getInt(0),
+                                row.getLong(1),
+                                row.getString(2)));
+            }
+        }
+        assertThat(actual)
+                .containsExactlyInAnyOrder(
+                        "+I 1 10 apple",
+                        "+I 1 20 banana",
+                        "+I 1 30 mango",
+                        "+I 2 10 cat",
+                        "+I 2 20 dog",
+                        "+I 2 30 wolf");
+
+        // now that table is not empty, we cannot change immutable options
+        assertThatThrownBy(
+                        () ->
+                                manager.commitChanges(
+                                        SchemaChange.setOption("merge-engine", "deduplicate")))
+                .isInstanceOf(UnsupportedOperationException.class)
+                .hasMessage("Change 'merge-engine' is not supported yet.");
     }
 }

@@ -45,7 +45,6 @@ public class ExpireChangelogImpl implements ExpireSnapshots {
     private final SnapshotManager snapshotManager;
     private final ConsumerManager consumerManager;
     private final ChangelogDeletion changelogDeletion;
-    private final boolean cleanEmptyDirectories;
     private final TagManager tagManager;
 
     private ExpireConfig expireConfig;
@@ -53,13 +52,14 @@ public class ExpireChangelogImpl implements ExpireSnapshots {
     public ExpireChangelogImpl(
             SnapshotManager snapshotManager,
             TagManager tagManager,
-            ChangelogDeletion changelogDeletion,
-            boolean cleanEmptyDirectories) {
+            ChangelogDeletion changelogDeletion) {
         this.snapshotManager = snapshotManager;
         this.tagManager = tagManager;
         this.consumerManager =
-                new ConsumerManager(snapshotManager.fileIO(), snapshotManager.tablePath());
-        this.cleanEmptyDirectories = cleanEmptyDirectories;
+                new ConsumerManager(
+                        snapshotManager.fileIO(),
+                        snapshotManager.tablePath(),
+                        snapshotManager.branch());
         this.changelogDeletion = changelogDeletion;
         this.expireConfig = ExpireConfig.builder().build();
     }
@@ -134,10 +134,11 @@ public class ExpireChangelogImpl implements ExpireSnapshots {
             LOG.debug("Changelog expire range is [" + earliestId + ", " + endExclusiveId + ")");
         }
 
-        List<Snapshot> taggedSnapshots = tagManager.taggedSnapshots();
+        List<Snapshot> referencedSnapshots = tagManager.taggedSnapshots();
 
         List<Snapshot> skippingSnapshots =
-                TagManager.findOverlappedSnapshots(taggedSnapshots, earliestId, endExclusiveId);
+                SnapshotManager.findOverlappedSnapshots(
+                        referencedSnapshots, earliestId, endExclusiveId);
         skippingSnapshots.add(snapshotManager.changelog(endExclusiveId));
         Set<String> manifestSkippSet = changelogDeletion.manifestSkippingSet(skippingSnapshots);
         for (long id = earliestId; id < endExclusiveId; id++) {
@@ -147,7 +148,7 @@ public class ExpireChangelogImpl implements ExpireSnapshots {
             Changelog changelog = snapshotManager.longLivedChangelog(id);
             Predicate<ManifestEntry> skipper;
             try {
-                skipper = changelogDeletion.dataFileSkipper(taggedSnapshots, id);
+                skipper = changelogDeletion.dataFileSkipper(referencedSnapshots, id);
             } catch (Exception e) {
                 LOG.info(
                         String.format(
@@ -162,9 +163,7 @@ public class ExpireChangelogImpl implements ExpireSnapshots {
             snapshotManager.fileIO().deleteQuietly(snapshotManager.longLivedChangelogPath(id));
         }
 
-        if (cleanEmptyDirectories) {
-            changelogDeletion.cleanDataDirectories();
-        }
+        changelogDeletion.cleanEmptyDirectories();
         writeEarliestHintFile(endExclusiveId);
         return (int) (endExclusiveId - earliestId);
     }

@@ -35,11 +35,10 @@ public class DeleteTagProcedure extends ProcedureBase {
 
     public static final String IDENTIFIER = "delete_tag";
 
-    public String[] call(ProcedureContext procedureContext, String tableId, String tagName)
+    public String[] call(ProcedureContext procedureContext, String tableId, String tagNameStr)
             throws Catalog.TableNotExistException {
         Table table = catalog.getTable(Identifier.fromString(tableId));
-        table.deleteTag(tagName);
-
+        table.deleteTags(tagNameStr);
         return new String[] {"Success"};
     }
 

@@ -34,14 +34,13 @@ import org.apache.paimon.sort.BinaryExternalSortBuffer;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.types.RowType;
 import org.apache.paimon.utils.ExecutorThreadFactory;
+import org.apache.paimon.utils.ExecutorUtils;
 import org.apache.paimon.utils.FieldsComparator;
 import org.apache.paimon.utils.FileIOUtils;
 import org.apache.paimon.utils.MutableObjectIterator;
 import org.apache.paimon.utils.PartialRow;
 import org.apache.paimon.utils.TypeUtils;
 import org.apache.paimon.utils.UserDefinedSeqComparator;
-
-import org.apache.paimon.shade.guava30.com.google.common.util.concurrent.MoreExecutors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -59,6 +58,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -78,7 +78,7 @@ public abstract class FullCacheLookupTable implements LookupTable {
     protected final int appendUdsFieldNumber;
 
     protected RocksDBStateFactory stateFactory;
-    private final ExecutorService refreshExecutor;
+    @Nullable private final ExecutorService refreshExecutor;
     private final AtomicReference<Exception> cachedException;
     private final int maxPendingSnapshotCount;
     private final FileStoreTable table;
@@ -87,7 +87,6 @@ public abstract class FullCacheLookupTable implements LookupTable {
     private Predicate specificPartition;
 
     public FullCacheLookupTable(Context context) {
-        this.context = context;
         this.table = context.table;
         List<String> sequenceFields = new ArrayList<>();
         if (table.primaryKeys().size() > 0) {
@@ -108,6 +107,7 @@ public abstract class FullCacheLookupTable implements LookupTable {
                                 builder.field(f.name(), f.type());
                             });
             projectedType = builder.build();
+            context = context.copy(table.rowType().getFieldIndices(projectedType.getFieldNames()));
             this.userDefinedSeqComparator =
                     UserDefinedSeqComparator.create(projectedType, sequenceFields);
             this.appendUdsFieldNumber = appendUdsFieldNumber.get();
@@ -115,6 +115,8 @@ public abstract class FullCacheLookupTable implements LookupTable {
             this.userDefinedSeqComparator = null;
             this.appendUdsFieldNumber = 0;
         }
+
+        this.context = context;
 
         Options options = Options.fromMap(context.table.options());
         this.projectedType = projectedType;
@@ -126,7 +128,7 @@ public abstract class FullCacheLookupTable implements LookupTable {
                                         String.format(
                                                 "%s-lookup-refresh",
                                                 Thread.currentThread().getName())))
-                        : MoreExecutors.newDirectExecutorService();
+                        : null;
         this.cachedException = new AtomicReference<>();
         this.maxPendingSnapshotCount = options.get(LOOKUP_REFRESH_ASYNC_PENDING_SNAPSHOT_COUNT);
     }
@@ -187,6 +189,11 @@ public abstract class FullCacheLookupTable implements LookupTable {
 
     @Override
     public void refresh() throws Exception {
+        if (refreshExecutor == null) {
+            doRefresh();
+            return;
+        }
+
         Long latestSnapshotId = table.snapshotManager().latestSnapshotId();
         Long nextSnapshotId = reader.nextSnapshotId();
         if (latestSnapshotId != null
@@ -219,11 +226,8 @@ public abstract class FullCacheLookupTable implements LookupTable {
                                         cachedException.set(e);
                                     }
                                 });
-            } catch (RejectedExecutionException ignored) {
-                LOG.warn(
-                        "Add refresh task for lookup table {} failed",
-                        context.table.name(),
-                        ignored);
+            } catch (RejectedExecutionException e) {
+                LOG.warn("Add refresh task for lookup table {} failed", context.table.name(), e);
             }
             if (currentFuture != null) {
                 refreshFuture = currentFuture;
@@ -297,10 +301,12 @@ public abstract class FullCacheLookupTable implements LookupTable {
     @Override
     public void close() throws IOException {
         try {
+            if (refreshExecutor != null) {
+                ExecutorUtils.gracefulShutdown(1L, TimeUnit.MINUTES, refreshExecutor);
+            }
+        } finally {
             stateFactory.close();
             FileIOUtils.deleteDirectory(context.tempPath);
-        } finally {
-            refreshExecutor.shutdown();
         }
     }
 
@@ -351,6 +357,17 @@ public abstract class FullCacheLookupTable implements LookupTable {
             this.tempPath = tempPath;
             this.joinKey = joinKey;
             this.requiredCachedBucketIds = requiredCachedBucketIds;
+        }
+
+        public Context copy(int[] newProjection) {
+            return new Context(
+                    table,
+                    newProjection,
+                    tablePredicate,
+                    projectedPredicate,
+                    tempPath,
+                    joinKey,
+                    requiredCachedBucketIds);
         }
     }
 }

@@ -51,7 +51,7 @@ All available procedures are listed below.
    <tr>
       <th class="text-left" style="width: 4%">Procedure Name</th>
       <th class="text-left" style="width: 4%">Usage</th>
-      <th class="text-left" style="width: 20%">Explaination</th>
+      <th class="text-left" style="width: 20%">Explanation</th>
       <th class="text-left" style="width: 4%">Example</th>
    </tr>
    </thead>
@@ -67,9 +67,13 @@ All available procedures are listed below.
             <li>order_strategy(optional): 'order' or 'zorder' or 'hilbert' or 'none'.</li>
             <li>order_by(optional): the columns need to be sort. Left empty if 'order_strategy' is 'none'.</li>
             <li>options(optional): additional dynamic options of the table.</li>
+            <li>where(optional): partition predicate(Can't be used together with "partitions"). Note: as where is a keyword,a pair of backticks need to add around like `where`.</li>
       </td>
       <td>
-         CALL sys.compact(`table` => 'default.T', partitions => 'p=0', order_strategy => 'zorder', order_by => 'a,b', options => 'sink.parallelism=4')
+         -- use partition filter <br/>
+         CALL sys.compact(`table` => 'default.T', partitions => 'p=0', order_strategy => 'zorder', order_by => 'a,b', options => 'sink.parallelism=4') <br/>
+         -- use partition predicate <br/>
+         CALL sys.compact(`table` => 'default.T', `where` => 'dt>10 and h<20', order_strategy => 'zorder', order_by => 'a,b', options => 'sink.parallelism=4')
       </td>
    </tr>
    <tr>
@@ -109,9 +113,10 @@ All available procedures are listed below.
             <li>identifier: the target table identifier. Cannot be empty.</li>
             <li>tagName: name of the new tag.</li>
             <li>snapshotId (Long): id of the snapshot which the new tag is based on.</li>
+            <li>time_retained: The maximum time retained for newly created tags.</li>
       </td>
       <td>
-         CALL sys.create_tag('default.T', 'my_tag', 10)
+         CALL sys.create_tag('default.T', 'my_tag', 10, '1 d')
       </td>
    </tr>
    <tr>
@@ -122,7 +127,7 @@ All available procedures are listed below.
       <td>
          To delete a tag. Arguments:
             <li>identifier: the target table identifier. Cannot be empty.</li>
-            <li>tagName: name of the tag to be deleted.</li>
+            <li>tagName: name of the tag to be deleted. If you specify multiple tags, delimiter is ','.</li>
       </td>
       <td>
          CALL sys.delete_tag('default.T', 'my_tag')
@@ -169,16 +174,21 @@ All available procedures are listed below.
       <td>remove_orphan_files</td>
       <td>
          CALL [catalog.]sys.remove_orphan_files('identifier')<br/><br/>
-         CALL [catalog.]sys.remove_orphan_files('identifier', 'olderThan')
+         CALL [catalog.]sys.remove_orphan_files('identifier', 'olderThan')<br/><br/>
+         CALL [catalog.]sys.remove_orphan_files('identifier', 'olderThan', 'dryRun')
       </td>
       <td>
          To remove the orphan data files and metadata files. Arguments:
-            <li>identifier: the target table identifier. Cannot be empty.</li>
+            <li>identifier: the target table identifier. Cannot be empty, you can use database_name.* to clean whole database.</li>
             <li>olderThan: to avoid deleting newly written files, this procedure only 
                deletes orphan files older than 1 day by default. This argument can modify the interval.
             </li>
+            <li>dryRun: when true, view only orphan files, don't actually remove files. Default is false.</li>
       </td>
-      <td>CALL remove_orphan_files('default.T', '2023-10-31 12:00:00')</td>
+      <td>CALL remove_orphan_files('default.T', '2023-10-31 12:00:00')<br/><br/>
+          CALL remove_orphan_files('default.*', '2023-10-31 12:00:00')<br/><br/>
+          CALL remove_orphan_files('default.T', '2023-10-31 12:00:00', true)
+      </td>
    </tr>
    <tr>
       <td>reset_consumer</td>
@@ -238,6 +248,25 @@ All available procedures are listed below.
          CALL sys.expire_snapshots(`table` => 'default.T', older_than => '2024-01-01 12:00:00', max_deletes => 10)<br/><br/>
       </td>
    </tr>
+<tr>
+      <td>expire_partitions</td>
+      <td>
+         CALL sys.expire_partitions(table, expiration_time, timestamp_formatter, expire_strategy)<br/><br/>
+      </td>
+      <td>
+         To expire partitions. Argument:
+            <li>table: the target table identifier. Cannot be empty.</li>
+            <li>expiration_time: the expiration interval of a partition. A partition will be expired if it‘s lifetime is over this value. Partition time is extracted from the partition value.</li>
+            <li>timestamp_formatter: the formatter to format timestamp from string.</li>
+            <li>expire_strategy: specifies the expiration strategy for partition expiration, possible values: 'values-time' or 'update-time' , 'values-time' as default.</li>
+      </td>
+      <td>
+         -- for Flink 1.18<br/><br/>
+         CALL sys.expire_partitions('default.T', '1 d', 'yyyy-MM-dd', 'values-time')<br/><br/>
+         -- for Flink 1.19 and later<br/><br/>
+         CALL sys.expire_partitions(`table` => 'default.T', expiration_time => '1 d', timestamp_formatter => 'yyyy-MM-dd', expire_strategy => 'values-time')<br/><br/>
+      </td>
+   </tr>
     <tr>
       <td>repair</td>
       <td>
@@ -247,6 +276,8 @@ All available procedures are listed below.
          CALL sys.repair('databaseName')<br/><br/>
          -- repair a table<br/>
          CALL sys.repair('databaseName.tableName')<br/><br/>
+         -- repair database and table in a string if you specify multiple tags, delimiter is ','<br/>
+         CALL sys.repair('databaseName01,database02.tableName01,database03')
       </td>
       <td>
          Synchronize information from the file system to Metastore. Argument:
@@ -255,6 +286,73 @@ All available procedures are listed below.
             <li>tableName: the target table identifier.</li>
       </td>
       <td>CALL sys.repair('test_db.T')</td>
+   </tr>
+    <tr>
+      <td>rewrite_file_index</td>
+      <td>
+         CALL sys.rewrite_file_index(&ltidentifier&gt [, &ltpartitions&gt])<br/><br/>
+      </td>
+      <td>
+         Rewrite the file index for the table. Argument:
+            <li>identifier: &ltdatabaseName&gt.&lttableName&gt.</li>
+            <li>partitions : specific partitions.</li>
+      </td>
+      <td>
+         -- rewrite the file index for the whole table<br/>
+         CALL sys.rewrite_file_index('test_db.T')<br/><br/>
+         -- repair all tables in a specific partition<br/>
+         CALL sys.rewrite_file_index('test_db.T', 'pt=a')<br/><br/>
+     </td>
+   <tr>
+      <td>create_branch</td>
+      <td>
+         -- based on the specified snapshot <br/>
+         CALL [catalog.]sys.create_branch('identifier', 'branchName', snapshotId) <br/>
+         -- based on the specified tag <br/>
+         CALL [catalog.]sys.create_branch('identifier', 'branchName', 'tagName')
+         -- create empty branch <br/>
+         CALL [catalog.]sys.create_branch('identifier', 'branchName')
+      </td>
+      <td>
+         To create a branch based on given snapshot / tag, or just create empty branch. Arguments:
+            <li>identifier: the target table identifier. Cannot be empty.</li>
+            <li>branchName: name of the new branch.</li>
+            <li>snapshotId (Long): id of the snapshot which the new branch is based on.</li>
+            <li>tagName: name of the tag which the new branch is based on.</li>
+      </td>
+      <td>
+         CALL sys.create_branch('default.T', 'branch1', 10)<br/><br/>
+         CALL sys.create_branch('default.T', 'branch1', 'tag1')<br/><br/>
+         CALL sys.create_branch('default.T', 'branch1')<br/><br/>
+      </td>
+   </tr>
+   <tr>
+      <td>delete_branch</td>
+      <td>
+         CALL [catalog.]sys.delete_branch('identifier', 'branchName')
+      </td>
+      <td>
+         To delete a branch. Arguments:
+            <li>identifier: the target table identifier. Cannot be empty.</li>
+            <li>branchName: name of the branch to be deleted. If you specify multiple branches, delimiter is ','.</li>
+      </td>
+      <td>
+         CALL sys.delete_branch('default.T', 'branch1')
+      </td>
+   </tr>
+   <tr>
+      <td>fast_forward</td>
+      <td>
+         CALL [catalog.]sys.fast_forward('identifier', 'branchName')
+      </td>
+      <td>
+         To fast_forward a branch to main branch. Arguments:
+            <li>identifier: the target table identifier. Cannot be empty.</li>
+            <li>branchName: name of the branch to be merged.</li>
+      </td>
+      <td>
+         CALL sys.fast_forward('default.T', 'branch1')
+      </td>
    </tr>
    </tbody>
 </table>

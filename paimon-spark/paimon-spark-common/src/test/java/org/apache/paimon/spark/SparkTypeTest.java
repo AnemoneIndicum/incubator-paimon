@@ -27,6 +27,7 @@ import org.junit.jupiter.api.Test;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.apache.paimon.spark.SparkTypeUtils.fromPaimonRowType;
+import static org.apache.paimon.spark.SparkTypeUtils.toPaimonType;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Test for {@link SparkTypeUtils}. */
@@ -64,7 +65,8 @@ public class SparkTypeTest {
                     .field("smallint", DataTypes.SMALLINT())
                     .field("bigint", DataTypes.BIGINT())
                     .field("bytes", DataTypes.BYTES())
-                    .field("timestamp", DataTypes.TIMESTAMP())
+                    .field("timestamp", DataTypes.TIMESTAMP_WITH_LOCAL_TIME_ZONE())
+                    .field("timestamp_ntz", DataTypes.TIMESTAMP())
                     .field("date", DataTypes.DATE())
                     .field("decimal", DataTypes.DECIMAL(2, 2))
                     .field("decimal2", DataTypes.DECIMAL(38, 2))
@@ -76,14 +78,14 @@ public class SparkTypeTest {
         String nestedRowMapType =
                 "StructField(locations,MapType("
                         + "StringType,"
-                        + "StructType(StructField(posX,DoubleType,true),StructField(posY,DoubleType,true)),true),true)";
+                        + "StructType(StructField(posX,DoubleType,false),StructField(posY,DoubleType,false)),true),true)";
         String expected =
                 "StructType("
-                        + "StructField(id,IntegerType,true),"
+                        + "StructField(id,IntegerType,false),"
                         + "StructField(name,StringType,true),"
                         + "StructField(char,CharType(10),true),"
                         + "StructField(varchar,VarcharType(10),true),"
-                        + "StructField(salary,DoubleType,true),"
+                        + "StructField(salary,DoubleType,false),"
                         + nestedRowMapType
                         + ","
                         + "StructField(strArray,ArrayType(StringType,true),true),"
@@ -94,6 +96,7 @@ public class SparkTypeTest {
                         + "StructField(bigint,LongType,true),"
                         + "StructField(bytes,BinaryType,true),"
                         + "StructField(timestamp,TimestampType,true),"
+                        + "StructField(timestamp_ntz,TimestampNTZType,true),"
                         + "StructField(date,DateType,true),"
                         + "StructField(decimal,DecimalType(2,2),true),"
                         + "StructField(decimal2,DecimalType(38,2),true),"
@@ -102,7 +105,6 @@ public class SparkTypeTest {
         StructType sparkType = fromPaimonRowType(ALL_TYPES);
         assertThat(sparkType.toString().replace(", ", ",")).isEqualTo(expected);
 
-        // Ignore the assertion below, since we force to make all the fields nullable.
-        // assertThat(toPaimonType(sparkType)).isEqualTo(ALL_TYPES);
+        assertThat(toPaimonType(sparkType)).isEqualTo(ALL_TYPES);
     }
 }

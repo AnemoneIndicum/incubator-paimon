@@ -53,6 +53,9 @@ public interface ActionFactory extends Factory {
     String CATALOG_CONF = "catalog_conf";
     String TABLE_CONF = "table_conf";
     String PARTITION = "partition";
+    String EXPIRATIONTIME = "expiration_time";
+    String TIMESTAMPFORMATTER = "timestamp_formatter";
+    String EXPIRE_STRATEGY = "expire_strategy";
 
     Optional<Action> create(MultipleParameterToolAdapter params);
 

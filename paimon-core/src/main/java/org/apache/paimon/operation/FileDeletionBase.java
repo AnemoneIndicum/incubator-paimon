@@ -32,10 +32,10 @@ import org.apache.paimon.manifest.ManifestFile;
 import org.apache.paimon.manifest.ManifestFileMeta;
 import org.apache.paimon.manifest.ManifestList;
 import org.apache.paimon.stats.StatsFileHandler;
+import org.apache.paimon.utils.FileDeletionThreadPool;
 import org.apache.paimon.utils.FileStorePathFactory;
-import org.apache.paimon.utils.FileUtils;
 import org.apache.paimon.utils.Pair;
-import org.apache.paimon.utils.TagManager;
+import org.apache.paimon.utils.SnapshotManager;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -70,16 +70,19 @@ public abstract class FileDeletionBase<T extends Snapshot> {
     protected final ManifestList manifestList;
     protected final IndexFileHandler indexFileHandler;
     protected final StatsFileHandler statsFileHandler;
-
+    private final boolean cleanEmptyDirectories;
     protected final Map<BinaryRow, Set<Integer>> deletionBuckets;
-    protected final Executor ioExecutor;
+
+    private final Executor deleteFileExecutor;
+
     protected boolean changelogDecoupled;
 
-    /** Used to record which tag is cached in tagged snapshots list. */
-    private int cachedTagIndex = -1;
+    /** Used to record which snapshot is cached. */
+    private long cachedSnapshotId = 0;
 
-    /** Used to cache data files used by current tag. */
-    private final Map<BinaryRow, Map<Integer, Set<String>>> cachedTagDataFiles = new HashMap<>();
+    /** Used to cache data files used by current snapshot. */
+    private final Map<BinaryRow, Map<Integer, Set<String>>> cachedSnapshotDataFiles =
+            new HashMap<>();
 
     public FileDeletionBase(
             FileIO fileIO,
@@ -87,15 +90,18 @@ public abstract class FileDeletionBase<T extends Snapshot> {
             ManifestFile manifestFile,
             ManifestList manifestList,
             IndexFileHandler indexFileHandler,
-            StatsFileHandler statsFileHandler) {
+            StatsFileHandler statsFileHandler,
+            boolean cleanEmptyDirectories,
+            int deleteFileThreadNum) {
         this.fileIO = fileIO;
         this.pathFactory = pathFactory;
         this.manifestFile = manifestFile;
         this.manifestList = manifestList;
         this.indexFileHandler = indexFileHandler;
         this.statsFileHandler = statsFileHandler;
+        this.cleanEmptyDirectories = cleanEmptyDirectories;
         this.deletionBuckets = new HashMap<>();
-        this.ioExecutor = FileUtils.COMMON_IO_FORK_JOIN_POOL;
+        this.deleteFileExecutor = FileDeletionThreadPool.getExecutorService(deleteFileThreadNum);
     }
 
     /**
@@ -121,8 +127,8 @@ public abstract class FileDeletionBase<T extends Snapshot> {
     }
 
     /** Try to delete data directories that may be empty after data file deletion. */
-    public void cleanDataDirectories() {
-        if (deletionBuckets.isEmpty()) {
+    public void cleanEmptyDirectories() {
+        if (!cleanEmptyDirectories || deletionBuckets.isEmpty()) {
             return;
         }
 
@@ -323,16 +329,19 @@ public abstract class FileDeletionBase<T extends Snapshot> {
     }
 
     public Predicate<ManifestEntry> dataFileSkipper(
-            List<Snapshot> taggedSnapshots, long expiringSnapshotId) throws Exception {
-        int index = TagManager.findPreviousTag(taggedSnapshots, expiringSnapshotId);
-        // refresh tag data files
-        if (index >= 0 && cachedTagIndex != index) {
-            cachedTagIndex = index;
-            cachedTagDataFiles.clear();
-            addMergedDataFiles(cachedTagDataFiles, taggedSnapshots.get(index));
+            List<Snapshot> skippingSnapshots, long expiringSnapshotId) throws Exception {
+        int index = SnapshotManager.findPreviousSnapshot(skippingSnapshots, expiringSnapshotId);
+        // refresh snapshot data files
+        if (index >= 0) {
+            Snapshot previousSnapshot = skippingSnapshots.get(index);
+            if (previousSnapshot.id() != cachedSnapshotId) {
+                cachedSnapshotId = previousSnapshot.id();
+                cachedSnapshotDataFiles.clear();
+                addMergedDataFiles(cachedSnapshotDataFiles, previousSnapshot);
+            }
+            return entry -> containsDataFile(cachedSnapshotDataFiles, entry);
         }
-
-        return entry -> index >= 0 && containsDataFile(cachedTagDataFiles, entry);
+        return entry -> false;
     }
 
     /**
@@ -449,15 +458,15 @@ public abstract class FileDeletionBase<T extends Snapshot> {
         }
     }
 
-    protected <T> void deleteFiles(Collection<T> files, Consumer<T> deletion) {
+    protected <F> void deleteFiles(Collection<F> files, Consumer<F> deletion) {
         if (files.isEmpty()) {
             return;
         }
 
         List<CompletableFuture<Void>> deletionFutures = new ArrayList<>(files.size());
-        for (T file : files) {
+        for (F file : files) {
             deletionFutures.add(
-                    CompletableFuture.runAsync(() -> deletion.accept(file), ioExecutor));
+                    CompletableFuture.runAsync(() -> deletion.accept(file), deleteFileExecutor));
         }
 
         try {

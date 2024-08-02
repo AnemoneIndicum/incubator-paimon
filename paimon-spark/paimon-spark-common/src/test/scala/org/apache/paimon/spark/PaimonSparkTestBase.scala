@@ -18,8 +18,9 @@
 
 package org.apache.paimon.spark
 
+import org.apache.paimon.Snapshot
 import org.apache.paimon.catalog.{Catalog, CatalogContext, CatalogFactory, Identifier}
-import org.apache.paimon.options.Options
+import org.apache.paimon.options.{CatalogOptions, Options}
 import org.apache.paimon.spark.catalog.Catalogs
 import org.apache.paimon.spark.extensions.PaimonSparkSessionExtensions
 import org.apache.paimon.spark.sql.{SparkVersionSupport, WithTableOptions}
@@ -30,12 +31,15 @@ import org.apache.spark.paimon.Utils
 import org.apache.spark.sql.QueryTest
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.connector.catalog.{Identifier => SparkIdentifier}
-import org.apache.spark.sql.execution.datasources.v2.DataSourceV2Relation
+import org.apache.spark.sql.execution.datasources.v2.{DataSourceV2Relation, DataSourceV2ScanRelation}
 import org.apache.spark.sql.test.SharedSparkSession
 import org.scalactic.source.Position
 import org.scalatest.Tag
 
 import java.io.File
+import java.util
+import java.util.{HashMap => JHashMap}
+import java.util.TimeZone
 
 import scala.util.Random
 
@@ -63,6 +67,7 @@ class PaimonSparkTestBase
     super.sparkConf
       .set("spark.sql.catalog.paimon", classOf[SparkCatalog].getName)
       .set("spark.sql.catalog.paimon.warehouse", tempDBDir.getCanonicalPath)
+      .set("spark.sql.catalog.paimon.cache-enabled", "false")
       .set("spark.sql.extensions", classOf[PaimonSparkSessionExtensions].getName)
       .set("spark.serializer", serializer)
   }
@@ -101,6 +106,18 @@ class PaimonSparkTestBase
     withTempDir(file1 => withTempDir(file2 => f(file1, file2)))
   }
 
+  protected def withTimeZone(timeZone: String)(f: => Unit): Unit = {
+    withSQLConf("spark.sql.session.timeZone" -> timeZone) {
+      val originTimeZone = TimeZone.getDefault
+      try {
+        TimeZone.setDefault(TimeZone.getTimeZone(timeZone))
+        f
+      } finally {
+        TimeZone.setDefault(originTimeZone)
+      }
+    }
+  }
+
   override def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
     println(testName)
@@ -109,7 +126,9 @@ class PaimonSparkTestBase
 
   private def initCatalog(): Catalog = {
     val currentCatalog = spark.sessionState.catalogManager.currentCatalog.name()
-    val options = Catalogs.catalogOptions(currentCatalog, spark.sessionState.conf)
+    val options =
+      new JHashMap[String, String](Catalogs.catalogOptions(currentCatalog, spark.sessionState.conf))
+    options.put(CatalogOptions.CACHE_ENABLED.key(), "false")
     val catalogContext =
       CatalogContext.create(Options.fromMap(options), spark.sessionState.newHadoopConf())
     CatalogFactory.createCatalog(catalogContext)
@@ -120,11 +139,19 @@ class PaimonSparkTestBase
   }
 
   protected def createRelationV2(tableName: String): LogicalPlan = {
-    val sparkTable = new SparkTable(loadTable(tableName))
+    val sparkTable = SparkTable(loadTable(tableName))
     DataSourceV2Relation.create(
       sparkTable,
       Some(spark.sessionState.catalogManager.currentCatalog),
       Some(SparkIdentifier.of(Array(this.dbName0), tableName))
     )
+  }
+
+  protected def getPaimonScan(sqlText: String): PaimonScan = {
+    sql(sqlText).queryExecution.optimizedPlan
+      .collectFirst { case relation: DataSourceV2ScanRelation => relation }
+      .get
+      .scan
+      .asInstanceOf[PaimonScan]
   }
 }

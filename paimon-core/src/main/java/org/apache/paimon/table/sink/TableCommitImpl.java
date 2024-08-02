@@ -55,7 +55,6 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -73,7 +72,6 @@ public class TableCommitImpl implements InnerTableCommit {
     private static final Logger LOG = LoggerFactory.getLogger(TableCommitImpl.class);
 
     private final FileStoreCommit commit;
-    private final List<CommitCallback> commitCallbacks;
     @Nullable private final Runnable expireSnapshots;
     @Nullable private final PartitionExpire partitionExpire;
     @Nullable private final TagAutoManager tagAutoManager;
@@ -93,7 +91,6 @@ public class TableCommitImpl implements InnerTableCommit {
 
     public TableCommitImpl(
             FileStoreCommit commit,
-            List<CommitCallback> commitCallbacks,
             @Nullable Runnable expireSnapshots,
             @Nullable PartitionExpire partitionExpire,
             @Nullable TagAutoManager tagAutoManager,
@@ -109,7 +106,6 @@ public class TableCommitImpl implements InnerTableCommit {
         }
 
         this.commit = commit;
-        this.commitCallbacks = commitCallbacks;
         this.expireSnapshots = expireSnapshots;
         this.partitionExpire = partitionExpire;
         this.tagAutoManager = tagAutoManager;
@@ -132,6 +128,9 @@ public class TableCommitImpl implements InnerTableCommit {
 
     public boolean forceCreatingSnapshot() {
         if (this.forceCreatingSnapshot) {
+            return true;
+        }
+        if (overwritePartition != null) {
             return true;
         }
         return tagAutoManager != null
@@ -225,34 +224,24 @@ public class TableCommitImpl implements InnerTableCommit {
             commit.overwrite(overwritePartition, committable, Collections.emptyMap());
             expire(committable.identifier(), expireMainExecutor);
         }
-
-        commitCallbacks.forEach(c -> c.call(committables));
     }
 
     public int filterAndCommitMultiple(List<ManifestCommittable> committables) {
-        Set<Long> retryIdentifiers =
-                commit.filterCommitted(
-                        committables.stream()
-                                .map(ManifestCommittable::identifier)
-                                .collect(Collectors.toSet()));
+        return filterAndCommitMultiple(committables, true);
+    }
 
-        // commitCallback may fail after the snapshot file is successfully created,
-        // so we have to try all of them again
-        List<ManifestCommittable> succeededCommittables =
+    public int filterAndCommitMultiple(
+            List<ManifestCommittable> committables, boolean checkAppendFiles) {
+        List<ManifestCommittable> sortedCommittables =
                 committables.stream()
-                        .filter(c -> !retryIdentifiers.contains(c.identifier()))
-                        .collect(Collectors.toList());
-        commitCallbacks.forEach(c -> c.call(succeededCommittables));
-
-        List<ManifestCommittable> retryCommittables =
-                committables.stream()
-                        .filter(c -> retryIdentifiers.contains(c.identifier()))
                         // identifier must be in increasing order
                         .sorted(Comparator.comparingLong(ManifestCommittable::identifier))
                         .collect(Collectors.toList());
-        if (retryCommittables.size() > 0) {
+        List<ManifestCommittable> retryCommittables = commit.filterCommitted(sortedCommittables);
+
+        if (!retryCommittables.isEmpty()) {
             checkFilesExistence(retryCommittables);
-            commitMultiple(retryCommittables, true);
+            commitMultiple(retryCommittables, checkAppendFiles);
         }
         return retryCommittables.size();
     }
@@ -370,9 +359,7 @@ public class TableCommitImpl implements InnerTableCommit {
 
     @Override
     public void close() throws Exception {
-        for (CommitCallback commitCallback : commitCallbacks) {
-            IOUtils.closeQuietly(commitCallback);
-        }
+        commit.close();
         IOUtils.closeQuietly(lock);
         expireMainExecutor.shutdownNow();
     }

@@ -19,13 +19,13 @@
 package org.apache.paimon.flink.sink.cdc;
 
 import org.apache.paimon.catalog.Catalog;
-import org.apache.paimon.flink.FlinkConnectorOptions;
 import org.apache.paimon.flink.sink.CommittableStateManager;
 import org.apache.paimon.flink.sink.Committer;
 import org.apache.paimon.flink.sink.CommitterOperator;
 import org.apache.paimon.flink.sink.FlinkSink;
 import org.apache.paimon.flink.sink.FlinkStreamPartitioner;
 import org.apache.paimon.flink.sink.MultiTableCommittable;
+import org.apache.paimon.flink.sink.MultiTableCommittableChannelComputer;
 import org.apache.paimon.flink.sink.MultiTableCommittableTypeInfo;
 import org.apache.paimon.flink.sink.RestoreAndFailCommittableStateManager;
 import org.apache.paimon.flink.sink.StoreMultiCommitter;
@@ -88,8 +88,7 @@ public class FlinkCdcMultiTableSink implements Serializable {
                         state,
                         ioManager,
                         isOverwrite,
-                        FlinkConnectorOptions.prepareCommitWaitCompaction(
-                                table.coreOptions().toConfiguration()),
+                        table.coreOptions().prepareCommitWaitCompaction(),
                         true,
                         memoryPoolFactory,
                         metricGroup);

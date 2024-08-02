@@ -77,7 +77,7 @@ under the License.
         <paimon.shade.guava.version>30.1.1-jre</paimon.shade.guava.version>
         <paimon.shade.caffeine.version>2.9.3</paimon.shade.caffeine.version>
         <paimon.shade.netty.version>4.1.100.Final</paimon.shade.netty.version>
-        <antlr4.version>4.8</antlr4.version>
+        <antlr4.version>4.9.3</antlr4.version>
         <hadoop.version>2.8.5</hadoop.version>
         <scala.version>2.12.15</scala.version>
         <scala.binary.version>2.12</scala.binary.version>
@@ -101,10 +101,11 @@ under the License.
         <test.randomization.seed/>
         <test.unit.pattern>**/*Test.*</test.unit.pattern>
         <test.flink.main.version>1.19</test.flink.main.version>
-        <test.flink.version>1.19.0</test.flink.version>
+        <test.flink.version>1.19.1</test.flink.version>
         <!-- TODO upgrade after connector releases x-1.19 version -->
         <test.flink.connector.kafka.version>3.0.1-1.18</test.flink.connector.kafka.version>
 
+        <zstd-jni.version>1.5.5-11</zstd-jni.version>
         <janino.version>3.0.11</janino.version>
         <mockito.version>3.4.6</mockito.version>
         <jaxb.api.version>2.3.1</jaxb.api.version>
@@ -114,7 +115,6 @@ under the License.
         <kafka.version>3.2.3</kafka.version>
         <scala-maven-plugin.version>3.2.2</scala-maven-plugin.version>
         <scalatest-maven-plugin.version>2.1.0</scalatest-maven-plugin.version>
-        <antlr4-maven-plugin.version>4.8</antlr4-maven-plugin.version>
         <jsoup.version>1.15.3</jsoup.version>
         <CodeCacheSize>128m</CodeCacheSize>
         <extraJavaTestArgs>
@@ -343,12 +343,12 @@ under the License.
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-jar-plugin</artifactId>
-                <version>2.4</version><!--$NO-MVN-MAN-VER$-->
+                <version>3.4.2</version><!--$NO-MVN-MAN-VER$-->
                 <configuration>
                     <archive>
                         <manifestEntries>
                             <SCM-Revision>${git.commit.id}</SCM-Revision>
-                            <SCM-Branch>${git.branch}</SCM-Branch>
+                            <SCM-Branch>${git.branch}</SCM-Branch><!-- TODO: remove this non-reproducible config once maven-jar-plugin upgrade works -->
                         </manifestEntries>
                         <manifest>
                             <addDefaultImplementationEntries>true</addDefaultImplementationEntries>
@@ -776,6 +776,7 @@ under the License.
                         <compilerArgs>
                             <!-- Prevents recompilation due to missing package-info.class, see MCOMPILER-205 -->
                             <arg>-Xpkginfo:always</arg>
+                            <arg>-Xlint:deprecation</arg>
                         </compilerArgs>
                     </configuration>
                 </plugin>

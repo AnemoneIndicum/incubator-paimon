@@ -32,7 +32,6 @@ import org.apache.parquet.schema.ConversionPatterns;
 import org.apache.parquet.schema.GroupType;
 import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.parquet.schema.MessageType;
-import org.apache.parquet.schema.OriginalType;
 import org.apache.parquet.schema.PrimitiveType;
 import org.apache.parquet.schema.Type;
 import org.apache.parquet.schema.Types;
@@ -59,7 +58,9 @@ public class ParquetSchemaConverter {
     }
 
     public static Type convertToParquetType(String name, DataType type) {
-        return convertToParquetType(name, type, Type.Repetition.OPTIONAL);
+        Type.Repetition repetition =
+                type.isNullable() ? Type.Repetition.OPTIONAL : Type.Repetition.REQUIRED;
+        return convertToParquetType(name, type, repetition);
     }
 
     private static Type convertToParquetType(
@@ -68,7 +69,7 @@ public class ParquetSchemaConverter {
             case CHAR:
             case VARCHAR:
                 return Types.primitive(PrimitiveType.PrimitiveTypeName.BINARY, repetition)
-                        .as(OriginalType.UTF8)
+                        .as(LogicalTypeAnnotation.stringType())
                         .named(name);
             case BOOLEAN:
                 return Types.primitive(PrimitiveType.PrimitiveTypeName.BOOLEAN, repetition)
@@ -95,9 +96,13 @@ public class ParquetSchemaConverter {
                             .named(name);
                 }
             case TINYINT:
-                return Types.primitive(INT32, repetition).as(OriginalType.INT_8).named(name);
+                return Types.primitive(INT32, repetition)
+                        .as(LogicalTypeAnnotation.intType(8, true))
+                        .named(name);
             case SMALLINT:
-                return Types.primitive(INT32, repetition).as(OriginalType.INT_16).named(name);
+                return Types.primitive(INT32, repetition)
+                        .as(LogicalTypeAnnotation.intType(16, true))
+                        .named(name);
             case INTEGER:
                 return Types.primitive(INT32, repetition).named(name);
             case BIGINT:
@@ -109,9 +114,15 @@ public class ParquetSchemaConverter {
                 return Types.primitive(PrimitiveType.PrimitiveTypeName.DOUBLE, repetition)
                         .named(name);
             case DATE:
-                return Types.primitive(INT32, repetition).as(OriginalType.DATE).named(name);
+                return Types.primitive(INT32, repetition)
+                        .as(LogicalTypeAnnotation.dateType())
+                        .named(name);
             case TIME_WITHOUT_TIME_ZONE:
-                return Types.primitive(INT32, repetition).as(OriginalType.TIME_MILLIS).named(name);
+                return Types.primitive(INT32, repetition)
+                        .as(
+                                LogicalTypeAnnotation.timeType(
+                                        true, LogicalTypeAnnotation.TimeUnit.MILLIS))
+                        .named(name);
             case TIMESTAMP_WITHOUT_TIME_ZONE:
                 TimestampType timestampType = (TimestampType) type;
                 return createTimestampWithLogicalType(
@@ -128,19 +139,31 @@ public class ParquetSchemaConverter {
                         convertToParquetType(LIST_ELEMENT_NAME, arrayType.getElementType()));
             case MAP:
                 MapType mapType = (MapType) type;
+                DataType keyType = mapType.getKeyType();
+                if (keyType.isNullable()) {
+                    // key is nullable, but Parquet does not support nullable keys, so we configure
+                    // it as not nullable
+                    keyType = keyType.copy(false);
+                }
                 return ConversionPatterns.mapType(
                         repetition,
                         name,
                         MAP_REPEATED_NAME,
-                        convertToParquetType("key", mapType.getKeyType()),
+                        convertToParquetType("key", keyType),
                         convertToParquetType("value", mapType.getValueType()));
             case MULTISET:
                 MultisetType multisetType = (MultisetType) type;
+                DataType elementType = multisetType.getElementType();
+                if (elementType.isNullable()) {
+                    // element type is nullable, but Parquet does not support nullable map keys,
+                    // so we configure it as not nullable
+                    elementType = elementType.copy(false);
+                }
                 return ConversionPatterns.mapType(
                         repetition,
                         name,
                         MAP_REPEATED_NAME,
-                        convertToParquetType("key", multisetType.getElementType()),
+                        convertToParquetType("key", elementType),
                         convertToParquetType("value", new IntType(false)));
             case ROW:
                 RowType rowType = (RowType) type;

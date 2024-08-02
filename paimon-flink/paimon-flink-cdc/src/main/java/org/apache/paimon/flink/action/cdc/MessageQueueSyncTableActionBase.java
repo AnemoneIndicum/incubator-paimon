@@ -79,7 +79,8 @@ public abstract class MessageQueueSyncTableActionBase extends SyncTableActionBas
                 tableConfig,
                 retrievedSchema,
                 metadataConverters,
-                caseSensitive,
+                allowUpperCase,
+                true,
                 false);
     }
 }

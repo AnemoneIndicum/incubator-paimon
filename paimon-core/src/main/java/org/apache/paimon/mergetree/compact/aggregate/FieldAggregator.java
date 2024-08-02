@@ -23,6 +23,7 @@ import org.apache.paimon.types.ArrayType;
 import org.apache.paimon.types.DataType;
 import org.apache.paimon.types.MapType;
 import org.apache.paimon.types.RowType;
+import org.apache.paimon.types.VarBinaryType;
 
 import javax.annotation.Nullable;
 
@@ -116,6 +117,27 @@ public abstract class FieldAggregator implements Serializable {
                                 fieldType);
                         fieldAggregator = new FieldMergeMapAgg((MapType) fieldType);
                         break;
+                    case FieldThetaSketchAgg.NAME:
+                        checkArgument(
+                                fieldType instanceof VarBinaryType,
+                                "Data type for theta sketch column must be 'VarBinaryType' but was '%s'.",
+                                fieldType);
+                        fieldAggregator = new FieldThetaSketchAgg((VarBinaryType) fieldType);
+                        break;
+                    case FieldRoaringBitmap32Agg.NAME:
+                        checkArgument(
+                                fieldType instanceof VarBinaryType,
+                                "Data type for roaring bitmap column must be 'VarBinaryType' but was '%s'.",
+                                fieldType);
+                        fieldAggregator = new FieldRoaringBitmap32Agg((VarBinaryType) fieldType);
+                        break;
+                    case FieldRoaringBitmap64Agg.NAME:
+                        checkArgument(
+                                fieldType instanceof VarBinaryType,
+                                "Data type for roaring bitmap column must be 'VarBinaryType' but was '%s'.",
+                                fieldType);
+                        fieldAggregator = new FieldRoaringBitmap64Agg((VarBinaryType) fieldType);
+                        break;
                     default:
                         throw new RuntimeException(
                                 String.format(
@@ -149,6 +171,10 @@ public abstract class FieldAggregator implements Serializable {
     abstract String name();
 
     public abstract Object agg(Object accumulator, Object inputField);
+
+    public Object aggReversed(Object accumulator, Object inputField) {
+        return agg(inputField, accumulator);
+    }
 
     /** reset the aggregator to a clean start state. */
     public void reset() {}

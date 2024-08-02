@@ -38,6 +38,11 @@ public class CoreOptionsTest {
         conf.set(CoreOptions.SCAN_TIMESTAMP_MILLIS, System.currentTimeMillis());
         assertThat(new CoreOptions(conf).startupMode())
                 .isEqualTo(CoreOptions.StartupMode.FROM_TIMESTAMP);
+
+        conf = new Options();
+        conf.set(CoreOptions.SCAN_TIMESTAMP, "2023-12-06 12:12:12");
+        assertThat(new CoreOptions(conf).startupMode())
+                .isEqualTo(CoreOptions.StartupMode.FROM_TIMESTAMP);
     }
 
     @Test
@@ -58,5 +63,27 @@ public class CoreOptionsTest {
         conf.set(CoreOptions.SCAN_MODE, CoreOptions.StartupMode.FULL);
         assertThat(new CoreOptions(conf).startupMode())
                 .isEqualTo(CoreOptions.StartupMode.LATEST_FULL);
+    }
+
+    @Test
+    public void testPrepareCommitWaitCompaction() {
+        Options conf = new Options();
+        CoreOptions options = new CoreOptions(conf);
+
+        assertThat(options.prepareCommitWaitCompaction()).isFalse();
+
+        conf.set(CoreOptions.DELETION_VECTORS_ENABLED, true);
+        assertThat(options.prepareCommitWaitCompaction()).isTrue();
+        conf.remove(CoreOptions.DELETION_VECTORS_ENABLED.key());
+
+        conf.set(CoreOptions.MERGE_ENGINE, CoreOptions.MergeEngine.FIRST_ROW);
+        assertThat(options.prepareCommitWaitCompaction()).isTrue();
+        conf.remove(CoreOptions.MERGE_ENGINE.key());
+
+        conf.set(CoreOptions.CHANGELOG_PRODUCER, CoreOptions.ChangelogProducer.LOOKUP);
+        assertThat(options.prepareCommitWaitCompaction()).isTrue();
+
+        conf.set(CoreOptions.LOOKUP_WAIT, false);
+        assertThat(options.prepareCommitWaitCompaction()).isFalse();
     }
 }

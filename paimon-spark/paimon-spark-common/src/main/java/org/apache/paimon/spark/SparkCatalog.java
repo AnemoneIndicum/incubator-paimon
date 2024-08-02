@@ -26,7 +26,6 @@ import org.apache.paimon.options.Options;
 import org.apache.paimon.schema.Schema;
 import org.apache.paimon.schema.SchemaChange;
 import org.apache.paimon.spark.catalog.SparkBaseCatalog;
-import org.apache.paimon.table.Table;
 
 import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.catalyst.analysis.NamespaceAlreadyExistsException;
@@ -40,6 +39,7 @@ import org.apache.spark.sql.connector.catalog.TableChange;
 import org.apache.spark.sql.connector.expressions.FieldReference;
 import org.apache.spark.sql.connector.expressions.NamedReference;
 import org.apache.spark.sql.connector.expressions.Transform;
+import org.apache.spark.sql.internal.SessionState;
 import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.sql.util.CaseInsensitiveStringMap;
@@ -53,8 +53,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+import static org.apache.paimon.options.CatalogOptions.ALLOW_UPPER_CASE;
 import static org.apache.paimon.spark.SparkCatalogOptions.DEFAULT_DATABASE;
 import static org.apache.paimon.spark.SparkTypeUtils.toPaimonType;
+import static org.apache.paimon.spark.util.OptionUtils.copyWithSQLConf;
+import static org.apache.paimon.spark.util.OptionUtils.mergeSQLConf;
 import static org.apache.paimon.utils.Preconditions.checkArgument;
 
 /** Spark {@link TableCatalog} for paimon. */
@@ -71,10 +74,18 @@ public class SparkCatalog extends SparkBaseCatalog {
     @Override
     public void initialize(String name, CaseInsensitiveStringMap options) {
         this.catalogName = name;
+        Map<String, String> newOptions = new HashMap<>(options.asCaseSensitiveMap());
+        SessionState sessionState = SparkSession.active().sessionState();
+
         CatalogContext catalogContext =
-                CatalogContext.create(
-                        Options.fromMap(options),
-                        SparkSession.active().sessionState().newHadoopConf());
+                CatalogContext.create(Options.fromMap(options), sessionState.newHadoopConf());
+
+        // if spark is case-insensitive, set allow upper case to catalog
+        if (!sessionState.conf().caseSensitiveAnalysis()) {
+            newOptions.put(ALLOW_UPPER_CASE.key(), "true");
+        }
+        options = new CaseInsensitiveStringMap(newOptions);
+
         this.catalog = CatalogFactory.createCatalog(catalogContext);
         this.defaultDatabase =
                 options.getOrDefault(DEFAULT_DATABASE.key(), DEFAULT_DATABASE.defaultValue());
@@ -209,22 +220,25 @@ public class SparkCatalog extends SparkBaseCatalog {
     }
 
     @Override
-    public SparkTable loadTable(Identifier ident) throws NoSuchTableException {
+    public void invalidateTable(Identifier ident) {
         try {
-            return new SparkTable(load(ident));
-        } catch (Catalog.TableNotExistException e) {
-            throw new NoSuchTableException(ident);
+            catalog.invalidateTable(toIdentifier(ident));
+        } catch (NoSuchTableException ignored) {
         }
+    }
+
+    @Override
+    public SparkTable loadTable(Identifier ident) throws NoSuchTableException {
+        return loadSparkTable(ident, Collections.emptyMap());
     }
 
     /**
      * Do not annotate with <code>@override</code> here to maintain compatibility with Spark 3.2-.
      */
     public SparkTable loadTable(Identifier ident, String version) throws NoSuchTableException {
-        Table table = loadPaimonTable(ident);
         LOG.info("Time travel to version '{}'.", version);
-        return new SparkTable(
-                table.copy(Collections.singletonMap(CoreOptions.SCAN_VERSION.key(), version)));
+        return loadSparkTable(
+                ident, Collections.singletonMap(CoreOptions.SCAN_VERSION.key(), version));
     }
 
     /**
@@ -234,22 +248,13 @@ public class SparkCatalog extends SparkBaseCatalog {
      * TableCatalog#loadTable(Identifier, long)}). But in SQL you should use seconds.
      */
     public SparkTable loadTable(Identifier ident, long timestamp) throws NoSuchTableException {
-        Table table = loadPaimonTable(ident);
         // Paimon's timestamp use millisecond
         timestamp = timestamp / 1000;
-
         LOG.info("Time travel target timestamp is {} milliseconds.", timestamp);
-
-        Options option = new Options().set(CoreOptions.SCAN_TIMESTAMP_MILLIS, timestamp);
-        return new SparkTable(table.copy(option.toMap()));
-    }
-
-    private Table loadPaimonTable(Identifier ident) throws NoSuchTableException {
-        try {
-            return load(ident);
-        } catch (Catalog.TableNotExistException e) {
-            throw new NoSuchTableException(ident);
-        }
+        return loadSparkTable(
+                ident,
+                Collections.singletonMap(
+                        CoreOptions.SCAN_TIMESTAMP_MILLIS.key(), String.valueOf(timestamp)));
     }
 
     @Override
@@ -390,7 +395,7 @@ public class SparkCatalog extends SparkBaseCatalog {
                                     return references.length == 1
                                             && references[0] instanceof FieldReference;
                                 }));
-        Map<String, String> normalizedProperties = new HashMap<>(properties);
+        Map<String, String> normalizedProperties = mergeSQLConf(properties);
         normalizedProperties.remove(PRIMARY_KEY_IDENTIFIER);
         normalizedProperties.remove(TableCatalog.PROP_COMMENT);
         String pkAsString = properties.get(PRIMARY_KEY_IDENTIFIER);
@@ -459,10 +464,14 @@ public class SparkCatalog extends SparkBaseCatalog {
         return new org.apache.paimon.catalog.Identifier(ident.namespace()[0], ident.name());
     }
 
-    /** Load a Table Store table. */
-    protected org.apache.paimon.table.Table load(Identifier ident)
-            throws Catalog.TableNotExistException, NoSuchTableException {
-        return catalog.getTable(toIdentifier(ident));
+    protected SparkTable loadSparkTable(Identifier ident, Map<String, String> extraOptions)
+            throws NoSuchTableException {
+        try {
+            return new SparkTable(
+                    copyWithSQLConf(catalog.getTable(toIdentifier(ident)), extraOptions));
+        } catch (Catalog.TableNotExistException e) {
+            throw new NoSuchTableException(ident);
+        }
     }
 
     // --------------------- unsupported methods ----------------------------

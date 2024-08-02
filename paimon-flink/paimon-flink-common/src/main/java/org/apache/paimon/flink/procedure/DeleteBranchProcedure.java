@@ -20,7 +20,6 @@ package org.apache.paimon.flink.procedure;
 
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.Identifier;
-import org.apache.paimon.table.Table;
 
 import org.apache.flink.table.procedure.ProcedureContext;
 
@@ -40,11 +39,9 @@ public class DeleteBranchProcedure extends ProcedureBase {
         return IDENTIFIER;
     }
 
-    public String[] call(ProcedureContext procedureContext, String tableId, String branchName)
+    public String[] call(ProcedureContext procedureContext, String tableId, String branchStr)
             throws Catalog.TableNotExistException {
-        Table table = catalog.getTable(Identifier.fromString(tableId));
-        table.deleteBranch(branchName);
-
+        catalog.getTable(Identifier.fromString(tableId)).deleteBranches(branchStr);
         return new String[] {"Success"};
     }
 }

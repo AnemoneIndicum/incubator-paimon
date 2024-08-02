@@ -20,8 +20,6 @@ package org.apache.paimon.compression;
 
 import io.airlift.compress.lzo.LzoCompressor;
 import io.airlift.compress.lzo.LzoDecompressor;
-import io.airlift.compress.zstd.ZstdCompressor;
-import io.airlift.compress.zstd.ZstdDecompressor;
 
 import javax.annotation.Nullable;
 
@@ -30,6 +28,8 @@ import javax.annotation.Nullable;
  * compressors and decompressors.
  */
 public interface BlockCompressionFactory {
+
+    BlockCompressionType getCompressionType();
 
     BlockCompressor getCompressor();
 
@@ -41,12 +41,31 @@ public interface BlockCompressionFactory {
         switch (compression.toUpperCase()) {
             case "NONE":
                 return null;
+            case "ZSTD":
+                return new ZstdBlockCompressionFactory();
             case "LZ4":
                 return new Lz4BlockCompressionFactory();
             case "LZO":
-                return new AirCompressorFactory(new LzoCompressor(), new LzoDecompressor());
-            case "ZSTD":
-                return new AirCompressorFactory(new ZstdCompressor(), new ZstdDecompressor());
+                return new AirCompressorFactory(
+                        BlockCompressionType.LZO, new LzoCompressor(), new LzoDecompressor());
+            default:
+                throw new IllegalStateException("Unknown CompressionMethod " + compression);
+        }
+    }
+
+    /** Creates {@link BlockCompressionFactory} according to the {@link BlockCompressionType}. */
+    @Nullable
+    static BlockCompressionFactory create(BlockCompressionType compression) {
+        switch (compression) {
+            case NONE:
+                return null;
+            case ZSTD:
+                return new ZstdBlockCompressionFactory();
+            case LZ4:
+                return new Lz4BlockCompressionFactory();
+            case LZO:
+                return new AirCompressorFactory(
+                        BlockCompressionType.LZO, new LzoCompressor(), new LzoDecompressor());
             default:
                 throw new IllegalStateException("Unknown CompressionMethod " + compression);
         }

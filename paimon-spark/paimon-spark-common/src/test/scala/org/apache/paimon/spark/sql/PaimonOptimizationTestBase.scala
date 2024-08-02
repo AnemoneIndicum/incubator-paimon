@@ -20,13 +20,12 @@ package org.apache.paimon.spark.sql
 
 import org.apache.paimon.Snapshot.CommitKind
 import org.apache.paimon.spark.PaimonSparkTestBase
-import org.apache.paimon.spark.catalyst.optimizer.MergePaimonScalarSubqueriers
+import org.apache.paimon.spark.catalyst.optimizer.MergePaimonScalarSubqueries
 
 import org.apache.spark.sql.Row
 import org.apache.spark.sql.catalyst.expressions.{Attribute, CreateNamedStruct, Literal, NamedExpression}
 import org.apache.spark.sql.catalyst.plans.logical.{CTERelationDef, LogicalPlan, OneRowRelation, WithCTE}
 import org.apache.spark.sql.catalyst.rules.RuleExecutor
-import org.apache.spark.sql.execution.datasources.v2.DataSourceV2ScanRelation
 import org.apache.spark.sql.functions._
 import org.junit.jupiter.api.Assertions
 
@@ -40,7 +39,7 @@ abstract class PaimonOptimizationTestBase extends PaimonSparkTestBase {
 
   private object Optimize extends RuleExecutor[LogicalPlan] {
     val batches: immutable.Seq[Batch] =
-      Batch("MergePaimonScalarSubqueries", Once, MergePaimonScalarSubqueriers) :: Nil
+      Batch("MergePaimonScalarSubqueries", Once, MergePaimonScalarSubqueries) :: Nil
   }
 
   test("Paimon Optimization: merge scalar subqueries") {
@@ -101,15 +100,6 @@ abstract class PaimonOptimizationTestBase extends PaimonSparkTestBase {
       spark.sql(s"INSERT INTO T VALUES (1, 'a', 'p1'), (2, 'b', 'p1'), (3, 'c', 'p2')")
 
       val sqlText = "SELECT * FROM T WHERE id = 1 AND pt = 'p1' LIMIT 1"
-      def getPaimonScan(sqlText: String) = {
-        spark
-          .sql(sqlText)
-          .queryExecution
-          .optimizedPlan
-          .collectFirst { case relation: DataSourceV2ScanRelation => relation }
-          .get
-          .scan
-      }
       Assertions.assertEquals(getPaimonScan(sqlText), getPaimonScan(sqlText))
     }
   }

@@ -20,6 +20,7 @@ package org.apache.paimon.flink.sink.partition;
 
 import org.apache.paimon.data.BinaryRow;
 import org.apache.paimon.metastore.MetastoreClient;
+import org.apache.paimon.partition.actions.AddDonePartitionAction;
 
 import org.junit.jupiter.api.Test;
 
@@ -51,6 +52,12 @@ class AddDonePartitionActionTest {
 
                     @Override
                     public void deletePartition(LinkedHashMap<String, String> partitionSpec) {
+                        throw new UnsupportedOperationException();
+                    }
+
+                    @Override
+                    public void markDone(LinkedHashMap<String, String> partitionSpec)
+                            throws Exception {
                         throw new UnsupportedOperationException();
                     }
 

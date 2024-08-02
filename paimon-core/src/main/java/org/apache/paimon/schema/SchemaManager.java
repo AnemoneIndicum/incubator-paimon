@@ -42,8 +42,10 @@ import org.apache.paimon.types.DataTypeCasts;
 import org.apache.paimon.types.DataTypeVisitor;
 import org.apache.paimon.types.ReassignFieldId;
 import org.apache.paimon.types.RowType;
+import org.apache.paimon.utils.BranchManager;
 import org.apache.paimon.utils.JsonSerdeUtil;
 import org.apache.paimon.utils.Preconditions;
+import org.apache.paimon.utils.SnapshotManager;
 import org.apache.paimon.utils.StringUtils;
 
 import javax.annotation.Nullable;
@@ -64,10 +66,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
-import static org.apache.paimon.catalog.AbstractCatalog.DB_SUFFIX;
+import static org.apache.paimon.catalog.Catalog.DB_SUFFIX;
 import static org.apache.paimon.catalog.Identifier.UNKNOWN_DATABASE;
 import static org.apache.paimon.utils.BranchManager.DEFAULT_MAIN_BRANCH;
-import static org.apache.paimon.utils.BranchManager.getBranchPath;
 import static org.apache.paimon.utils.FileUtils.listVersionedFiles;
 import static org.apache.paimon.utils.Preconditions.checkState;
 
@@ -108,14 +109,14 @@ public class SchemaManager implements Serializable {
         try {
             return listVersionedFiles(fileIO, schemaDirectory(), SCHEMA_PREFIX)
                     .reduce(Math::max)
-                    .map(id -> schema(id));
+                    .map(this::schema);
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
     }
 
     public List<TableSchema> listAll() {
-        return listAllIds().stream().map(id -> schema(id)).collect(Collectors.toList());
+        return listAllIds().stream().map(this::schema).collect(Collectors.toList());
     }
 
     /** List all schema IDs. */
@@ -184,24 +185,32 @@ public class SchemaManager implements Serializable {
     public TableSchema commitChanges(List<SchemaChange> changes)
             throws Catalog.TableNotExistException, Catalog.ColumnAlreadyExistException,
                     Catalog.ColumnNotExistException {
+        SnapshotManager snapshotManager = new SnapshotManager(fileIO, tableRoot, branch);
+        boolean hasSnapshots = (snapshotManager.latestSnapshotId() != null);
+
         while (true) {
-            TableSchema schema =
+            TableSchema oldTableSchema =
                     latest().orElseThrow(
                                     () ->
                                             new Catalog.TableNotExistException(
-                                                    fromPath(tableRoot.toString(), true)));
-            Map<String, String> newOptions = new HashMap<>(schema.options());
-            List<DataField> newFields = new ArrayList<>(schema.fields());
-            AtomicInteger highestFieldId = new AtomicInteger(schema.highestFieldId());
-            String newComment = schema.comment();
+                                                    identifierFromPath(
+                                                            tableRoot.toString(), true, branch)));
+            Map<String, String> newOptions = new HashMap<>(oldTableSchema.options());
+            List<DataField> newFields = new ArrayList<>(oldTableSchema.fields());
+            AtomicInteger highestFieldId = new AtomicInteger(oldTableSchema.highestFieldId());
+            String newComment = oldTableSchema.comment();
             for (SchemaChange change : changes) {
                 if (change instanceof SetOption) {
                     SetOption setOption = (SetOption) change;
-                    checkAlterTableOption(setOption.key());
+                    if (hasSnapshots) {
+                        checkAlterTableOption(setOption.key());
+                    }
                     newOptions.put(setOption.key(), setOption.value());
                 } else if (change instanceof RemoveOption) {
                     RemoveOption removeOption = (RemoveOption) change;
-                    checkAlterTableOption(removeOption.key());
+                    if (hasSnapshots) {
+                        checkAlterTableOption(removeOption.key());
+                    }
                     newOptions.remove(removeOption.key());
                 } else if (change instanceof UpdateComment) {
                     UpdateComment updateComment = (UpdateComment) change;
@@ -211,13 +220,14 @@ public class SchemaManager implements Serializable {
                     SchemaChange.Move move = addColumn.move();
                     if (newFields.stream().anyMatch(f -> f.name().equals(addColumn.fieldName()))) {
                         throw new Catalog.ColumnAlreadyExistException(
-                                fromPath(tableRoot.toString(), true), addColumn.fieldName());
+                                identifierFromPath(tableRoot.toString(), true, branch),
+                                addColumn.fieldName());
                     }
                     Preconditions.checkArgument(
                             addColumn.dataType().isNullable(),
                             "Column %s cannot specify NOT NULL in the %s table.",
                             addColumn.fieldName(),
-                            fromPath(tableRoot.toString(), true).getFullName());
+                            identifierFromPath(tableRoot.toString(), true, branch).getFullName());
                     int id = highestFieldId.incrementAndGet();
                     DataType dataType =
                             ReassignFieldId.reassign(addColumn.dataType(), highestFieldId);
@@ -245,10 +255,11 @@ public class SchemaManager implements Serializable {
 
                 } else if (change instanceof RenameColumn) {
                     RenameColumn rename = (RenameColumn) change;
-                    validateNotPrimaryAndPartitionKey(schema, rename.fieldName());
+                    validateNotPrimaryAndPartitionKey(oldTableSchema, rename.fieldName());
                     if (newFields.stream().anyMatch(f -> f.name().equals(rename.newName()))) {
                         throw new Catalog.ColumnAlreadyExistException(
-                                fromPath(tableRoot.toString(), true), rename.fieldName());
+                                identifierFromPath(tableRoot.toString(), true, branch),
+                                rename.fieldName());
                     }
 
                     updateNestedColumn(
@@ -263,18 +274,19 @@ public class SchemaManager implements Serializable {
                                             field.description()));
                 } else if (change instanceof DropColumn) {
                     DropColumn drop = (DropColumn) change;
-                    validateNotPrimaryAndPartitionKey(schema, drop.fieldName());
+                    validateNotPrimaryAndPartitionKey(oldTableSchema, drop.fieldName());
                     if (!newFields.removeIf(
                             f -> f.name().equals(((DropColumn) change).fieldName()))) {
                         throw new Catalog.ColumnNotExistException(
-                                fromPath(tableRoot.toString(), true), drop.fieldName());
+                                identifierFromPath(tableRoot.toString(), true, branch),
+                                drop.fieldName());
                     }
                     if (newFields.isEmpty()) {
                         throw new IllegalArgumentException("Cannot drop all fields in table");
                     }
                 } else if (change instanceof UpdateColumnType) {
                     UpdateColumnType update = (UpdateColumnType) change;
-                    if (schema.partitionKeys().contains(update.fieldName())) {
+                    if (oldTableSchema.partitionKeys().contains(update.fieldName())) {
                         throw new IllegalArgumentException(
                                 String.format(
                                         "Cannot update partition column [%s] type in the table[%s].",
@@ -310,7 +322,7 @@ public class SchemaManager implements Serializable {
                     UpdateColumnNullability update = (UpdateColumnNullability) change;
                     if (update.fieldNames().length == 1
                             && update.newNullability()
-                            && schema.primaryKeys().contains(update.fieldNames()[0])) {
+                            && oldTableSchema.primaryKeys().contains(update.fieldNames()[0])) {
                         throw new UnsupportedOperationException(
                                 "Cannot change nullability of primary key");
                     }
@@ -339,52 +351,104 @@ public class SchemaManager implements Serializable {
                 } else if (change instanceof UpdateColumnPosition) {
                     UpdateColumnPosition update = (UpdateColumnPosition) change;
                     SchemaChange.Move move = update.move();
-
-                    // key: name ; value : index
-                    Map<String, Integer> map = new HashMap<>();
-                    for (int i = 0; i < newFields.size(); i++) {
-                        map.put(newFields.get(i).name(), i);
-                    }
-
-                    int fieldIndex = map.get(move.fieldName());
-                    int refIndex = 0;
-                    if (move.type().equals(SchemaChange.Move.MoveType.FIRST)) {
-                        checkMoveIndexEqual(move, fieldIndex, refIndex);
-                        newFields.add(refIndex, newFields.remove(fieldIndex));
-                    } else if (move.type().equals(SchemaChange.Move.MoveType.AFTER)) {
-                        refIndex = map.get(move.referenceFieldName());
-                        checkMoveIndexEqual(move, fieldIndex, refIndex);
-                        if (fieldIndex > refIndex) {
-                            newFields.add(refIndex + 1, newFields.remove(fieldIndex));
-                        } else {
-                            newFields.add(refIndex, newFields.remove(fieldIndex));
-                        }
-                    }
-
+                    applyMove(newFields, move);
                 } else {
                     throw new UnsupportedOperationException(
                             "Unsupported change: " + change.getClass());
                 }
             }
 
-            TableSchema newSchema =
-                    new TableSchema(
-                            schema.id() + 1,
+            // We change TableSchema to Schema, because we want to deal with primary-key and
+            // partition in options.
+            Schema newSchema =
+                    new Schema(
                             newFields,
-                            highestFieldId.get(),
-                            schema.partitionKeys(),
-                            schema.primaryKeys(),
+                            oldTableSchema.partitionKeys(),
+                            oldTableSchema.primaryKeys(),
                             newOptions,
                             newComment);
+            TableSchema newTableSchema =
+                    new TableSchema(
+                            oldTableSchema.id() + 1,
+                            newSchema.fields(),
+                            highestFieldId.get(),
+                            newSchema.partitionKeys(),
+                            newSchema.primaryKeys(),
+                            newSchema.options(),
+                            newSchema.comment());
 
             try {
-                boolean success = commit(newSchema);
+                boolean success = commit(newTableSchema);
                 if (success) {
-                    return newSchema;
+                    return newTableSchema;
                 }
             } catch (Exception e) {
                 throw new RuntimeException(e);
             }
+        }
+    }
+
+    public void applyMove(List<DataField> newFields, SchemaChange.Move move) {
+        Map<String, Integer> map = new HashMap<>();
+        for (int i = 0; i < newFields.size(); i++) {
+            map.put(newFields.get(i).name(), i);
+        }
+
+        int fieldIndex = map.getOrDefault(move.fieldName(), -1);
+        if (fieldIndex == -1) {
+            throw new IllegalArgumentException("Field name not found: " + move.fieldName());
+        }
+
+        // Handling FIRST and LAST cases directly since they don't need refIndex
+        switch (move.type()) {
+            case FIRST:
+                checkMoveIndexEqual(move, fieldIndex, 0);
+                moveField(newFields, fieldIndex, 0);
+                return;
+            case LAST:
+                checkMoveIndexEqual(move, fieldIndex, newFields.size() - 1);
+                moveField(newFields, fieldIndex, newFields.size() - 1);
+                return;
+        }
+
+        Integer refIndex = map.getOrDefault(move.referenceFieldName(), -1);
+        if (refIndex == -1) {
+            throw new IllegalArgumentException(
+                    "Reference field name not found: " + move.referenceFieldName());
+        }
+
+        checkMoveIndexEqual(move, fieldIndex, refIndex);
+
+        // For AFTER and BEFORE, adjust the target index based on current and reference positions
+        int targetIndex = refIndex;
+        if (move.type() == SchemaChange.Move.MoveType.AFTER && fieldIndex > refIndex) {
+            targetIndex++;
+        }
+        // Ensure adjustments for moving element forwards or backwards
+        if (move.type() == SchemaChange.Move.MoveType.BEFORE && fieldIndex < refIndex) {
+            targetIndex--;
+        }
+
+        if (targetIndex > (newFields.size() - 1)) {
+            targetIndex = newFields.size() - 1;
+        }
+
+        moveField(newFields, fieldIndex, targetIndex);
+    }
+
+    // Utility method to move a field within the list, handling range checks
+    private void moveField(List<DataField> newFields, int fromIndex, int toIndex) {
+        if (fromIndex < 0 || fromIndex >= newFields.size() || toIndex < 0) {
+            return;
+        }
+        DataField fieldToMove = newFields.remove(fromIndex);
+        newFields.add(toIndex, fieldToMove);
+    }
+
+    private static void checkMoveIndexEqual(SchemaChange.Move move, int fieldIndex, int refIndex) {
+        if (refIndex == fieldIndex) {
+            throw new UnsupportedOperationException(
+                    String.format("Cannot move itself for column %s", move.fieldName()));
         }
     }
 
@@ -403,13 +467,6 @@ public class SchemaManager implements Serializable {
             } catch (Exception e) {
                 throw new RuntimeException("Failed to commit the schema.", e);
             }
-        }
-    }
-
-    private static void checkMoveIndexEqual(SchemaChange.Move move, int fieldIndex, int refIndex) {
-        if (refIndex == fieldIndex) {
-            throw new UnsupportedOperationException(
-                    String.format("Cannot move itself for column %s", move.fieldName()));
         }
     }
 
@@ -458,7 +515,8 @@ public class SchemaManager implements Serializable {
         }
         if (!found) {
             throw new Catalog.ColumnNotExistException(
-                    fromPath(tableRoot.toString(), true), Arrays.toString(updateFieldNames));
+                    identifierFromPath(tableRoot.toString(), true, branch),
+                    Arrays.toString(updateFieldNames));
         }
     }
 
@@ -474,7 +532,8 @@ public class SchemaManager implements Serializable {
     boolean commit(TableSchema newSchema) throws Exception {
         SchemaValidation.validateTableSchema(newSchema);
         Path schemaPath = toSchemaPath(newSchema.id());
-        Callable<Boolean> callable = () -> fileIO.writeFileUtf8(schemaPath, newSchema.toString());
+        Callable<Boolean> callable =
+                () -> fileIO.tryToWriteAtomic(schemaPath, newSchema.toString());
         if (lock == null) {
             return callable.call();
         }
@@ -498,14 +557,17 @@ public class SchemaManager implements Serializable {
         }
     }
 
+    private String branchPath() {
+        return BranchManager.branchPath(tableRoot, branch);
+    }
+
     public Path schemaDirectory() {
-        return new Path(getBranchPath(fileIO, tableRoot, branch) + "/schema");
+        return new Path(branchPath() + "/schema");
     }
 
     @VisibleForTesting
     public Path toSchemaPath(long schemaId) {
-        return new Path(
-                getBranchPath(fileIO, tableRoot, branch) + "/schema/" + SCHEMA_PREFIX + schemaId);
+        return new Path(branchPath() + "/schema/" + SCHEMA_PREFIX + schemaId);
     }
 
     /**
@@ -530,13 +592,22 @@ public class SchemaManager implements Serializable {
         }
     }
 
-    public static Identifier fromPath(String tablePath, boolean ignoreIfUnknownDatabase) {
+    public static Identifier identifierFromPath(String tablePath, boolean ignoreIfUnknownDatabase) {
+        return identifierFromPath(tablePath, ignoreIfUnknownDatabase, null);
+    }
+
+    public static Identifier identifierFromPath(
+            String tablePath, boolean ignoreIfUnknownDatabase, @Nullable String branchName) {
+        if (DEFAULT_MAIN_BRANCH.equals(branchName)) {
+            branchName = null;
+        }
+
         String[] paths = tablePath.split("/");
         if (paths.length < 2) {
             if (!ignoreIfUnknownDatabase) {
                 throw new IllegalArgumentException(
                         String.format(
-                                "Path '%s' is not a legacy path, please use catalog table path instead: 'warehouse_path/your_database.db/your_table'.",
+                                "Path '%s' is not a valid path, please use catalog table path instead: 'warehouse_path/your_database.db/your_table'.",
                                 tablePath));
             }
             return new Identifier(UNKNOWN_DATABASE, paths[0]);
@@ -548,12 +619,13 @@ public class SchemaManager implements Serializable {
             if (!ignoreIfUnknownDatabase) {
                 throw new IllegalArgumentException(
                         String.format(
-                                "Path '%s' is not a legacy path, please use catalog table path instead: 'warehouse_path/your_database.db/your_table'.",
+                                "Path '%s' is not a valid path, please use catalog table path instead: 'warehouse_path/your_database.db/your_table'.",
                                 tablePath));
             }
-            return new Identifier(UNKNOWN_DATABASE, paths[paths.length - 1]);
+            return new Identifier(UNKNOWN_DATABASE, paths[paths.length - 1], branchName, null);
         }
         database = database.substring(0, index);
-        return new Identifier(database, paths[paths.length - 1]);
+
+        return new Identifier(database, paths[paths.length - 1], branchName, null);
     }
 }

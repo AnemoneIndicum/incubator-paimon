@@ -92,6 +92,89 @@ class CreateAndDeleteTagProcedureTest extends PaimonSparkTestBase with StreamTes
                 "CALL paimon.sys.delete_tag(table => 'test.T', tag => 'test_latestSnapshot_tag')"),
               Row(true) :: Nil)
             checkAnswer(spark.sql("SELECT tag_name FROM paimon.test.`T$tags`"), Nil)
+
+            // create test_tag_1 and test_tag_2
+            checkAnswer(
+              spark.sql(
+                "CALL paimon.sys.create_tag(" +
+                  "table => 'test.T', tag => 'test_tag_1', snapshot => 1)"),
+              Row(true) :: Nil)
+
+            checkAnswer(
+              spark.sql(
+                "CALL paimon.sys.create_tag(" +
+                  "table => 'test.T', tag => 'test_tag_2', snapshot => 2)"),
+              Row(true) :: Nil)
+
+            checkAnswer(
+              spark.sql("SELECT tag_name FROM paimon.test.`T$tags`"),
+              Row("test_tag_1") :: Row("test_tag_2") :: Nil)
+
+            // delete test_tag_1 and test_tag_2
+            checkAnswer(
+              spark.sql(
+                "CALL paimon.sys.delete_tag(table => 'test.T', tag => 'test_tag_1,test_tag_2')"),
+              Row(true) :: Nil)
+
+            checkAnswer(spark.sql("SELECT tag_name FROM paimon.test.`T$tags`"), Nil)
+
+          } finally {
+            stream.stop()
+          }
+      }
+    }
+  }
+
+  test("Paimon Procedure: create same tag with same snapshot") {
+    failAfter(streamingTimeout) {
+      withTempDir {
+        checkpointDir =>
+          // define a change-log table and test `forEachBatch` api
+          spark.sql(s"""
+                       |CREATE TABLE T (a INT, b STRING)
+                       |TBLPROPERTIES ('primary-key'='a', 'bucket'='3')
+                       |""".stripMargin)
+          val location = loadTable("T").location().toString
+
+          val inputData = MemoryStream[(Int, String)]
+          val stream = inputData
+            .toDS()
+            .toDF("a", "b")
+            .writeStream
+            .option("checkpointLocation", checkpointDir.getCanonicalPath)
+            .foreachBatch {
+              (batch: Dataset[Row], _: Long) =>
+                batch.write.format("paimon").mode("append").save(location)
+            }
+            .start()
+
+          val query = () => spark.sql("SELECT * FROM T ORDER BY a")
+
+          try {
+            // snapshot-1
+            inputData.addData((1, "a"))
+            stream.processAllAvailable()
+            checkAnswer(query(), Row(1, "a") :: Nil)
+
+            checkAnswer(
+              spark.sql(
+                "CALL paimon.sys.create_tag(" +
+                  "table => 'test.T', tag => 'test_tag', snapshot => 1)"),
+              Row(true) :: Nil)
+            checkAnswer(
+              spark.sql(
+                "SELECT count(time_retained) FROM paimon.test.`T$tags` where tag_name = 'test_tag'"),
+              Row(0) :: Nil)
+
+            checkAnswer(
+              spark.sql(
+                "CALL paimon.sys.create_tag(" +
+                  "table => 'test.T', tag => 'test_tag', time_retained => '5 d', snapshot => 1)"),
+              Row(true) :: Nil)
+            checkAnswer(
+              spark.sql(
+                "SELECT count(time_retained) FROM paimon.test.`T$tags` where tag_name = 'test_tag'"),
+              Row(1) :: Nil)
           } finally {
             stream.stop()
           }

@@ -44,7 +44,7 @@ case class SparkTable(table: Table)
 
   def getTable: Table = table
 
-  override def name: String = table.name
+  override def name: String = table.fullName
 
   override lazy val schema: StructType = SparkTypeUtils.fromPaimonRowType(table.rowType)
 
@@ -70,6 +70,7 @@ case class SparkTable(table: Table)
 
   override def capabilities: JSet[TableCapability] = {
     JEnumSet.of(
+      TableCapability.ACCEPT_ANY_SCHEMA,
       TableCapability.BATCH_READ,
       TableCapability.V1_BATCH_WRITE,
       TableCapability.OVERWRITE_BY_FILTER,

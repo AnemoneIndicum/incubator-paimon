@@ -38,6 +38,8 @@ import org.apache.paimon.types.RowType;
 
 import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.config.TableConfigOptions;
+import org.apache.flink.types.Row;
+import org.apache.flink.util.CloseableIterator;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 
@@ -48,6 +50,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
+
+import static org.apache.paimon.options.CatalogOptions.CACHE_ENABLED;
 
 /** {@link Action} test base. */
 public abstract class ActionITCaseBase extends AbstractTestBase {
@@ -68,7 +72,9 @@ public abstract class ActionITCaseBase extends AbstractTestBase {
         tableName = "test_table_" + UUID.randomUUID();
         commitUser = UUID.randomUUID().toString();
         incrementalIdentifier = 0;
-        catalog = CatalogFactory.createCatalog(CatalogContext.create(new Path(warehouse)));
+        CatalogContext context = CatalogContext.create(new Path(warehouse));
+        context.options().set(CACHE_ENABLED, false);
+        catalog = CatalogFactory.createCatalog(context);
     }
 
     @AfterEach
@@ -185,12 +191,13 @@ public abstract class ActionITCaseBase extends AbstractTestBase {
         }
     }
 
-    protected void callProcedure(String procedureStatement) {
+    protected CloseableIterator<Row> callProcedure(String procedureStatement) {
         // default execution mode
-        callProcedure(procedureStatement, true, false);
+        return callProcedure(procedureStatement, true, false);
     }
 
-    protected void callProcedure(String procedureStatement, boolean isStreaming, boolean dmlSync) {
+    protected CloseableIterator<Row> callProcedure(
+            String procedureStatement, boolean isStreaming, boolean dmlSync) {
         TableEnvironment tEnv;
         if (isStreaming) {
             tEnv = tableEnvironmentBuilder().streamingMode().checkpointIntervalMs(500).build();
@@ -206,6 +213,6 @@ public abstract class ActionITCaseBase extends AbstractTestBase {
                         warehouse));
         tEnv.useCatalog("PAIMON");
 
-        tEnv.executeSql(procedureStatement);
+        return tEnv.executeSql(procedureStatement).collect();
     }
 }

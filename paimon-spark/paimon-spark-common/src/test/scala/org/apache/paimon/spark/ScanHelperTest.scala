@@ -26,7 +26,7 @@ import org.apache.paimon.table.source.{DataSplit, Split}
 
 import org.junit.jupiter.api.Assertions
 
-import java.util.HashMap
+import java.util.{HashMap => JHashMap}
 
 import scala.collection.JavaConverters._
 import scala.collection.mutable
@@ -52,7 +52,7 @@ class ScanHelperTest extends PaimonSparkTestBase {
             .builder()
             .withSnapshot(1)
             .withBucket(0)
-            .withPartition(new BinaryRow(0))
+            .withPartition(BinaryRow.EMPTY_ROW)
             .withDataFiles(files.zipWithIndex.filter(_._2 % splitNum == i).map(_._1).toList.asJava)
             .rawConvertible(true)
             .withBucketPath("no use")
@@ -60,14 +60,36 @@ class ScanHelperTest extends PaimonSparkTestBase {
       }
 
       val fakeScan = new FakeScan()
-      val reshuffled = fakeScan.reshuffleSplits(dataSplits.toArray)
+      val reshuffled = fakeScan.getInputPartitions(dataSplits.toArray)
       Assertions.assertTrue(reshuffled.length > 5)
     }
   }
 
+  test("Paimon: reshuffle one split") {
+    val files = List(
+      DataFileMeta.forAppend("f1.parquet", 750000, 30000, null, 0, 29999, 1, FileSource.APPEND)
+    ).asJava
+
+    val dataSplits: Array[Split] = Array(
+      DataSplit
+        .builder()
+        .withSnapshot(1)
+        .withBucket(0)
+        .withPartition(BinaryRow.EMPTY_ROW)
+        .withDataFiles(files)
+        .rawConvertible(true)
+        .withBucketPath("no use")
+        .build()
+    )
+
+    val fakeScan = new FakeScan()
+    val reshuffled = fakeScan.getInputPartitions(dataSplits)
+    Assertions.assertEquals(1, reshuffled.length)
+  }
+
   class FakeScan extends ScanHelper {
     override val coreOptions: CoreOptions =
-      CoreOptions.fromMap(new HashMap[String, String]())
+      CoreOptions.fromMap(new JHashMap[String, String]())
   }
 
 }

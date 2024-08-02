@@ -27,7 +27,6 @@ import org.apache.paimon.manifest.ManifestCacheFilter;
 import org.apache.paimon.operation.AppendOnlyFileStoreScan;
 import org.apache.paimon.operation.AppendOnlyFileStoreWrite;
 import org.apache.paimon.operation.FileStoreScan;
-import org.apache.paimon.operation.Lock;
 import org.apache.paimon.operation.RawFileSplitRead;
 import org.apache.paimon.predicate.Predicate;
 import org.apache.paimon.reader.RecordReader;
@@ -54,7 +53,7 @@ class AppendOnlyFileStoreTable extends AbstractFileStoreTable {
     private transient AppendOnlyFileStore lazyStore;
 
     AppendOnlyFileStoreTable(FileIO fileIO, Path path, TableSchema tableSchema) {
-        this(fileIO, path, tableSchema, new CatalogEnvironment(Lock.emptyFactory(), null, null));
+        this(fileIO, path, tableSchema, CatalogEnvironment.empty());
     }
 
     AppendOnlyFileStoreTable(
@@ -63,11 +62,6 @@ class AppendOnlyFileStoreTable extends AbstractFileStoreTable {
             TableSchema tableSchema,
             CatalogEnvironment catalogEnvironment) {
         super(fileIO, path, tableSchema, catalogEnvironment);
-    }
-
-    @Override
-    public FileStoreTable copy(TableSchema newTableSchema) {
-        return new AppendOnlyFileStoreTable(fileIO, path, newTableSchema, catalogEnvironment);
     }
 
     @Override
@@ -145,6 +139,7 @@ class AppendOnlyFileStoreTable extends AbstractFileStoreTable {
         AppendOnlyFileStoreWrite writer =
                 store().newWrite(commitUser, manifestFilter).withBucketMode(bucketMode());
         return new TableWriteImpl<>(
+                rowType(),
                 writer,
                 createRowKeyExtractor(),
                 (record, rowKind) -> {

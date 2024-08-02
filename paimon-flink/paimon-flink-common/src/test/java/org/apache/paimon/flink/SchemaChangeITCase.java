@@ -30,6 +30,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.TimeZone;
 import java.util.stream.Collectors;
 
 import static org.apache.paimon.testutils.assertj.PaimonAssertions.anyCauseMatches;
@@ -300,14 +301,14 @@ public class SchemaChangeITCase extends CatalogITCaseBase {
         sql("CREATE TABLE T (a STRING PRIMARY KEY NOT ENFORCED, b BOOLEAN, c BOOLEAN)");
         sql("INSERT INTO T VALUES('paimon', true, false)");
 
-        sql("ALTER TABLE T MODIFY (b CHAR(4), c VARCHAR(6))");
+        sql("ALTER TABLE T MODIFY (b STRING, c STRING)");
         List<Row> result = sql("SHOW CREATE TABLE T");
         assertThat(result.toString())
                 .contains(
                         "CREATE TABLE `PAIMON`.`default`.`T` (\n"
                                 + "  `a` VARCHAR(2147483647) NOT NULL,\n"
-                                + "  `b` CHAR(4),\n"
-                                + "  `c` VARCHAR(6),");
+                                + "  `b` VARCHAR(2147483647),\n"
+                                + "  `c` VARCHAR(2147483647),");
         sql("INSERT INTO T VALUES('apache', '345', '200')");
         result = sql("SELECT * FROM T");
         assertThat(result.stream().map(Objects::toString).collect(Collectors.toList()))
@@ -344,7 +345,7 @@ public class SchemaChangeITCase extends CatalogITCaseBase {
                                         DateTimeUtils.formatTimestamp(
                                                 DateTimeUtils.parseTimestampData(
                                                         "1970-01-01 00:00:04.001", 3),
-                                                DateTimeUtils.LOCAL_TZ,
+                                                TimeZone.getDefault(),
                                                 3))
                                 + "]");
     }
@@ -451,7 +452,7 @@ public class SchemaChangeITCase extends CatalogITCaseBase {
                                 + DateTimeUtils.timestampToTimestampWithLocalZone(
                                                 DateTimeUtils.parseTimestampData(
                                                         "2022-12-12 00:30:00.123456", 3),
-                                                DateTimeUtils.LOCAL_TZ)
+                                                TimeZone.getDefault())
                                         .toLocalDateTime()
                                         .format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
                                 + "Z"
@@ -506,7 +507,7 @@ public class SchemaChangeITCase extends CatalogITCaseBase {
                                 + DateTimeUtils.timestampToTimestampWithLocalZone(
                                                 DateTimeUtils.parseTimestampData(
                                                         "2022-12-02 09:00:00.123456", 6),
-                                                DateTimeUtils.LOCAL_TZ)
+                                                TimeZone.getDefault())
                                         .toLocalDateTime()
                                         .format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
                                 + "Z, "
@@ -514,7 +515,7 @@ public class SchemaChangeITCase extends CatalogITCaseBase {
                                 + DateTimeUtils.timestampWithLocalZoneToTimestamp(
                                                 DateTimeUtils.parseTimestampData(
                                                         "1970-01-01 00:00:04.001", 3),
-                                                DateTimeUtils.LOCAL_TZ)
+                                                TimeZone.getDefault())
                                         .toLocalDateTime()
                                         .format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
                                 + "]");
@@ -540,7 +541,7 @@ public class SchemaChangeITCase extends CatalogITCaseBase {
                         "+I[2022-12-12T00:00, "
                                 + DateTimeUtils.timestampToTimestampWithLocalZone(
                                                 DateTimeUtils.parseTimestampData("2022-12-11", 6),
-                                                DateTimeUtils.LOCAL_TZ)
+                                                TimeZone.getDefault())
                                         .toLocalDateTime()
                                         .format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
                                 + "Z"
@@ -845,37 +846,80 @@ public class SchemaChangeITCase extends CatalogITCaseBase {
     }
 
     @Test
-    public void testSetAndResetImmutableOptions() throws Exception {
+    public void testSetAndResetImmutableOptionsOnEmptyTables() {
+        sql("CREATE TABLE T1 (a INT, b INT)");
+        sql(
+                "ALTER TABLE T1 SET ('primary-key' = 'a', 'bucket' = '1', 'merge-engine' = 'first-row')");
+        sql("INSERT INTO T1 VALUES (1, 10), (2, 20), (1, 11), (2, 21)");
+        assertThat(queryAndSort("SELECT * FROM T1")).containsExactly(Row.of(1, 10), Row.of(2, 20));
+        assertThatThrownBy(() -> sql("ALTER TABLE T1 SET ('merge-engine' = 'deduplicate')"))
+                .rootCause()
+                .isInstanceOf(UnsupportedOperationException.class)
+                .hasMessage("Change 'merge-engine' is not supported yet.");
+
+        sql(
+                "CREATE TABLE T2 (a INT, b INT, PRIMARY KEY (a) NOT ENFORCED) WITH ('bucket' = '1', 'merge-engine' = 'first-row')");
+        sql("ALTER TABLE T2 RESET ('merge-engine')");
+        sql("INSERT INTO T2 VALUES (1, 10), (2, 20), (1, 11), (2, 21)");
+        assertThat(queryAndSort("SELECT * FROM T2")).containsExactly(Row.of(1, 11), Row.of(2, 21));
+    }
+
+    @Test
+    public void testSetAndResetImmutableOptionsOnNonEmptyTables() {
         // bucket-key is immutable
         sql(
                 "CREATE TABLE T1 (a STRING, b STRING, c STRING) WITH ('bucket' = '1', 'bucket-key' = 'a')");
+        sql("INSERT INTO T1 VALUES ('a', 'b', 'c')");
 
         assertThatThrownBy(() -> sql("ALTER TABLE T1 SET ('bucket-key' = 'c')"))
-                .getRootCause()
+                .rootCause()
                 .isInstanceOf(UnsupportedOperationException.class)
                 .hasMessage("Change 'bucket-key' is not supported yet.");
 
         sql(
                 "CREATE TABLE T2 (a STRING, b STRING, c STRING) WITH ('bucket' = '1', 'bucket-key' = 'c')");
+        sql("INSERT INTO T2 VALUES ('a', 'b', 'c')");
         assertThatThrownBy(() -> sql("ALTER TABLE T2 RESET ('bucket-key')"))
-                .getRootCause()
+                .rootCause()
                 .isInstanceOf(UnsupportedOperationException.class)
                 .hasMessage("Change 'bucket-key' is not supported yet.");
 
         // merge-engine is immutable
         sql(
                 "CREATE TABLE T4 (a STRING, b STRING, c STRING) WITH ('merge-engine' = 'partial-update')");
+        sql("INSERT INTO T4 VALUES ('a', 'b', 'c')");
         assertThatThrownBy(() -> sql("ALTER TABLE T4 RESET ('merge-engine')"))
-                .getRootCause()
+                .rootCause()
                 .isInstanceOf(UnsupportedOperationException.class)
                 .hasMessage("Change 'merge-engine' is not supported yet.");
 
         // sequence.field is immutable
         sql("CREATE TABLE T5 (a STRING, b STRING, c STRING) WITH ('sequence.field' = 'b')");
+        sql("INSERT INTO T5 VALUES ('a', 'b', 'c')");
         assertThatThrownBy(() -> sql("ALTER TABLE T5 SET ('sequence.field' = 'c')"))
-                .getRootCause()
+                .rootCause()
                 .isInstanceOf(UnsupportedOperationException.class)
                 .hasMessage("Change 'sequence.field' is not supported yet.");
+    }
+
+    @Test
+    public void testAlterTableComment() throws Exception {
+        sql("CREATE TABLE T (a STRING, b STRING, c STRING)");
+
+        // add table comment
+        sql("ALTER TABLE T SET ('comment'='t comment')");
+        String comment = table("T").getComment();
+        assertThat(comment).isEqualTo("t comment");
+
+        // update table comment
+        sql("ALTER TABLE T SET ('comment'='t comment v2')");
+        comment = table("T").getComment();
+        assertThat(comment).isEqualTo("t comment v2");
+
+        // remove table comment
+        sql("ALTER TABLE T RESET ('comment')");
+        comment = table("T").getComment();
+        assertThat(comment).isEmpty();
     }
 
     @Test

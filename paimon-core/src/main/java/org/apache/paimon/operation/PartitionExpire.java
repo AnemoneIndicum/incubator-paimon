@@ -19,21 +19,18 @@
 package org.apache.paimon.operation;
 
 import org.apache.paimon.annotation.VisibleForTesting;
-import org.apache.paimon.data.BinaryRow;
-import org.apache.paimon.data.InternalArray;
-import org.apache.paimon.data.InternalRow;
-import org.apache.paimon.partition.PartitionPredicate;
-import org.apache.paimon.partition.PartitionTimeExtractor;
-import org.apache.paimon.types.RowType;
-import org.apache.paimon.utils.RowDataToObjectArrayConverter;
+import org.apache.paimon.manifest.PartitionEntry;
+import org.apache.paimon.metastore.MetastoreClient;
+import org.apache.paimon.partition.PartitionExpireStrategy;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
+
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -43,31 +40,29 @@ public class PartitionExpire {
 
     private static final Logger LOG = LoggerFactory.getLogger(PartitionExpire.class);
 
-    private final List<String> partitionKeys;
-    private final RowDataToObjectArrayConverter toObjectArrayConverter;
     private final Duration expirationTime;
     private final Duration checkInterval;
-    private final PartitionTimeExtractor timeExtractor;
     private final FileStoreScan scan;
     private final FileStoreCommit commit;
+    private final MetastoreClient metastoreClient;
 
     private LocalDateTime lastCheck;
 
+    private final PartitionExpireStrategy strategy;
+
     public PartitionExpire(
-            RowType partitionType,
             Duration expirationTime,
             Duration checkInterval,
-            String timePattern,
-            String timeFormatter,
+            PartitionExpireStrategy strategy,
             FileStoreScan scan,
-            FileStoreCommit commit) {
-        this.partitionKeys = partitionType.getFieldNames();
-        this.toObjectArrayConverter = new RowDataToObjectArrayConverter(partitionType);
+            FileStoreCommit commit,
+            @Nullable MetastoreClient metastoreClient) {
         this.expirationTime = expirationTime;
         this.checkInterval = checkInterval;
-        this.timeExtractor = new PartitionTimeExtractor(timePattern, timeFormatter);
+        this.strategy = strategy;
         this.scan = scan;
         this.commit = commit;
+        this.metastoreClient = metastoreClient;
         this.lastCheck = LocalDateTime.now();
     }
 
@@ -76,8 +71,8 @@ public class PartitionExpire {
         return this;
     }
 
-    public void expire(long commitIdentifier) {
-        expire(LocalDateTime.now(), commitIdentifier);
+    public List<Map<String, String>> expire(long commitIdentifier) {
+        return expire(LocalDateTime.now(), commitIdentifier);
     }
 
     @VisibleForTesting
@@ -86,61 +81,44 @@ public class PartitionExpire {
     }
 
     @VisibleForTesting
-    void expire(LocalDateTime now, long commitIdentifier) {
-        if (now.isAfter(lastCheck.plus(checkInterval))) {
-            doExpire(now.minus(expirationTime), commitIdentifier);
+    List<Map<String, String>> expire(LocalDateTime now, long commitIdentifier) {
+        if (checkInterval.isZero() || now.isAfter(lastCheck.plus(checkInterval))) {
+            List<Map<String, String>> expired =
+                    doExpire(now.minus(expirationTime), commitIdentifier);
             lastCheck = now;
+            return expired;
         }
+        return null;
     }
 
-    private void doExpire(LocalDateTime expireDateTime, long commitIdentifier) {
+    private List<Map<String, String>> doExpire(
+            LocalDateTime expireDateTime, long commitIdentifier) {
         List<Map<String, String>> expired = new ArrayList<>();
-        for (BinaryRow partition : readPartitions(expireDateTime)) {
-            Object[] array = toObjectArrayConverter.convert(partition);
-            Map<String, String> partString = toPartitionString(array);
+        for (PartitionEntry partition : strategy.selectExpiredPartitions(scan, expireDateTime)) {
+            Object[] array = strategy.convertPartition(partition.partition());
+            Map<String, String> partString = strategy.toPartitionString(array);
             expired.add(partString);
-            LOG.info("Expire Partition: " + partition);
+            LOG.info("Expire Partition: {}", partition);
         }
-        if (expired.size() > 0) {
+        if (!expired.isEmpty()) {
+            if (metastoreClient != null) {
+                deleteMetastorePartitions(expired);
+            }
             commit.dropPartitions(expired, commitIdentifier);
         }
+        return expired;
     }
 
-    private Map<String, String> toPartitionString(Object[] array) {
-        Map<String, String> map = new LinkedHashMap<>();
-        for (int i = 0; i < partitionKeys.size(); i++) {
-            map.put(partitionKeys.get(i), array[i].toString());
-        }
-        return map;
-    }
-
-    private List<BinaryRow> readPartitions(LocalDateTime expireDateTime) {
-        return scan.withPartitionFilter(new PartitionTimePredicate(expireDateTime))
-                .listPartitions();
-    }
-
-    private class PartitionTimePredicate implements PartitionPredicate {
-
-        private final LocalDateTime expireDateTime;
-
-        private PartitionTimePredicate(LocalDateTime expireDateTime) {
-            this.expireDateTime = expireDateTime;
-        }
-
-        @Override
-        public boolean test(BinaryRow partition) {
-            Object[] array = toObjectArrayConverter.convert(partition);
-            LocalDateTime partTime = timeExtractor.extract(partitionKeys, Arrays.asList(array));
-            return partTime != null && expireDateTime.isAfter(partTime);
-        }
-
-        @Override
-        public boolean test(
-                long rowCount,
-                InternalRow minValues,
-                InternalRow maxValues,
-                InternalArray nullCounts) {
-            return true;
+    private void deleteMetastorePartitions(List<Map<String, String>> partitions) {
+        if (metastoreClient != null) {
+            partitions.forEach(
+                    partition -> {
+                        try {
+                            metastoreClient.deletePartition(new LinkedHashMap<>(partition));
+                        } catch (Exception e) {
+                            throw new RuntimeException(e);
+                        }
+                    });
         }
     }
 }

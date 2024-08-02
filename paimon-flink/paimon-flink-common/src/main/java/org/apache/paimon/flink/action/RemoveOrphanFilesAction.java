@@ -18,39 +18,42 @@
 
 package org.apache.paimon.flink.action;
 
+import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.operation.OrphanFilesClean;
-import org.apache.paimon.table.FileStoreTable;
 
+import javax.annotation.Nullable;
+
+import java.util.List;
 import java.util.Map;
 
-import static org.apache.paimon.utils.Preconditions.checkArgument;
+import static org.apache.paimon.operation.OrphanFilesClean.executeOrphanFilesClean;
 
 /** Action to remove the orphan data files and metadata files. */
-public class RemoveOrphanFilesAction extends TableActionBase {
+public class RemoveOrphanFilesAction extends ActionBase {
 
-    private final OrphanFilesClean orphanFilesClean;
+    private final List<OrphanFilesClean> tableCleans;
 
     public RemoveOrphanFilesAction(
             String warehouse,
             String databaseName,
-            String tableName,
-            Map<String, String> catalogConfig) {
-        super(warehouse, databaseName, tableName, catalogConfig);
-
-        checkArgument(
-                table instanceof FileStoreTable,
-                "Only FileStoreTable supports remove-orphan-files action. The table type is '%s'.",
-                table.getClass().getName());
-        this.orphanFilesClean = new OrphanFilesClean((FileStoreTable) table);
+            @Nullable String tableName,
+            Map<String, String> catalogConfig)
+            throws Catalog.TableNotExistException, Catalog.DatabaseNotExistException {
+        super(warehouse, catalogConfig);
+        this.tableCleans =
+                OrphanFilesClean.createOrphanFilesCleans(catalog, databaseName, tableName);
     }
 
-    public RemoveOrphanFilesAction olderThan(String timestamp) {
-        this.orphanFilesClean.olderThan(timestamp);
-        return this;
+    public void olderThan(String olderThan) {
+        tableCleans.forEach(clean -> clean.olderThan(olderThan));
+    }
+
+    public void dryRun() {
+        tableCleans.forEach(clean -> clean.fileCleaner(path -> {}));
     }
 
     @Override
     public void run() throws Exception {
-        orphanFilesClean.clean();
+        executeOrphanFilesClean(tableCleans);
     }
 }

@@ -536,6 +536,10 @@ public class BatchWrite {
         GenericRow record2 = GenericRow.of(BinaryString.fromString("Bob"), 5);
         GenericRow record3 = GenericRow.of(BinaryString.fromString("Emily"), 18);
 
+        // If this is a distributed write, you can use writeBuilder.newWriteSelector.
+        // WriteSelector determines to which logical downstream writers a record should be written to.
+        // If it returns empty, no data distribution is required.
+
         write.write(record1);
         write.write(record2);
         write.write(record3);
@@ -656,6 +660,11 @@ public class StreamWriteTable {
             GenericRow record1 = GenericRow.of(BinaryString.fromString("Alice"), 12);
             GenericRow record2 = GenericRow.of(BinaryString.fromString("Bob"), 5);
             GenericRow record3 = GenericRow.of(BinaryString.fromString("Emily"), 18);
+
+            // If this is a distributed write, you can use writeBuilder.newWriteSelector.
+            // WriteSelector determines to which logical downstream writers a record should be written to.
+            // If it returns empty, no data distribution is required.
+
             write.write(record1);
             write.write(record2);
             write.write(record3);
@@ -708,7 +717,7 @@ public class StreamWriteTable {
 | or           | org.apache.paimon.predicate.PredicateBuilder.Or              |
 | is null      | org.apache.paimon.predicate.PredicateBuilder.IsNull          |
 | is not null  | org.apache.paimon.predicate.PredicateBuilder.IsNotNull       |
-| in           | org.apache.paimon.predicate.PredicateBuildere.In             |
+| in           | org.apache.paimon.predicate.PredicateBuilder.In              |
 | not in       | org.apache.paimon.predicate.PredicateBuilder.NotIn           |
 | =            | org.apache.paimon.predicate.PredicateBuilder.Equal           |
 | <>           | org.apache.paimon.predicate.PredicateBuilder.NotEqual        |

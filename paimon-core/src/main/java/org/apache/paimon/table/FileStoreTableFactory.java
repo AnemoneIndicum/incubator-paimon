@@ -22,10 +22,10 @@ import org.apache.paimon.CoreOptions;
 import org.apache.paimon.catalog.CatalogContext;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.Path;
-import org.apache.paimon.operation.Lock;
 import org.apache.paimon.options.Options;
 import org.apache.paimon.schema.SchemaManager;
 import org.apache.paimon.schema.TableSchema;
+import org.apache.paimon.utils.StringUtils;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -63,21 +63,11 @@ public class FileStoreTableFactory {
                                                 "Schema file not found in location "
                                                         + tablePath
                                                         + ". Please create table first."));
-        return create(
-                fileIO,
-                tablePath,
-                tableSchema,
-                options,
-                new CatalogEnvironment(Lock.emptyFactory(), null, null));
+        return create(fileIO, tablePath, tableSchema, options, CatalogEnvironment.empty());
     }
 
     public static FileStoreTable create(FileIO fileIO, Path tablePath, TableSchema tableSchema) {
-        return create(
-                fileIO,
-                tablePath,
-                tableSchema,
-                new Options(),
-                new CatalogEnvironment(Lock.emptyFactory(), null, null));
+        return create(fileIO, tablePath, tableSchema, new Options(), CatalogEnvironment.empty());
     }
 
     public static FileStoreTable create(
@@ -89,6 +79,34 @@ public class FileStoreTableFactory {
     }
 
     public static FileStoreTable create(
+            FileIO fileIO,
+            Path tablePath,
+            TableSchema tableSchema,
+            Options dynamicOptions,
+            CatalogEnvironment catalogEnvironment) {
+        FileStoreTable table =
+                createWithoutFallbackBranch(
+                        fileIO, tablePath, tableSchema, dynamicOptions, catalogEnvironment);
+
+        Options options = new Options(table.options());
+        String fallbackBranch = options.get(CoreOptions.SCAN_FALLBACK_BRANCH);
+        if (!StringUtils.isNullOrWhitespaceOnly(fallbackBranch)) {
+            Options branchOptions = new Options();
+            branchOptions.set(CoreOptions.BRANCH, fallbackBranch);
+            FileStoreTable fallbackTable =
+                    createWithoutFallbackBranch(
+                            fileIO,
+                            tablePath,
+                            new SchemaManager(fileIO, tablePath, fallbackBranch).latest().get(),
+                            branchOptions,
+                            catalogEnvironment);
+            table = new FallbackReadFileStoreTable(table, fallbackTable);
+        }
+
+        return table;
+    }
+
+    private static FileStoreTable createWithoutFallbackBranch(
             FileIO fileIO,
             Path tablePath,
             TableSchema tableSchema,

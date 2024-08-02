@@ -347,10 +347,7 @@ public class FlinkCatalog extends AbstractCatalog {
             // Although catalog.createTable will copy the default options, but we need this info
             // here before create table, such as table-default.kafka.bootstrap.servers defined in
             // catalog options. Temporarily, we copy the default options here.
-            if (catalog instanceof org.apache.paimon.catalog.AbstractCatalog) {
-                ((org.apache.paimon.catalog.AbstractCatalog) catalog)
-                        .copyTableDefaultOptions(options);
-            }
+            Catalog.tableDefaultOptions(catalog.options()).forEach(options::putIfAbsent);
             options.put(REGISTER_TIMEOUT.key(), logStoreAutoRegisterTimeout.toString());
             registerLogSystem(catalog, identifier, options, classLoader);
         }
@@ -455,11 +452,20 @@ public class FlinkCatalog extends AbstractCatalog {
 
             SchemaManager.checkAlterTablePath(key);
 
-            schemaChanges.add(SchemaChange.setOption(key, value));
+            if (Catalog.COMMENT_PROP.equals(key)) {
+                schemaChanges.add(SchemaChange.updateComment(value));
+            } else {
+                schemaChanges.add(SchemaChange.setOption(key, value));
+            }
             return schemaChanges;
         } else if (change instanceof ResetOption) {
             ResetOption resetOption = (ResetOption) change;
-            schemaChanges.add(SchemaChange.removeOption(resetOption.getKey()));
+            String key = resetOption.getKey();
+            if (Catalog.COMMENT_PROP.equals(key)) {
+                schemaChanges.add(SchemaChange.updateComment(null));
+            } else {
+                schemaChanges.add(SchemaChange.removeOption(resetOption.getKey()));
+            }
             return schemaChanges;
         } else if (change instanceof TableChange.ModifyColumn) {
             // let non-physical column handle by option

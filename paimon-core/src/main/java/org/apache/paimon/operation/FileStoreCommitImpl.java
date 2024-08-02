@@ -39,16 +39,19 @@ import org.apache.paimon.manifest.SimpleFileEntry;
 import org.apache.paimon.operation.metrics.CommitMetrics;
 import org.apache.paimon.operation.metrics.CommitStats;
 import org.apache.paimon.options.MemorySize;
+import org.apache.paimon.partition.PartitionPredicate;
 import org.apache.paimon.predicate.Predicate;
 import org.apache.paimon.predicate.PredicateBuilder;
 import org.apache.paimon.schema.SchemaManager;
 import org.apache.paimon.stats.Statistics;
 import org.apache.paimon.stats.StatsFileHandler;
 import org.apache.paimon.table.BucketMode;
+import org.apache.paimon.table.sink.CommitCallback;
 import org.apache.paimon.table.sink.CommitMessage;
 import org.apache.paimon.table.sink.CommitMessageImpl;
 import org.apache.paimon.types.RowType;
 import org.apache.paimon.utils.FileStorePathFactory;
+import org.apache.paimon.utils.IOUtils;
 import org.apache.paimon.utils.Pair;
 import org.apache.paimon.utils.Preconditions;
 import org.apache.paimon.utils.SnapshotManager;
@@ -120,6 +123,8 @@ public class FileStoreCommitImpl implements FileStoreCommit {
     private final boolean dynamicPartitionOverwrite;
     @Nullable private final Comparator<InternalRow> keyComparator;
     private final String branchName;
+    @Nullable private final Integer manifestReadParallelism;
+    private final List<CommitCallback> commitCallbacks;
 
     @Nullable private Lock lock;
     private boolean ignoreEmptyCommit;
@@ -150,7 +155,9 @@ public class FileStoreCommitImpl implements FileStoreCommit {
             @Nullable Comparator<InternalRow> keyComparator,
             String branchName,
             StatsFileHandler statsFileHandler,
-            BucketMode bucketMode) {
+            BucketMode bucketMode,
+            @Nullable Integer manifestReadParallelism,
+            List<CommitCallback> commitCallbacks) {
         this.fileIO = fileIO;
         this.schemaManager = schemaManager;
         this.commitUser = commitUser;
@@ -169,6 +176,8 @@ public class FileStoreCommitImpl implements FileStoreCommit {
         this.dynamicPartitionOverwrite = dynamicPartitionOverwrite;
         this.keyComparator = keyComparator;
         this.branchName = branchName;
+        this.manifestReadParallelism = manifestReadParallelism;
+        this.commitCallbacks = commitCallbacks;
 
         this.lock = null;
         this.ignoreEmptyCommit = true;
@@ -190,25 +199,33 @@ public class FileStoreCommitImpl implements FileStoreCommit {
     }
 
     @Override
-    public Set<Long> filterCommitted(Set<Long> commitIdentifiers) {
+    public List<ManifestCommittable> filterCommitted(List<ManifestCommittable> committables) {
         // nothing to filter, fast exit
-        if (commitIdentifiers.isEmpty()) {
-            return commitIdentifiers;
+        if (committables.isEmpty()) {
+            return committables;
+        }
+
+        for (int i = 1; i < committables.size(); i++) {
+            Preconditions.checkArgument(
+                    committables.get(i).identifier() > committables.get(i - 1).identifier(),
+                    "Committables must be sorted according to identifiers before filtering. This is unexpected.");
         }
 
         Optional<Snapshot> latestSnapshot = snapshotManager.latestSnapshotOfUser(commitUser);
         if (latestSnapshot.isPresent()) {
-            Set<Long> result = new HashSet<>();
-            for (Long identifier : commitIdentifiers) {
+            List<ManifestCommittable> result = new ArrayList<>();
+            for (ManifestCommittable committable : committables) {
                 // if committable is newer than latest snapshot, then it hasn't been committed
-                if (identifier > latestSnapshot.get().commitIdentifier()) {
-                    result.add(identifier);
+                if (committable.identifier() > latestSnapshot.get().commitIdentifier()) {
+                    result.add(committable);
+                } else {
+                    commitCallbacks.forEach(callback -> callback.retry(committable));
                 }
             }
             return result;
         } else {
             // if there is no previous snapshots then nothing should be filtered
-            return commitIdentifiers;
+            return committables;
         }
     }
 
@@ -406,27 +423,24 @@ public class FileStoreCommitImpl implements FileStoreCommit {
         try {
             boolean skipOverwrite = false;
             // partition filter is built from static or dynamic partition according to properties
-            Predicate partitionFilter = null;
+            PartitionPredicate partitionFilter = null;
             if (dynamicPartitionOverwrite) {
                 if (appendTableFiles.isEmpty()) {
                     // in dynamic mode, if there is no changes to commit, no data will be deleted
                     skipOverwrite = true;
                 } else {
-                    partitionFilter =
+                    Set<BinaryRow> partitions =
                             appendTableFiles.stream()
                                     .map(ManifestEntry::partition)
-                                    .distinct()
-                                    // partition filter is built from new data's partitions
-                                    .map(p -> createPartitionPredicate(partitionType, p))
-                                    .reduce(PredicateBuilder::or)
-                                    .orElseThrow(
-                                            () ->
-                                                    new RuntimeException(
-                                                            "Failed to get dynamic partition filter. This is unexpected."));
+                                    .collect(Collectors.toSet());
+                    partitionFilter = PartitionPredicate.fromMultiple(partitionType, partitions);
                 }
             } else {
-                partitionFilter =
+                // partition may be partial partition fields, so here must to use predicate way.
+                Predicate partitionPredicate =
                         createPartitionPredicate(partition, partitionType, partitionDefaultName);
+                partitionFilter =
+                        PartitionPredicate.fromPredicate(partitionType, partitionPredicate);
                 // sanity check, all changes must be done within the given partition
                 if (partitionFilter != null) {
                     for (ManifestEntry entry : appendTableFiles) {
@@ -495,7 +509,8 @@ public class FileStoreCommitImpl implements FileStoreCommit {
                     partitions.stream().map(Objects::toString).collect(Collectors.joining(",")));
         }
 
-        Predicate partitionFilter =
+        // partitions may be partial partition fields, so here must to use predicate way.
+        Predicate predicate =
                 partitions.stream()
                         .map(
                                 partition ->
@@ -503,6 +518,8 @@ public class FileStoreCommitImpl implements FileStoreCommit {
                                                 partition, partitionType, partitionDefaultName))
                         .reduce(PredicateBuilder::or)
                         .orElseThrow(() -> new RuntimeException("Failed to get partition filter."));
+        PartitionPredicate partitionFilter =
+                PartitionPredicate.fromPredicate(partitionType, predicate);
 
         tryOverwrite(
                 partitionFilter,
@@ -706,7 +723,7 @@ public class FileStoreCommitImpl implements FileStoreCommit {
     }
 
     private int tryOverwrite(
-            Predicate partitionFilter,
+            @Nullable PartitionPredicate partitionFilter,
             List<ManifestEntry> changes,
             List<IndexManifestEntry> indexFiles,
             long identifier,
@@ -768,7 +785,7 @@ public class FileStoreCommitImpl implements FileStoreCommit {
     }
 
     @VisibleForTesting
-    public boolean tryCommitOnce(
+    boolean tryCommitOnce(
             List<ManifestEntry> tableFiles,
             List<ManifestEntry> changelogFiles,
             List<IndexManifestEntry> indexFiles,
@@ -788,13 +805,13 @@ public class FileStoreCommitImpl implements FileStoreCommit {
                         : snapshotManager.copyWithBranch(branchName).snapshotPath(newSnapshotId);
 
         if (LOG.isDebugEnabled()) {
-            LOG.debug("Ready to commit table files to snapshot #" + newSnapshotId);
+            LOG.debug("Ready to commit table files to snapshot {}", newSnapshotId);
             for (ManifestEntry entry : tableFiles) {
-                LOG.debug("  * " + entry.toString());
+                LOG.debug("  * {}", entry);
             }
-            LOG.debug("Ready to commit changelog to snapshot #" + newSnapshotId);
+            LOG.debug("Ready to commit changelog to snapshot {}", newSnapshotId);
             for (ManifestEntry entry : changelogFiles) {
-                LOG.debug("  * " + entry.toString());
+                LOG.debug("  * {}", entry);
             }
         }
 
@@ -845,7 +862,8 @@ public class FileStoreCommitImpl implements FileStoreCommit {
                             manifestTargetSize.getBytes(),
                             manifestMergeMinCount,
                             manifestFullCompactionSize.getBytes(),
-                            partitionType));
+                            partitionType,
+                            manifestReadParallelism));
             previousChangesListName = manifestList.write(newMetas);
 
             // the added records subtract the deleted records from
@@ -935,7 +953,7 @@ public class FileStoreCommitImpl implements FileStoreCommit {
             Callable<Boolean> callable =
                     () -> {
                         boolean committed =
-                                fileIO.writeFileUtf8(newSnapshotPath, newSnapshot.toJson());
+                                fileIO.tryToWriteAtomic(newSnapshotPath, newSnapshot.toJson());
                         if (committed) {
                             snapshotManager.commitLatestHint(newSnapshotId);
                         }
@@ -982,6 +1000,7 @@ public class FileStoreCommitImpl implements FileStoreCommit {
                                 identifier,
                                 commitKind.name()));
             }
+            commitCallbacks.forEach(callback -> callback.call(tableFiles, identifier, watermark));
             return true;
         }
 
@@ -1225,6 +1244,13 @@ public class FileStoreCommitImpl implements FileStoreCommit {
         }
     }
 
+    @Override
+    public void close() {
+        for (CommitCallback callback : commitCallbacks) {
+            IOUtils.closeQuietly(callback);
+        }
+    }
+
     private static class LevelIdentifier {
 
         private final BinaryRow partition;
@@ -1267,7 +1293,8 @@ public class FileStoreCommitImpl implements FileStoreCommit {
         return latestSnapshot -> false;
     }
 
-    public static ConflictCheck mustConflictCheck() {
+    @VisibleForTesting
+    static ConflictCheck mustConflictCheck() {
         return latestSnapshot -> true;
     }
 }

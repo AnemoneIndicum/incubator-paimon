@@ -20,6 +20,7 @@ package org.apache.paimon.operation;
 
 import org.apache.paimon.Snapshot;
 import org.apache.paimon.annotation.VisibleForTesting;
+import org.apache.paimon.compact.CompactDeletionFile;
 import org.apache.paimon.data.BinaryRow;
 import org.apache.paimon.deletionvectors.DeletionVectorsMaintainer;
 import org.apache.paimon.disk.IOManager;
@@ -81,6 +82,7 @@ public abstract class AbstractFileStoreWrite<T> implements FileStoreWrite<T> {
 
     protected CompactionMetrics compactionMetrics = null;
     protected final String tableName;
+    private boolean isInsertOnly;
 
     protected AbstractFileStoreWrite(
             String commitUser,
@@ -120,6 +122,16 @@ public abstract class AbstractFileStoreWrite<T> implements FileStoreWrite<T> {
     public void withCompactExecutor(ExecutorService compactExecutor) {
         this.lazyCompactExecutor = compactExecutor;
         this.closeCompactExecutorWhenLeaving = false;
+    }
+
+    @Override
+    public void withInsertOnly(boolean insertOnly) {
+        this.isInsertOnly = insertOnly;
+        for (Map<Integer, WriterContainer<T>> containerMap : writers.values()) {
+            for (WriterContainer<T> container : containerMap.values()) {
+                container.writer.withInsertOnly(insertOnly);
+            }
+        }
     }
 
     @Override
@@ -200,8 +212,9 @@ public abstract class AbstractFileStoreWrite<T> implements FileStoreWrite<T> {
                 if (writerContainer.indexMaintainer != null) {
                     newIndexFiles.addAll(writerContainer.indexMaintainer.prepareCommit());
                 }
-                if (writerContainer.deletionVectorsMaintainer != null) {
-                    newIndexFiles.addAll(writerContainer.deletionVectorsMaintainer.prepareCommit());
+                CompactDeletionFile compactDeletionFile = increment.compactDeletionFile();
+                if (compactDeletionFile != null) {
+                    compactDeletionFile.getOrCompute().ifPresent(newIndexFiles::add);
                 }
                 CommitMessageImpl committable =
                         new CommitMessageImpl(
@@ -402,6 +415,7 @@ public abstract class AbstractFileStoreWrite<T> implements FileStoreWrite<T> {
                         null,
                         compactExecutor(),
                         deletionVectorsMaintainer);
+        writer.withInsertOnly(isInsertOnly);
         notifyNewWriter(writer);
         return new WriterContainer<>(
                 writer, indexMaintainer, deletionVectorsMaintainer, latestSnapshotId);

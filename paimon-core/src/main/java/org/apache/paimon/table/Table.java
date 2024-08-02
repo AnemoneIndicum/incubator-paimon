@@ -31,6 +31,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalLong;
 
 /**
  * A table provides basic abstraction for table type and table scan and table read.
@@ -44,6 +45,10 @@ public interface Table extends Serializable {
 
     /** A name to identify this table. */
     String name();
+
+    default String fullName() {
+        return name();
+    }
 
     /** Returns the row type of this table. */
     RowType rowType();
@@ -69,6 +74,10 @@ public interface Table extends Serializable {
     /** Copy this table with adding dynamic options. */
     Table copy(Map<String, String> dynamicOptions);
 
+    /** Get the latest snapshot id for this table, or empty if there are no snapshots. */
+    @Experimental
+    OptionalLong latestSnapshotId();
+
     /** Rollback table's state to a specific snapshot. */
     @Experimental
     void rollbackTo(long snapshotId);
@@ -91,11 +100,19 @@ public interface Table extends Serializable {
     @Experimental
     void deleteTag(String tagName);
 
+    /** Delete tags, tags are separated by commas. */
+    @Experimental
+    default void deleteTags(String tagNames) {
+        for (String tagName : tagNames.split(",")) {
+            deleteTag(tagName);
+        }
+    }
+
     /** Rollback table's state to a specific tag. */
     @Experimental
     void rollbackTo(String tagName);
 
-    /** Create a empty branch. */
+    /** Create an empty branch. */
     @Experimental
     void createBranch(String branchName);
 
@@ -111,12 +128,17 @@ public interface Table extends Serializable {
     @Experimental
     void deleteBranch(String branchName);
 
+    /** Delete branches, branches are separated by commas. */
+    @Experimental
+    default void deleteBranches(String branchNames) {
+        for (String branch : branchNames.split(",")) {
+            deleteBranch(branch);
+        }
+    }
+
     /** Merge a branch to main branch. */
     @Experimental
-    void mergeBranch(String branchName);
-
-    @Experimental
-    void replaceBranch(String fromBranch);
+    void fastForward(String branchName);
 
     /** Manually expire snapshots, parameters can be controlled independently of table options. */
     @Experimental
