@@ -40,6 +40,8 @@ import org.apache.paimon.schema.Schema;
 import org.apache.paimon.schema.SchemaChange;
 import org.apache.paimon.schema.SchemaManager;
 import org.apache.paimon.schema.TableSchema;
+import org.apache.paimon.table.FileStoreTable;
+import org.apache.paimon.table.FileStoreTableFactory;
 import org.apache.paimon.table.TableType;
 import org.apache.paimon.types.DataField;
 import org.apache.paimon.types.DataTypes;
@@ -168,11 +170,13 @@ public class HiveCatalog extends AbstractCatalog {
 
     @Override
     public Optional<MetastoreClient.Factory> metastoreClientFactory(Identifier identifier) {
+        Identifier tableIdentifier =
+                new Identifier(identifier.getDatabaseName(), identifier.getTableName());
         try {
             return Optional.of(
                     new HiveMetastoreClient.Factory(
-                            identifier,
-                            getDataTableSchema(identifier),
+                            tableIdentifier,
+                            getDataTableSchema(tableIdentifier),
                             hiveConf,
                             clientClassName,
                             options));
@@ -183,7 +187,7 @@ public class HiveCatalog extends AbstractCatalog {
     }
 
     @Override
-    public Path getDataTableLocation(Identifier identifier) {
+    public Path getTableLocation(Identifier identifier) {
         try {
             String databaseName = identifier.getDatabaseName();
             String tableName = identifier.getTableName();
@@ -209,7 +213,7 @@ public class HiveCatalog extends AbstractCatalog {
                                 }
                                 return Optional.empty();
                             });
-            return tablePath.orElse(super.getDataTableLocation(identifier));
+            return tablePath.orElse(super.getTableLocation(identifier));
         } catch (TException e) {
             throw new RuntimeException("Can not get table " + identifier + " from metastore.", e);
         } catch (InterruptedException e) {
@@ -284,26 +288,6 @@ public class HiveCatalog extends AbstractCatalog {
         }
     }
 
-    @Override
-    public void dropPartition(Identifier identifier, Map<String, String> partitionSpec)
-            throws TableNotExistException {
-        TableSchema tableSchema = getDataTableSchema(identifier);
-        if (!tableSchema.partitionKeys().isEmpty()
-                && new CoreOptions(tableSchema.options()).partitionedTableInMetastore()) {
-
-            try {
-                // Do not close client, it is for HiveCatalog
-                @SuppressWarnings("resource")
-                HiveMetastoreClient metastoreClient =
-                        new HiveMetastoreClient(identifier, tableSchema, clients);
-                metastoreClient.deletePartition(new LinkedHashMap<>(partitionSpec));
-            } catch (Exception e) {
-                throw new RuntimeException(e);
-            }
-        }
-        super.dropPartition(identifier, partitionSpec);
-    }
-
     private Map<String, String> convertToProperties(Database database) {
         Map<String, String> properties = new HashMap<>(database.getParameters());
         if (database.getLocationUri() != null) {
@@ -313,6 +297,62 @@ public class HiveCatalog extends AbstractCatalog {
             properties.put(COMMENT_PROP, database.getDescription());
         }
         return properties;
+    }
+
+    @Override
+    public void dropPartition(Identifier identifier, Map<String, String> partitionSpec)
+            throws TableNotExistException {
+        TableSchema tableSchema = getDataTableSchema(identifier);
+        if (!tableSchema.partitionKeys().isEmpty()
+                && new CoreOptions(tableSchema.options()).partitionedTableInMetastore()
+                && !partitionExistsInOtherBranches(identifier, partitionSpec)) {
+            try {
+                // Do not close client, it is for HiveCatalog
+                @SuppressWarnings("resource")
+                HiveMetastoreClient metastoreClient =
+                        new HiveMetastoreClient(
+                                new Identifier(
+                                        identifier.getDatabaseName(), identifier.getTableName()),
+                                tableSchema,
+                                clients);
+                metastoreClient.deletePartition(new LinkedHashMap<>(partitionSpec));
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        }
+        super.dropPartition(identifier, partitionSpec);
+    }
+
+    private boolean partitionExistsInOtherBranches(
+            Identifier identifier, Map<String, String> partitionSpec)
+            throws TableNotExistException {
+        FileStoreTable mainTable =
+                (FileStoreTable)
+                        getTable(
+                                new Identifier(
+                                        identifier.getDatabaseName(), identifier.getTableName()));
+        List<String> branchNames = new ArrayList<>(mainTable.branchManager().branches());
+        branchNames.add(DEFAULT_MAIN_BRANCH);
+
+        for (String branchName : branchNames) {
+            if (branchName.equals(identifier.getBranchNameOrDefault())) {
+                continue;
+            }
+
+            Optional<TableSchema> branchSchema =
+                    tableSchemaInFileSystem(mainTable.location(), branchName);
+            if (!branchSchema.isPresent()) {
+                continue;
+            }
+
+            FileStoreTable table =
+                    FileStoreTableFactory.create(
+                            mainTable.fileIO(), mainTable.location(), branchSchema.get());
+            if (!table.newScan().withPartitionFilter(partitionSpec).listPartitions().isEmpty()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @Override
@@ -379,8 +419,7 @@ public class HiveCatalog extends AbstractCatalog {
 
         return isPaimonTable(table)
                 && tableSchemaInFileSystem(
-                                getDataTableLocation(identifier),
-                                identifier.getBranchNameOrDefault())
+                                getTableLocation(identifier), identifier.getBranchNameOrDefault())
                         .isPresent();
     }
 
@@ -398,7 +437,7 @@ public class HiveCatalog extends AbstractCatalog {
         }
 
         return tableSchemaInFileSystem(
-                        getDataTableLocation(identifier), identifier.getBranchNameOrDefault())
+                        getTableLocation(identifier), identifier.getBranchNameOrDefault())
                 .orElseThrow(() -> new TableNotExistException(identifier));
     }
 
@@ -431,7 +470,7 @@ public class HiveCatalog extends AbstractCatalog {
             // Deletes table directory to avoid schema in filesystem exists after dropping hive
             // table successfully to keep the table consistency between which in filesystem and
             // which in Hive metastore.
-            Path path = getDataTableLocation(identifier);
+            Path path = getTableLocation(identifier);
             try {
                 if (fileIO.exists(path)) {
                     fileIO.deleteDirectoryQuietly(path);
@@ -466,7 +505,7 @@ public class HiveCatalog extends AbstractCatalog {
         try {
             clients.execute(client -> client.createTable(createHiveTable(identifier, tableSchema)));
         } catch (Exception e) {
-            Path path = getDataTableLocation(identifier);
+            Path path = getTableLocation(identifier);
             try {
                 fileIO.deleteDirectoryQuietly(path);
             } catch (Exception ee) {
@@ -495,11 +534,11 @@ public class HiveCatalog extends AbstractCatalog {
             table.setTableName(toTable.getTableName());
             clients.execute(client -> client.alter_table(fromDB, fromTableName, table));
 
-            Path fromPath = getDataTableLocation(fromTable);
+            Path fromPath = getTableLocation(fromTable);
             if (!new SchemaManager(fileIO, fromPath).listAllIds().isEmpty()) {
                 // Rename the file system's table directory. Maintain consistency between tables in
                 // the file system and tables in the Hive Metastore.
-                Path toPath = getDataTableLocation(toTable);
+                Path toPath = getTableLocation(toTable);
                 try {
                     fileIO.rename(fromPath, toPath);
                 } catch (IOException e) {
@@ -616,8 +655,7 @@ public class HiveCatalog extends AbstractCatalog {
 
         TableSchema tableSchema =
                 tableSchemaInFileSystem(
-                                getDataTableLocation(identifier),
-                                identifier.getBranchNameOrDefault())
+                                getTableLocation(identifier), identifier.getBranchNameOrDefault())
                         .orElseThrow(() -> new TableNotExistException(identifier));
         Table newTable = createHiveTable(identifier, tableSchema);
         try {
@@ -754,7 +792,7 @@ public class HiveCatalog extends AbstractCatalog {
         }
 
         // update location
-        locationHelper.specifyTableLocation(table, getDataTableLocation(identifier).toString());
+        locationHelper.specifyTableLocation(table, getTableLocation(identifier).toString());
     }
 
     private void updateHmsTablePars(Table table, TableSchema schema) {
@@ -779,9 +817,7 @@ public class HiveCatalog extends AbstractCatalog {
 
     private SchemaManager schemaManager(Identifier identifier) {
         return new SchemaManager(
-                        fileIO,
-                        getDataTableLocation(identifier),
-                        identifier.getBranchNameOrDefault())
+                        fileIO, getTableLocation(identifier), identifier.getBranchNameOrDefault())
                 .withLock(lock(identifier));
     }
 
