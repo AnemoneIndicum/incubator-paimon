@@ -47,7 +47,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -80,6 +79,8 @@ public class CoreOptions implements Serializable {
     public static final String NESTED_KEY = "nested-key";
 
     public static final String DISTINCT = "distinct";
+
+    public static final String LIST_AGG_DELIMITER = "list-agg-delimiter";
 
     public static final String FILE_INDEX = "file-index";
 
@@ -657,6 +658,13 @@ public class CoreOptions implements Serializable {
                                     + "Note: Scale-up this parameter will increase memory usage while scanning manifest files. "
                                     + "We can consider downsize it when we encounter an out of memory exception while scanning");
 
+    public static final ConfigOption<Duration> STREAMING_READ_SNAPSHOT_DELAY =
+            key("streaming.read.snapshot.delay")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The delay duration of stream read when scan incremental snapshots.");
+
     @ExcludeFromDocumentation("Confused without log system")
     public static final ConfigOption<LogConsistency> LOG_CONSISTENCY =
             key("log.consistency")
@@ -962,6 +970,13 @@ public class CoreOptions implements Serializable {
                             "Read incremental changes between start timestamp (exclusive) and end timestamp, "
                                     + "for example, 't1,t2' means changes between timestamp t1 and timestamp t2.");
 
+    public static final ConfigOption<Boolean> END_INPUT_CHECK_PARTITION_EXPIRE =
+            key("end-input.check-partition-expire")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Optional endInput check partition expire used in case of batch mode or bounded stream.");
+
     public static final String STATS_MODE_SUFFIX = "stats-mode";
 
     public static final ConfigOption<String> METADATA_STATS_MODE =
@@ -1041,8 +1056,10 @@ public class CoreOptions implements Serializable {
                                     .text(
                                             "2. 'done-partition': add 'xxx.done' partition to metastore.")
                                     .linebreak()
+                                    .text("3. 'mark-event': mark partition event to metastore.")
+                                    .linebreak()
                                     .text(
-                                            "Both can be configured at the same time: 'done-partition,success-file'.")
+                                            "Both can be configured at the same time: 'done-partition,success-file,mark-event'.")
                                     .build());
 
     public static final ConfigOption<Boolean> METASTORE_PARTITIONED_TABLE =
@@ -1242,8 +1259,14 @@ public class CoreOptions implements Serializable {
             key("record-level.time-field")
                     .stringType()
                     .noDefaultValue()
+                    .withDescription("Time field for record level expire.");
+
+    public static final ConfigOption<TimeFieldType> RECORD_LEVEL_TIME_FIELD_TYPE =
+            key("record-level.time-field-type")
+                    .enumType(TimeFieldType.class)
+                    .defaultValue(TimeFieldType.SECONDS_INT)
                     .withDescription(
-                            "Time field for record level expire, it should be a seconds INT.");
+                            "Time field type for record level expire, it can be seconds-int or millis-long.");
 
     public static final ConfigOption<String> FIELDS_DEFAULT_AGG_FUNC =
             key(FIELDS_PREFIX + "." + DEFAULT_AGG_FUNCTION)
@@ -1474,6 +1497,13 @@ public class CoreOptions implements Serializable {
                         .defaultValue(false));
     }
 
+    public String fieldListAggDelimiter(String fieldName) {
+        return options.get(
+                key(FIELDS_PREFIX + "." + fieldName + "." + LIST_AGG_DELIMITER)
+                        .stringType()
+                        .defaultValue(","));
+    }
+
     @Nullable
     public String fileCompression() {
         return options.get(FILE_COMPRESSION);
@@ -1531,6 +1561,10 @@ public class CoreOptions implements Serializable {
     public int deleteFileThreadNum() {
         return options.getOptional(DELETE_FILE_THREAD_NUM)
                 .orElseGet(() -> Runtime.getRuntime().availableProcessors());
+    }
+
+    public boolean endInputCheckPartitionExpire() {
+        return options.get(END_INPUT_CHECK_PARTITION_EXPIRE);
     }
 
     public ExpireConfig expireConfig() {
@@ -1819,6 +1853,10 @@ public class CoreOptions implements Serializable {
         return options.get(SCAN_MANIFEST_PARALLELISM);
     }
 
+    public Duration streamingReadDelay() {
+        return options.get(STREAMING_READ_SNAPSHOT_DELAY);
+    }
+
     public Integer dynamicBucketInitialBuckets() {
         return options.get(DYNAMIC_BUCKET_INITIAL_BUCKETS);
     }
@@ -2036,6 +2074,11 @@ public class CoreOptions implements Serializable {
     @Nullable
     public String recordLevelTimeField() {
         return options.get(RECORD_LEVEL_TIME_FIELD);
+    }
+
+    @Nullable
+    public TimeFieldType recordLevelTimeFieldType() {
+        return options.get(RECORD_LEVEL_TIME_FIELD_TYPE);
     }
 
     public boolean prepareCommitWaitCompaction() {
@@ -2304,8 +2347,6 @@ public class CoreOptions implements Serializable {
     public enum StreamScanMode implements DescribedEnum {
         NONE("none", "No requirement."),
         COMPACT_BUCKET_TABLE("compact-bucket-table", "Compaction for traditional bucket table."),
-        COMPACT_APPEND_NO_BUCKET(
-                "compact-append-no-bucket", "Compaction for append table with bucket unaware."),
         FILE_MONITOR("file-monitor", "Monitor data file changes.");
 
         private final String value;
@@ -2422,21 +2463,21 @@ public class CoreOptions implements Serializable {
         return list;
     }
 
-    public static Set<String> getImmutableOptionKeys() {
-        final Field[] fields = CoreOptions.class.getFields();
-        final Set<String> immutableKeys = new HashSet<>(fields.length);
-        for (Field field : fields) {
-            if (ConfigOption.class.isAssignableFrom(field.getType())
-                    && field.getAnnotation(Immutable.class) != null) {
-                try {
-                    immutableKeys.add(((ConfigOption<?>) field.get(CoreOptions.class)).key());
-                } catch (IllegalAccessException e) {
-                    throw new RuntimeException(e);
-                }
-            }
-        }
-        return immutableKeys;
-    }
+    public static final Set<String> IMMUTABLE_OPTIONS =
+            Arrays.stream(CoreOptions.class.getFields())
+                    .filter(
+                            f ->
+                                    ConfigOption.class.isAssignableFrom(f.getType())
+                                            && f.getAnnotation(Immutable.class) != null)
+                    .map(
+                            f -> {
+                                try {
+                                    return ((ConfigOption<?>) f.get(CoreOptions.class)).key();
+                                } catch (IllegalAccessException e) {
+                                    throw new RuntimeException(e);
+                                }
+                            })
+                    .collect(Collectors.toSet());
 
     /** Specifies the sort engine for table with primary key. */
     public enum SortEngine implements DescribedEnum {
@@ -2648,6 +2689,31 @@ public class CoreOptions implements Serializable {
         private final String description;
 
         LookupLocalFileType(String value, String description) {
+            this.value = value;
+            this.description = description;
+        }
+
+        @Override
+        public String toString() {
+            return value;
+        }
+
+        @Override
+        public InlineElement getDescription() {
+            return text(description);
+        }
+    }
+
+    /** Time field type for record level expire. */
+    public enum TimeFieldType implements DescribedEnum {
+        SECONDS_INT("seconds-int", "Timestamps in seconds should be INT type."),
+
+        MILLIS_LONG("millis-long", "Timestamps in milliseconds should be BIGINT type.");
+
+        private final String value;
+        private final String description;
+
+        TimeFieldType(String value, String description) {
             this.value = value;
             this.description = description;
         }

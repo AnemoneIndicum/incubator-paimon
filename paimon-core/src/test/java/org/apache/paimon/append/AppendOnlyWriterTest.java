@@ -590,11 +590,12 @@ public class AppendOnlyWriterTest {
             CountDownLatch latch) {
         FileFormat fileFormat = FileFormat.fromIdentifier(AVRO, new Options());
         LinkedList<DataFileMeta> toCompact = new LinkedList<>(scannedFiles);
-        AppendOnlyCompactManager compactManager =
-                new AppendOnlyCompactManager(
+        BucketedAppendCompactManager compactManager =
+                new BucketedAppendCompactManager(
                         Executors.newSingleThreadScheduledExecutor(
                                 new ExecutorThreadFactory("compaction-thread")),
                         toCompact,
+                        null,
                         MIN_FILE_NUM,
                         MAX_FILE_NUM,
                         targetFileSize,

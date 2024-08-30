@@ -31,6 +31,53 @@ import static org.assertj.core.api.AssertionsForInterfaceTypes.assertThat;
 public class DeletionVectorITCase extends CatalogITCaseBase {
 
     @ParameterizedTest
+    @ValueSource(strings = {"input"})
+    public void testStreamingReadDVTableWhenChangelogProducerIsInput(String changelogProducer)
+            throws Exception {
+        sql(
+                String.format(
+                        "CREATE TABLE T (id INT PRIMARY KEY NOT ENFORCED, name STRING) "
+                                + "WITH ('deletion-vectors.enabled' = 'true', 'changelog-producer' = '%s')",
+                        changelogProducer));
+
+        sql("INSERT INTO T VALUES (1, '111111111'), (2, '2'), (3, '3'), (4, '4')");
+
+        sql("INSERT INTO T VALUES (2, '2_1'), (3, '3_1')");
+
+        sql("INSERT INTO T VALUES (2, '2_2'), (4, '4_1')");
+
+        // test read from APPEND snapshot
+        try (BlockingIterator<Row, Row> iter =
+                streamSqlBlockIter(
+                        "SELECT * FROM T /*+ OPTIONS('scan.mode'='from-snapshot-full','scan.snapshot-id' = '3') */")) {
+            assertThat(iter.collect(8))
+                    .containsExactlyInAnyOrder(
+                            Row.ofKind(RowKind.INSERT, 1, "111111111"),
+                            Row.ofKind(RowKind.INSERT, 2, "2"),
+                            Row.ofKind(RowKind.INSERT, 3, "3"),
+                            Row.ofKind(RowKind.INSERT, 4, "4"),
+                            Row.ofKind(RowKind.INSERT, 2, "2_1"),
+                            Row.ofKind(RowKind.INSERT, 3, "3_1"),
+                            Row.ofKind(RowKind.INSERT, 2, "2_2"),
+                            Row.ofKind(RowKind.INSERT, 4, "4_1"));
+        }
+
+        // test read from COMPACT snapshot
+        try (BlockingIterator<Row, Row> iter =
+                streamSqlBlockIter(
+                        "SELECT * FROM T /*+ OPTIONS('scan.mode'='from-snapshot-full','scan.snapshot-id' = '4') */")) {
+            assertThat(iter.collect(6))
+                    .containsExactlyInAnyOrder(
+                            Row.ofKind(RowKind.INSERT, 1, "111111111"),
+                            Row.ofKind(RowKind.INSERT, 2, "2_1"),
+                            Row.ofKind(RowKind.INSERT, 3, "3_1"),
+                            Row.ofKind(RowKind.INSERT, 4, "4"),
+                            Row.ofKind(RowKind.INSERT, 2, "2_2"),
+                            Row.ofKind(RowKind.INSERT, 4, "4_1"));
+        }
+    }
+
+    @ParameterizedTest
     @ValueSource(strings = {"none", "lookup"})
     public void testStreamingReadDVTable(String changelogProducer) throws Exception {
         sql(
@@ -197,5 +244,22 @@ public class DeletionVectorITCase extends CatalogITCaseBase {
                                 Row.ofKind(RowKind.UPDATE_AFTER, 4, "4", "4"));
             }
         }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"none", "lookup"})
+    public void testBatchReadDVTableWithSequenceField(String changelogProducer) {
+        sql(
+                String.format(
+                        "CREATE TABLE T (id INT PRIMARY KEY NOT ENFORCED, sequence INT, name STRING) "
+                                + "WITH ('deletion-vectors.enabled' = 'true', 'sequence.field' = 'sequence', 'changelog-producer' = '%s')",
+                        changelogProducer));
+
+        sql("INSERT INTO T VALUES (1, 1, '1'), (2, 1, '2')");
+        sql("INSERT INTO T VALUES (1, 2, '1_1'), (2, 2, '2_1')");
+        sql("INSERT INTO T VALUES (1, 3, '1_2'), (2, 1, '2_2')");
+
+        assertThat(batchSql("SELECT * FROM T"))
+                .containsExactlyInAnyOrder(Row.of(1, 3, "1_2"), Row.of(2, 2, "2_1"));
     }
 }

@@ -195,6 +195,7 @@ public class SchemaManager implements Serializable {
                                             new Catalog.TableNotExistException(
                                                     identifierFromPath(
                                                             tableRoot.toString(), true, branch)));
+            Map<String, String> oldOptions = new HashMap<>(oldTableSchema.options());
             Map<String, String> newOptions = new HashMap<>(oldTableSchema.options());
             List<DataField> newFields = new ArrayList<>(oldTableSchema.fields());
             AtomicInteger highestFieldId = new AtomicInteger(oldTableSchema.highestFieldId());
@@ -203,13 +204,17 @@ public class SchemaManager implements Serializable {
                 if (change instanceof SetOption) {
                     SetOption setOption = (SetOption) change;
                     if (hasSnapshots) {
-                        checkAlterTableOption(setOption.key());
+                        checkAlterTableOption(
+                                setOption.key(),
+                                oldOptions.get(setOption.key()),
+                                setOption.value(),
+                                false);
                     }
                     newOptions.put(setOption.key(), setOption.value());
                 } else if (change instanceof RemoveOption) {
                     RemoveOption removeOption = (RemoveOption) change;
                     if (hasSnapshots) {
-                        checkAlterTableOption(removeOption.key());
+                        checkResetTableOption(removeOption.key());
                     }
                     newOptions.remove(removeOption.key());
                 } else if (change instanceof UpdateComment) {
@@ -296,27 +301,26 @@ public class SchemaManager implements Serializable {
                             newFields,
                             update.fieldName(),
                             (field) -> {
+                                DataType targetType = update.newDataType();
+                                if (update.keepNullability()) {
+                                    targetType = targetType.copy(field.type().isNullable());
+                                }
                                 checkState(
-                                        DataTypeCasts.supportsExplicitCast(
-                                                        field.type(), update.newDataType())
-                                                && CastExecutors.resolve(
-                                                                field.type(), update.newDataType())
+                                        DataTypeCasts.supportsExplicitCast(field.type(), targetType)
+                                                && CastExecutors.resolve(field.type(), targetType)
                                                         != null,
                                         String.format(
                                                 "Column type %s[%s] cannot be converted to %s without loosing information.",
-                                                field.name(), field.type(), update.newDataType()));
+                                                field.name(), field.type(), targetType));
                                 AtomicInteger dummyId = new AtomicInteger(0);
                                 if (dummyId.get() != 0) {
                                     throw new RuntimeException(
                                             String.format(
                                                     "Update column to nested row type '%s' is not supported.",
-                                                    update.newDataType()));
+                                                    targetType));
                                 }
                                 return new DataField(
-                                        field.id(),
-                                        field.name(),
-                                        update.newDataType(),
-                                        field.description());
+                                        field.id(), field.name(), targetType, field.description());
                             });
                 } else if (change instanceof UpdateColumnNullability) {
                     UpdateColumnNullability update = (UpdateColumnNullability) change;
@@ -579,10 +583,41 @@ public class SchemaManager implements Serializable {
         fileIO.deleteQuietly(toSchemaPath(schemaId));
     }
 
-    public static void checkAlterTableOption(String key) {
-        if (CoreOptions.getImmutableOptionKeys().contains(key)) {
+    public static void checkAlterTableOption(
+            String key, @Nullable String oldValue, String newValue, boolean fromDynamicOptions) {
+        if (CoreOptions.IMMUTABLE_OPTIONS.contains(key)) {
             throw new UnsupportedOperationException(
                     String.format("Change '%s' is not supported yet.", key));
+        }
+
+        if (CoreOptions.BUCKET.key().equals(key)) {
+            int oldBucket =
+                    oldValue == null
+                            ? CoreOptions.BUCKET.defaultValue()
+                            : Integer.parseInt(oldValue);
+            int newBucket = Integer.parseInt(newValue);
+
+            if (fromDynamicOptions) {
+                throw new UnsupportedOperationException(
+                        "Cannot change bucket number through dynamic options. You might need to rescale bucket.");
+            }
+            if (oldBucket == -1) {
+                throw new UnsupportedOperationException("Cannot change bucket when it is -1.");
+            }
+            if (newBucket == -1) {
+                throw new UnsupportedOperationException("Cannot change bucket to -1.");
+            }
+        }
+    }
+
+    public static void checkResetTableOption(String key) {
+        if (CoreOptions.IMMUTABLE_OPTIONS.contains(key)) {
+            throw new UnsupportedOperationException(
+                    String.format("Change '%s' is not supported yet.", key));
+        }
+
+        if (CoreOptions.BUCKET.key().equals(key)) {
+            throw new UnsupportedOperationException(String.format("Cannot reset %s.", key));
         }
     }
 

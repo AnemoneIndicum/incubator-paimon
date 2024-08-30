@@ -172,6 +172,7 @@ public class KeyValueFileStoreWrite extends MemoryFileStoreWrite<KeyValue> {
 
     @Override
     protected MergeTreeWriter createWriter(
+            @Nullable Long snapshotId,
             BinaryRow partition,
             int bucket,
             List<DataFileMeta> restoreFiles,
@@ -317,7 +318,8 @@ public class KeyValueFileStoreWrite extends MemoryFileStoreWrite<KeyValue> {
                                 ? new PositionedKeyValueProcessor(
                                         valueType,
                                         lookupStrategy.produceChangelog
-                                                || mergeEngine != DEDUPLICATE)
+                                                || mergeEngine != DEDUPLICATE
+                                                || !options.sequenceField().isEmpty())
                                 : new KeyValueProcessor(valueType);
                 wrapperFactory =
                         new LookupMergeFunctionWrapperFactory<>(
@@ -338,7 +340,8 @@ public class KeyValueFileStoreWrite extends MemoryFileStoreWrite<KeyValue> {
                     mergeSorter,
                     wrapperFactory,
                     lookupStrategy.produceChangelog,
-                    dvMaintainer);
+                    dvMaintainer,
+                    options);
         } else {
             return new MergeTreeCompactRewriter(
                     readerFactory,

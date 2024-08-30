@@ -243,6 +243,12 @@ under the License.
             <td>Whether only overwrite dynamic partition when overwriting a partitioned table with dynamic partition columns. Works only when the table has partition keys.</td>
         </tr>
         <tr>
+            <td><h5>end-input.check-partition-expire</h5></td>
+            <td style="word-wrap: break-word;">false</td>
+            <td>Boolean</td>
+            <td>Optional endInput check partition expire used in case of batch mode or bounded stream.</td>
+        </tr>
+        <tr>
             <td><h5>fields.default-aggregate-function</h5></td>
             <td style="word-wrap: break-word;">(none)</td>
             <td>String</td>
@@ -303,6 +309,12 @@ under the License.
             <td>Define different file format for different level, you can add the conf like this: 'file.format.per.level' = '0:avro,3:parquet', if the file format for level is not provided, the default format which set by `file.format` will be used.</td>
         </tr>
         <tr>
+            <td><h5>force-lookup</h5></td>
+            <td style="word-wrap: break-word;">false</td>
+            <td>Boolean</td>
+            <td>Whether to force the use of lookup for compaction.</td>
+        </tr>
+        <tr>
             <td><h5>full-compaction.delta-commits</h5></td>
             <td style="word-wrap: break-word;">(none)</td>
             <td>Integer</td>
@@ -344,12 +356,6 @@ Mainly to resolve data skew on primary keys. We recommend starting with 64 mb wh
             <td style="word-wrap: break-word;">128</td>
             <td>Integer</td>
             <td>The maximal fan-in for external merge sort. It limits the number of file handles. If it is too small, may cause intermediate merging. But if it is too large, it will cause too many files opened at the same time, consume memory and lead to random reading.</td>
-        </tr>
-        <tr>
-            <td><h5>force-lookup</h5></td>
-            <td style="word-wrap: break-word;">false</td>
-            <td>Boolean</td>
-            <td>Whether to force the use of lookup for compaction.</td>
         </tr>
         <tr>
             <td><h5>lookup-wait</h5></td>
@@ -543,7 +549,7 @@ This config option does not affect the default filesystem metastore.</td>
             <td><h5>partition.mark-done-action</h5></td>
             <td style="word-wrap: break-word;">"success-file"</td>
             <td>String</td>
-            <td>Action to mark a partition done is to notify the downstream application that the partition has finished writing, the partition is ready to be read.<br />1. 'success-file': add '_success' file to directory.<br />2. 'done-partition': add 'xxx.done' partition to metastore.<br />Both can be configured at the same time: 'done-partition,success-file'.</td>
+            <td>Action to mark a partition done is to notify the downstream application that the partition has finished writing, the partition is ready to be read.<br />1. 'success-file': add '_success' file to directory.<br />2. 'done-partition': add 'xxx.done' partition to metastore.<br />3. 'mark-event': mark partition event to metastore.<br />Both can be configured at the same time: 'done-partition,success-file,mark-event'.</td>
         </tr>
         <tr>
             <td><h5>partition.timestamp-formatter</h5></td>
@@ -579,7 +585,13 @@ This config option does not affect the default filesystem metastore.</td>
             <td><h5>record-level.time-field</h5></td>
             <td style="word-wrap: break-word;">(none)</td>
             <td>String</td>
-            <td>Time field for record level expire, it should be a seconds INT.</td>
+            <td>Time field for record level expire.</td>
+        </tr>
+        <tr>
+            <td><h5>record-level.time-field-type</h5></td>
+            <td style="word-wrap: break-word;">seconds-int</td>
+            <td><p>Enum</p></td>
+            <td>Time field type for record level expire, it can be seconds-int or millis-long.<br /><br />Possible values:<ul><li>"seconds-int": Timestamps in seconds should be INT type.</li><li>"millis-long": Timestamps in milliseconds should be BIGINT type.</li></ul></td>
         </tr>
         <tr>
             <td><h5>rowkind.field</h5></td>
@@ -634,6 +646,12 @@ This config option does not affect the default filesystem metastore.</td>
             <td style="word-wrap: break-word;">(none)</td>
             <td>Long</td>
             <td>Optional snapshot id used in case of "from-snapshot" or "from-snapshot-full" scan mode</td>
+        </tr>
+        <tr>
+            <td><h5>streaming.read.snapshot.delay</h5></td>
+            <td style="word-wrap: break-word;">(none)</td>
+            <td>Duration</td>
+            <td>The delay duration of stream read when scan incremental snapshots.</td>
         </tr>
         <tr>
             <td><h5>scan.tag-name</h5></td>

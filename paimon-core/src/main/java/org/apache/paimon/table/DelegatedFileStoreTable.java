@@ -20,6 +20,7 @@ package org.apache.paimon.table;
 
 import org.apache.paimon.CoreOptions;
 import org.apache.paimon.FileStore;
+import org.apache.paimon.Snapshot;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.Path;
 import org.apache.paimon.manifest.ManifestCacheFilter;
@@ -129,6 +130,11 @@ public abstract class DelegatedFileStoreTable implements FileStoreTable {
     }
 
     @Override
+    public Snapshot snapshot(long snapshotId) {
+        return wrapped.snapshot(snapshotId);
+    }
+
+    @Override
     public void rollbackTo(long snapshotId) {
         wrapped.rollbackTo(snapshotId);
     }
@@ -166,11 +172,6 @@ public abstract class DelegatedFileStoreTable implements FileStoreTable {
     @Override
     public void createBranch(String branchName) {
         wrapped.createBranch(branchName);
-    }
-
-    @Override
-    public void createBranch(String branchName, long snapshotId) {
-        wrapped.createBranch(branchName, snapshotId);
     }
 
     @Override

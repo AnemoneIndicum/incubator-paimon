@@ -27,6 +27,9 @@ import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.disk.IOManager;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.Path;
+import org.apache.paimon.manifest.IndexManifestEntry;
+import org.apache.paimon.manifest.ManifestEntry;
+import org.apache.paimon.manifest.ManifestFileMeta;
 import org.apache.paimon.manifest.PartitionEntry;
 import org.apache.paimon.metrics.MetricRegistry;
 import org.apache.paimon.predicate.LeafPredicate;
@@ -55,6 +58,7 @@ import org.apache.paimon.types.VarCharType;
 import org.apache.paimon.utils.BranchManager;
 import org.apache.paimon.utils.Filter;
 import org.apache.paimon.utils.ProjectedRow;
+import org.apache.paimon.utils.SimpleFileReader;
 import org.apache.paimon.utils.SnapshotManager;
 import org.apache.paimon.utils.TagManager;
 
@@ -104,6 +108,26 @@ public class AuditLogTable implements DataTable, ReadonlyTable {
     @Override
     public OptionalLong latestSnapshotId() {
         return wrapped.latestSnapshotId();
+    }
+
+    @Override
+    public Snapshot snapshot(long snapshotId) {
+        return wrapped.snapshot(snapshotId);
+    }
+
+    @Override
+    public SimpleFileReader<ManifestFileMeta> manifestListReader() {
+        return wrapped.manifestListReader();
+    }
+
+    @Override
+    public SimpleFileReader<ManifestEntry> manifestFileReader() {
+        return wrapped.manifestFileReader();
+    }
+
+    @Override
+    public SimpleFileReader<IndexManifestEntry> indexManifestFileReader() {
+        return wrapped.indexManifestFileReader();
     }
 
     @Override
@@ -172,6 +196,11 @@ public class AuditLogTable implements DataTable, ReadonlyTable {
     @Override
     public BranchManager branchManager() {
         return wrapped.branchManager();
+    }
+
+    @Override
+    public DataTable switchToBranch(String branchName) {
+        return new AuditLogTable(wrapped.switchToBranch(branchName));
     }
 
     @Override
@@ -272,8 +301,8 @@ public class AuditLogTable implements DataTable, ReadonlyTable {
         }
 
         @Override
-        public SnapshotReader withDataFileTimeMills(long dataFileTimeMills) {
-            snapshotReader.withDataFileTimeMills(dataFileTimeMills);
+        public SnapshotReader withManifestEntryFilter(Filter<ManifestEntry> filter) {
+            snapshotReader.withManifestEntryFilter(filter);
             return this;
         }
 
@@ -388,8 +417,8 @@ public class AuditLogTable implements DataTable, ReadonlyTable {
         }
 
         @Override
-        public List<BinaryRow> listPartitions() {
-            return batchScan.listPartitions();
+        public List<PartitionEntry> listPartitionEntries() {
+            return batchScan.listPartitionEntries();
         }
 
         @Override
@@ -424,8 +453,8 @@ public class AuditLogTable implements DataTable, ReadonlyTable {
         }
 
         @Override
-        public List<BinaryRow> listPartitions() {
-            return streamScan.listPartitions();
+        public List<PartitionEntry> listPartitionEntries() {
+            return streamScan.listPartitionEntries();
         }
 
         @Nullable

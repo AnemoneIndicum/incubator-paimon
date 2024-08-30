@@ -141,7 +141,8 @@ abstract class AbstractFileStore<T> implements FileStore<T> {
                 forWrite ? writeManifestCache : readManifestCache);
     }
 
-    protected IndexManifestFile.Factory indexManifestFileFactory() {
+    @Override
+    public IndexManifestFile.Factory indexManifestFileFactory() {
         return new IndexManifestFile.Factory(
                 fileIO,
                 options.manifestFormat(),
@@ -288,7 +289,8 @@ abstract class AbstractFileStore<T> implements FileStore<T> {
                 PartitionExpireStrategy.createPartitionExpireStrategy(options, partitionType()),
                 newScan(),
                 newCommit(commitUser),
-                metastoreClient);
+                metastoreClient,
+                options.endInputCheckPartitionExpire());
     }
 
     @Override
