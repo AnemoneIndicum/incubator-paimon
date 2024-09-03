@@ -22,6 +22,7 @@ import org.apache.paimon.annotation.Documentation;
 import org.apache.paimon.annotation.Documentation.ExcludeFromDocumentation;
 import org.apache.paimon.annotation.Documentation.Immutable;
 import org.apache.paimon.annotation.VisibleForTesting;
+import org.apache.paimon.compression.CompressOptions;
 import org.apache.paimon.fileindex.FileIndexOptions;
 import org.apache.paimon.format.FileFormat;
 import org.apache.paimon.fs.Path;
@@ -356,6 +357,13 @@ public class CoreOptions implements Serializable {
                     .defaultValue("zstd")
                     .withDescription(
                             "Compression for spill, currently zstd, lzo and zstd are supported.");
+
+    public static final ConfigOption<Integer> SPILL_COMPRESSION_ZSTD_LEVEL =
+            key("spill-compression.zstd-level")
+                    .intType()
+                    .defaultValue(1)
+                    .withDescription(
+                            "Default spill compression zstd level. For higher compression rates, it can be configured to 9, but the read and write speed will significantly decrease.");
 
     public static final ConfigOption<Boolean> WRITE_ONLY =
             key("write-only")
@@ -1638,8 +1646,15 @@ public class CoreOptions implements Serializable {
         return options.get(SORT_SPILL_BUFFER_SIZE).getBytes();
     }
 
-    public String spillCompression() {
-        return options.get(SPILL_COMPRESSION);
+    public CompressOptions spillCompressOptions() {
+        return new CompressOptions(
+                options.get(SPILL_COMPRESSION), options.get(SPILL_COMPRESSION_ZSTD_LEVEL));
+    }
+
+    public CompressOptions lookupCompressOptions() {
+        return new CompressOptions(
+                options.get(LOOKUP_CACHE_SPILL_COMPRESSION),
+                options.get(SPILL_COMPRESSION_ZSTD_LEVEL));
     }
 
     public Duration continuousDiscoveryInterval() {
@@ -1907,12 +1922,12 @@ public class CoreOptions implements Serializable {
         return options.get(PARTITION_TIMESTAMP_PATTERN);
     }
 
-    public int readBatchSize() {
-        return options.get(READ_BATCH_SIZE);
-    }
-
     public String consumerId() {
-        return options.get(CONSUMER_ID);
+        String consumerId = options.get(CONSUMER_ID);
+        if (consumerId != null && consumerId.isEmpty()) {
+            throw new RuntimeException("consumer id cannot be empty string.");
+        }
+        return consumerId;
     }
 
     public static StreamingReadMode streamReadType(Options options) {
