@@ -47,10 +47,10 @@ public class CreateTagFromTimestampActionFactory implements ActionFactory {
         String timeRetained = params.get(TIME_RETAINED);
         Map<String, String> catalogConfig = optionalConfigMap(params, CATALOG_CONF);
 
-        CreateTagFromTimestampAction migrateFileAction =
+        CreateTagFromTimestampAction createTagFromTimestampAction =
                 new CreateTagFromTimestampAction(
                         warehouse, table, tag, timestamp, timeRetained, catalogConfig);
-        return Optional.of(migrateFileAction);
+        return Optional.of(createTagFromTimestampAction);
     }
 
     @Override

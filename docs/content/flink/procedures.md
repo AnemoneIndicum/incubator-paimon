@@ -59,6 +59,12 @@ All available procedures are listed below.
    <tr>
       <td>compact</td>
       <td>
+         CALL [catalog.]sys.compact('table') <br/><br/>
+         CALL [catalog.]sys.compact('table', 'partitions') <br/><br/> 
+         CALL [catalog.]sys.compact('table', 'partitions', 'order_strategy', 'order_by') <br/><br/>
+         CALL [catalog.]sys.compact('table', 'partitions', 'order_strategy', 'order_by', 'options') <br/><br/>
+         CALL [catalog.]sys.compact('table', 'partitions', 'order_strategy', 'order_by', 'options', 'where') <br/><br/>
+         CALL [catalog.]sys.compact('table', 'partitions', 'order_strategy', 'order_by', 'options', 'where', 'partition_idle_time') <br/><br/>
       </td>
       <td>
          To compact a table. Arguments:
@@ -179,21 +185,6 @@ All available procedures are listed below.
    <tr>
       <td>merge_into</td>
       <td>
-         -- when matched then upsert<br/>
-         CALL [catalog.]sys.merge_into('identifier','targetAlias',<br/>
-            'sourceSqls','sourceTable','mergeCondition',<br/>
-            'matchedUpsertCondition','matchedUpsertSetting')<br/><br/>
-         -- when matched then upsert; when not matched then insert<br/>
-         CALL [catalog.]sys.merge_into('identifier','targetAlias',<br/>
-            'sourceSqls','sourceTable','mergeCondition',<br/>
-            'matchedUpsertCondition','matchedUpsertSetting',<br/>
-            'notMatchedInsertCondition','notMatchedInsertValues')<br/><br/>
-         -- when matched then delete<br/>
-         CALL [catalog].sys.merge_into('identifier','targetAlias',<br/>
-            'sourceSqls','sourceTable','mergeCondition',<br/>
-            'matchedDeleteCondition')<br/><br/>
-         -- when matched then upsert + delete;<br/> 
-         -- when not matched then insert<br/>
          CALL [catalog].sys.merge_into('identifier','targetAlias',<br/>
             'sourceSqls','sourceTable','mergeCondition',<br/>
             'matchedUpsertCondition','matchedUpsertSetting',<br/>
@@ -210,7 +201,12 @@ All available procedures are listed below.
          -- and if there is no match,<br/> 
          -- insert the order from<br/>
          -- the source table<br/>
-         CALL sys.merge_into('default.T', '', '', 'default.S', 'T.id=S.order_id', '', 'price=T.price+20', '', '*')
+         CALL sys.merge_into(<br/>
+            target_table => 'default.T',<br/>
+            source_table => 'default.S',<br/>
+            merge_condition => 'T.id=S.order_id',<br/>
+            matched_upsert_setting => 'price=T.price+20',<br/>
+            not_matched_insert_values => '*')<br/><br/>
       </td>
    </tr>
    <tr>
@@ -253,9 +249,9 @@ All available procedures are listed below.
       <td>rollback_to</td>
       <td>
          -- rollback to a snapshot<br/>
-         CALL sys.rollback_to('identifier', snapshotId)<br/><br/>
+         CALL sys.rollback_to(`table` => 'identifier', snapshot_id => snapshotId)<br/><br/>
          -- rollback to a tag<br/>
-         CALL sys.rollback_to('identifier', 'tagName')
+         CALL sys.rollback_to(`table` => 'identifier', tag => 'tagName')
       </td>
       <td>
          To rollback to a specific version of target table. Argument:
@@ -263,7 +259,7 @@ All available procedures are listed below.
             <li>snapshotId (Long): id of the snapshot that will roll back to.</li>
             <li>tagName: name of the tag that will roll back to.</li>
       </td>
-      <td>CALL sys.rollback_to('default.T', 10)</td>
+      <td>CALL sys.rollback_to(`table` => 'default.T', snapshot_id => 10)</td>
    </tr>
    <tr>
       <td>expire_snapshots</td>

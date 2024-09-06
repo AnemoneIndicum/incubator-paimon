@@ -257,6 +257,12 @@ public class CatalogTableITCase extends CatalogITCaseBase {
                                 + "{\"id\":1,\"name\":\"b\",\"type\":\"INT\"},"
                                 + "{\"id\":2,\"name\":\"c\",\"type\":\"STRING\"}], [], [\"a\"], "
                                 + "{\"a.aa.aaa\":\"val1\",\"b.bb.bbb\":\"val2\"}, ]]");
+
+        result =
+                sql(
+                        "SELECT schema_id, fields, partition_keys, "
+                                + "primary_keys, options, `comment` FROM T$schemas where schema_id = 5");
+        assertThat(result.toString()).isEqualTo("[]");
     }
 
     @Test
@@ -812,6 +818,11 @@ public class CatalogTableITCase extends CatalogITCaseBase {
                         "SELECT tag_name, snapshot_id, schema_id, record_count FROM T$tags ORDER BY tag_name");
 
         assertThat(result).containsExactly(Row.of("tag1", 1L, 0L, 1L), Row.of("tag2", 2L, 0L, 2L));
+
+        result =
+                sql(
+                        "SELECT tag_name, snapshot_id, schema_id, record_count FROM T$tags where tag_name = 'tag1' ");
+        assertThat(result).containsExactly(Row.of("tag1", 1L, 0L, 1L));
     }
 
     @Test
