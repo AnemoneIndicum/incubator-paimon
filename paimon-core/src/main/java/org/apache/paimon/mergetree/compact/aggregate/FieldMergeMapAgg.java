@@ -33,6 +33,8 @@ public class FieldMergeMapAgg extends FieldAggregator {
 
     public static final String NAME = "merge_map";
 
+    private static final long serialVersionUID = 1L;
+
     private final InternalArray.ElementGetter keyGetter;
     private final InternalArray.ElementGetter valueGetter;
 
@@ -44,7 +46,7 @@ public class FieldMergeMapAgg extends FieldAggregator {
     }
 
     @Override
-    String name() {
+    public String name() {
         return NAME;
     }
 

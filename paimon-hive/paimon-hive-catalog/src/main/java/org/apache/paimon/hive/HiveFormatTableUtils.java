@@ -19,6 +19,7 @@
 package org.apache.paimon.hive;
 
 import org.apache.paimon.catalog.Identifier;
+import org.apache.paimon.options.Options;
 import org.apache.paimon.table.FormatTable;
 import org.apache.paimon.table.FormatTable.Format;
 import org.apache.paimon.types.DataType;
@@ -37,6 +38,9 @@ import java.util.List;
 import java.util.Map;
 
 import static org.apache.hadoop.hive.serde.serdeConstants.FIELD_DELIM;
+import static org.apache.paimon.CoreOptions.FILE_FORMAT;
+import static org.apache.paimon.CoreOptions.TYPE;
+import static org.apache.paimon.TableType.FORMAT_TABLE;
 import static org.apache.paimon.catalog.Catalog.COMMENT_PROP;
 import static org.apache.paimon.table.FormatTableOptions.FIELD_DELIMITER;
 
@@ -55,20 +59,29 @@ class HiveFormatTableUtils {
         String location = hiveTable.getSd().getLocation();
         Format format;
         SerDeInfo serdeInfo = hiveTable.getSd().getSerdeInfo();
-        String serLib = serdeInfo.getSerializationLib().toLowerCase();
-        String inputFormat = hiveTable.getSd().getInputFormat();
-        if (serLib.contains("parquet")) {
-            format = Format.PARQUET;
-        } else if (serLib.contains("orc")) {
-            format = Format.ORC;
-        } else if (inputFormat.contains("Text")) {
-            format = Format.CSV;
-            // hive default field delimiter is '\u0001'
-            options.put(
-                    FIELD_DELIMITER.key(),
-                    serdeInfo.getParameters().getOrDefault(FIELD_DELIM, "\u0001"));
+        if (Options.fromMap(options).get(TYPE) == FORMAT_TABLE) {
+            format = Format.valueOf(options.get(FILE_FORMAT.key()).toUpperCase());
+            if (format.equals(Format.CSV)) {
+                options.put(
+                        FIELD_DELIMITER.key(),
+                        serdeInfo.getParameters().getOrDefault(FIELD_DELIM, "\u0001"));
+            }
         } else {
-            throw new UnsupportedOperationException("Unsupported table: " + hiveTable);
+            String serLib = serdeInfo.getSerializationLib().toLowerCase();
+            String inputFormat = hiveTable.getSd().getInputFormat();
+            if (serLib.contains("parquet")) {
+                format = Format.PARQUET;
+            } else if (serLib.contains("orc")) {
+                format = Format.ORC;
+            } else if (inputFormat.contains("Text")) {
+                format = Format.CSV;
+                // hive default field delimiter is '\u0001'
+                options.put(
+                        FIELD_DELIMITER.key(),
+                        serdeInfo.getParameters().getOrDefault(FIELD_DELIM, "\u0001"));
+            } else {
+                throw new UnsupportedOperationException("Unsupported table: " + hiveTable);
+            }
         }
         return FormatTable.builder()
                 .identifier(identifier)

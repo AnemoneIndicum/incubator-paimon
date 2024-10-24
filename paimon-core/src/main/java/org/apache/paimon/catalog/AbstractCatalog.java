@@ -24,6 +24,7 @@ import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.FileStatus;
 import org.apache.paimon.fs.Path;
 import org.apache.paimon.lineage.LineageMetaFactory;
+import org.apache.paimon.metastore.MetastoreClient;
 import org.apache.paimon.operation.FileStoreCommit;
 import org.apache.paimon.operation.Lock;
 import org.apache.paimon.options.Options;
@@ -46,12 +47,15 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
+import static org.apache.paimon.CoreOptions.TYPE;
 import static org.apache.paimon.CoreOptions.createCommitUser;
+import static org.apache.paimon.TableType.FORMAT_TABLE;
 import static org.apache.paimon.options.CatalogOptions.ALLOW_UPPER_CASE;
 import static org.apache.paimon.options.CatalogOptions.LINEAGE_META;
 import static org.apache.paimon.options.CatalogOptions.LOCK_ENABLED;
@@ -153,6 +157,32 @@ public abstract class AbstractCatalog implements Catalog {
             throws DatabaseNotExistException;
 
     @Override
+    public void createPartition(Identifier identifier, Map<String, String> partitionSpec)
+            throws TableNotExistException {
+        Identifier tableIdentifier =
+                Identifier.create(identifier.getDatabaseName(), identifier.getTableName());
+        FileStoreTable table = (FileStoreTable) getTable(tableIdentifier);
+
+        if (table.partitionKeys().isEmpty() || !table.coreOptions().partitionedTableInMetastore()) {
+            throw new UnsupportedOperationException(
+                    "The table is not partitioned table in metastore.");
+        }
+
+        MetastoreClient.Factory metastoreFactory =
+                table.catalogEnvironment().metastoreClientFactory();
+        if (metastoreFactory == null) {
+            throw new UnsupportedOperationException(
+                    "The catalog must have metastore to create partition.");
+        }
+
+        try (MetastoreClient client = metastoreFactory.create()) {
+            client.addPartition(new LinkedHashMap<>(partitionSpec));
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    @Override
     public void dropPartition(Identifier identifier, Map<String, String> partitionSpec)
             throws TableNotExistException {
         checkNotSystemTable(identifier, "dropPartition");
@@ -244,7 +274,11 @@ public abstract class AbstractCatalog implements Catalog {
 
         copyTableDefaultOptions(schema.options());
 
-        createTableImpl(identifier, schema);
+        if (Options.fromMap(schema.options()).get(TYPE) == FORMAT_TABLE) {
+            createFormatTable(identifier, schema);
+        } else {
+            createTableImpl(identifier, schema);
+        }
     }
 
     protected abstract void createTableImpl(Identifier identifier, Schema schema);
@@ -369,6 +403,17 @@ public abstract class AbstractCatalog implements Catalog {
      */
     public FormatTable getFormatTable(Identifier identifier) throws Catalog.TableNotExistException {
         throw new Catalog.TableNotExistException(identifier);
+    }
+
+    /**
+     * Create a {@link FormatTable} identified by the given {@link Identifier}.
+     *
+     * @param identifier Path of the table
+     * @param schema Schema of the table
+     */
+    public void createFormatTable(Identifier identifier, Schema schema) {
+        throw new UnsupportedOperationException(
+                this.getClass().getName() + " currently does not support format table");
     }
 
     /**

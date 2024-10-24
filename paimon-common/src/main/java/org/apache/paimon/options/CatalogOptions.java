@@ -20,7 +20,7 @@ package org.apache.paimon.options;
 
 import org.apache.paimon.options.description.Description;
 import org.apache.paimon.options.description.TextElement;
-import org.apache.paimon.table.TableType;
+import org.apache.paimon.table.CatalogTableType;
 
 import java.time.Duration;
 
@@ -48,10 +48,10 @@ public class CatalogOptions {
                     .noDefaultValue()
                     .withDescription("Uri of metastore server.");
 
-    public static final ConfigOption<TableType> TABLE_TYPE =
+    public static final ConfigOption<CatalogTableType> TABLE_TYPE =
             ConfigOptions.key("table.type")
-                    .enumType(TableType.class)
-                    .defaultValue(TableType.MANAGED)
+                    .enumType(CatalogTableType.class)
+                    .defaultValue(CatalogTableType.MANAGED)
                     .withDescription("Type of table.");
 
     public static final ConfigOption<Boolean> LOCK_ENABLED =
@@ -77,13 +77,6 @@ public class CatalogOptions {
                     .durationType()
                     .defaultValue(Duration.ofMinutes(8))
                     .withDescription("The maximum time to wait for acquiring the lock.");
-
-    public static final ConfigOption<Boolean> FS_ALLOW_HADOOP_FALLBACK =
-            key("fs.allow-hadoop-fallback")
-                    .booleanType()
-                    .defaultValue(true)
-                    .withDescription(
-                            "Allow to fallback to hadoop File IO when no file io found for the scheme.");
 
     public static final ConfigOption<Integer> CLIENT_POOL_SIZE =
             key("client-pool-size")

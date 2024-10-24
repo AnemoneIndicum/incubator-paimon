@@ -81,12 +81,6 @@ under the License.
             <td>If the pending snapshot count exceeds the threshold, lookup operator will refresh the table in sync.</td>
         </tr>
         <tr>
-            <td><h5>partition.end-input-to-done</h5></td>
-            <td style="word-wrap: break-word;">false</td>
-            <td>Boolean</td>
-            <td>Whether mark the done status to indicate that the data is ready when end input.</td>
-        </tr>
-        <tr>
             <td><h5>partition.idle-time-to-done</h5></td>
             <td style="word-wrap: break-word;">(none)</td>
             <td>Duration</td>
@@ -115,12 +109,6 @@ under the License.
             <td style="word-wrap: break-word;">(none)</td>
             <td>Integer</td>
             <td>Define a custom parallelism for the scan source. By default, if this option is not defined, the planner will derive the parallelism for each statement individually by also considering the global configuration. If user enable the scan.infer-parallelism, the planner will derive the parallelism by inferred parallelism.</td>
-        </tr>
-        <tr>
-            <td><h5>scan.push-down</h5></td>
-            <td style="word-wrap: break-word;">true</td>
-            <td>Boolean</td>
-            <td>If true, flink will push down projection, filters, limit to the source. The cost is that it is difficult to reuse the source in a job. With flink 1.18 or higher version, it is possible to reuse the source even with projection push down.</td>
         </tr>
         <tr>
             <td><h5>scan.remove-normalize</h5></td>

@@ -42,8 +42,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
+import static org.apache.paimon.CoreOptions.PARTITION_MARK_DONE_WHEN_END_INPUT;
 import static org.apache.paimon.flink.FlinkConnectorOptions.PARTITION_IDLE_TIME_TO_DONE;
-import static org.apache.paimon.flink.FlinkConnectorOptions.PARTITION_MARK_DONE_WHEN_END_INPUT;
 
 /** Mark partition done. */
 public class PartitionMarkDone implements Closeable {
@@ -71,7 +71,8 @@ public class PartitionMarkDone implements Closeable {
                 new InternalRowPartitionComputer(
                         coreOptions.partitionDefaultName(),
                         table.schema().logicalPartitionType(),
-                        table.partitionKeys().toArray(new String[0]));
+                        table.partitionKeys().toArray(new String[0]),
+                        coreOptions.legacyPartitionName());
 
         PartitionMarkDoneTrigger trigger =
                 PartitionMarkDoneTrigger.create(coreOptions, isRestored, stateStore);

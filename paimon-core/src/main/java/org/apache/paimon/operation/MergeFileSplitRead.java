@@ -56,11 +56,9 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
-import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-import static org.apache.paimon.io.DataFilePathFactory.CHANGELOG_FILE_PREFIX;
 import static org.apache.paimon.predicate.PredicateBuilder.containsFields;
 import static org.apache.paimon.predicate.PredicateBuilder.splitAnd;
 
@@ -80,7 +78,7 @@ public class MergeFileSplitRead implements SplitRead<KeyValue> {
     private final MergeSorter mergeSorter;
     private final List<String> sequenceFields;
 
-    @Nullable private int[][] keyProjectedFields;
+    @Nullable private RowType readKeyType;
 
     @Nullable private List<Predicate> filtersForKeys;
 
@@ -110,12 +108,6 @@ public class MergeFileSplitRead implements SplitRead<KeyValue> {
         this.sequenceFields = options.sequenceField();
     }
 
-    public MergeFileSplitRead withKeyProjection(@Nullable int[][] projectedFields) {
-        readerFactoryBuilder.withKeyProjection(projectedFields);
-        this.keyProjectedFields = projectedFields;
-        return this;
-    }
-
     public Comparator<InternalRow> keyComparator() {
         return keyComparator;
     }
@@ -124,12 +116,26 @@ public class MergeFileSplitRead implements SplitRead<KeyValue> {
         return mergeSorter;
     }
 
-    @Override
-    public MergeFileSplitRead withProjection(@Nullable int[][] projectedFields) {
-        if (projectedFields == null) {
-            return this;
-        }
+    public TableSchema tableSchema() {
+        return tableSchema;
+    }
 
+    public MergeFileSplitRead withReadKeyType(RowType readKeyType) {
+        readerFactoryBuilder.withReadKeyType(readKeyType);
+        this.readKeyType = readKeyType;
+        return this;
+    }
+
+    @Override
+    public MergeFileSplitRead withReadType(RowType readType) {
+        // todo: replace projectedFields with readType
+        int[][] projectedFields =
+                Arrays.stream(
+                                tableSchema
+                                        .logicalRowType()
+                                        .getFieldIndices(readType.getFieldNames()))
+                        .mapToObj(i -> new int[] {i})
+                        .toArray(int[][]::new);
         int[][] newProjectedFields = projectedFields;
         if (sequenceFields.size() > 0) {
             // make sure projection contains sequence fields
@@ -153,8 +159,15 @@ public class MergeFileSplitRead implements SplitRead<KeyValue> {
         this.pushdownProjection = projection.pushdownProjection;
         this.outerProjection = projection.outerProjection;
         if (pushdownProjection != null) {
-            readerFactoryBuilder.withValueProjection(pushdownProjection);
-            mergeSorter.setProjectedValueType(readerFactoryBuilder.projectedValueType());
+            RowType pushdownRowType =
+                    tableSchema
+                            .logicalRowType()
+                            .project(
+                                    Arrays.stream(pushdownProjection)
+                                            .mapToInt(arr -> arr[0])
+                                            .toArray());
+            readerFactoryBuilder.withReadValueType(pushdownRowType);
+            mergeSorter.setProjectedValueType(pushdownRowType);
         }
 
         if (newProjectedFields != projectedFields) {
@@ -299,34 +312,18 @@ public class MergeFileSplitRead implements SplitRead<KeyValue> {
                         onlyFilterKey ? filtersForKeys : filtersForAll);
         List<ReaderSupplier<KeyValue>> suppliers = new ArrayList<>();
         for (DataFileMeta file : files) {
-            suppliers.add(
-                    () -> {
-                        // We need to check extraFiles to be compatible with Paimon 0.2.
-                        // See comments on DataFileMeta#extraFiles.
-                        String fileName = changelogFile(file).orElse(file.fileName());
-                        return readerFactory.createRecordReader(
-                                file.schemaId(), fileName, file.fileSize(), file.level());
-                    });
+            suppliers.add(() -> readerFactory.createRecordReader(file));
         }
 
         return projectOuter(ConcatRecordReader.create(suppliers));
     }
 
-    private Optional<String> changelogFile(DataFileMeta fileMeta) {
-        for (String file : fileMeta.extraFiles()) {
-            if (file.startsWith(CHANGELOG_FILE_PREFIX)) {
-                return Optional.of(file);
-            }
-        }
-        return Optional.empty();
-    }
-
     private RecordReader<KeyValue> projectKey(RecordReader<KeyValue> reader) {
-        if (keyProjectedFields == null) {
+        if (readKeyType == null) {
             return reader;
         }
 
-        ProjectedRow projectedRow = ProjectedRow.from(keyProjectedFields);
+        ProjectedRow projectedRow = ProjectedRow.from(readKeyType, tableSchema.logicalRowType());
         return reader.transform(kv -> kv.replaceKey(projectedRow.replaceRow(kv.key())));
     }
 
@@ -341,6 +338,6 @@ public class MergeFileSplitRead implements SplitRead<KeyValue> {
     @Nullable
     public UserDefinedSeqComparator createUdsComparator() {
         return UserDefinedSeqComparator.create(
-                readerFactoryBuilder.projectedValueType(), sequenceFields);
+                readerFactoryBuilder.readValueType(), sequenceFields);
     }
 }

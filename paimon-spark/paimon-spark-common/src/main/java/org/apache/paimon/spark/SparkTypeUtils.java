@@ -19,6 +19,7 @@
 package org.apache.paimon.spark;
 
 import org.apache.paimon.spark.util.shim.TypeUtils;
+import org.apache.paimon.table.Table;
 import org.apache.paimon.types.ArrayType;
 import org.apache.paimon.types.BigIntType;
 import org.apache.paimon.types.BinaryType;
@@ -59,6 +60,19 @@ public class SparkTypeUtils {
 
     private SparkTypeUtils() {}
 
+    public static RowType toPartitionType(Table table) {
+        int[] projections = table.rowType().getFieldIndices(table.partitionKeys());
+        List<DataField> partitionTypes = new ArrayList<>();
+        for (int i : projections) {
+            partitionTypes.add(table.rowType().getFields().get(i));
+        }
+        return new RowType(false, partitionTypes);
+    }
+
+    public static StructType toSparkPartitionType(Table table) {
+        return (StructType) SparkTypeUtils.fromPaimonType(toPartitionType(table));
+    }
+
     public static StructType fromPaimonRowType(RowType type) {
         return (StructType) fromPaimonType(type);
     }
@@ -69,6 +83,42 @@ public class SparkTypeUtils {
 
     public static org.apache.paimon.types.DataType toPaimonType(DataType dataType) {
         return SparkToPaimonTypeVisitor.visit(dataType);
+    }
+
+    /**
+     * Prune Paimon `RowType` by required Spark `StructType`, use this method instead of {@link
+     * #toPaimonType(DataType)} when need to retain the field id.
+     */
+    public static RowType prunePaimonRowType(StructType requiredStructType, RowType rowType) {
+        return (RowType) prunePaimonType(requiredStructType, rowType);
+    }
+
+    private static org.apache.paimon.types.DataType prunePaimonType(
+            DataType sparkDataType, org.apache.paimon.types.DataType paimonDataType) {
+        if (sparkDataType instanceof StructType) {
+            StructType s = (StructType) sparkDataType;
+            RowType p = (RowType) paimonDataType;
+            List<DataField> newFields = new ArrayList<>();
+            for (StructField field : s.fields()) {
+                DataField f = p.getField(field.name());
+                newFields.add(f.newType(prunePaimonType(field.dataType(), f.type())));
+            }
+            return p.copy(newFields);
+        } else if (sparkDataType instanceof org.apache.spark.sql.types.MapType) {
+            org.apache.spark.sql.types.MapType s =
+                    (org.apache.spark.sql.types.MapType) sparkDataType;
+            MapType p = (MapType) paimonDataType;
+            return p.newKeyValueType(
+                    prunePaimonType(s.keyType(), p.getKeyType()),
+                    prunePaimonType(s.valueType(), p.getValueType()));
+        } else if (sparkDataType instanceof org.apache.spark.sql.types.ArrayType) {
+            org.apache.spark.sql.types.ArrayType s =
+                    (org.apache.spark.sql.types.ArrayType) sparkDataType;
+            ArrayType r = (ArrayType) paimonDataType;
+            return r.newElementType(prunePaimonType(s.elementType(), r.getElementType()));
+        } else {
+            return paimonDataType;
+        }
     }
 
     private static class PaimonToSparkTypeVisitor extends DataTypeDefaultVisitor<DataType> {

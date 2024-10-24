@@ -68,8 +68,8 @@ import static org.apache.paimon.CoreOptions.SNAPSHOT_NUM_RETAINED_MAX;
 import static org.apache.paimon.CoreOptions.SNAPSHOT_NUM_RETAINED_MIN;
 import static org.apache.paimon.CoreOptions.STREAMING_READ_OVERWRITE;
 import static org.apache.paimon.mergetree.compact.PartialUpdateMergeFunction.SEQUENCE_GROUP;
-import static org.apache.paimon.schema.SystemColumns.KEY_FIELD_PREFIX;
-import static org.apache.paimon.schema.SystemColumns.SYSTEM_FIELD_NAMES;
+import static org.apache.paimon.table.SpecialFields.KEY_FIELD_PREFIX;
+import static org.apache.paimon.table.SpecialFields.SYSTEM_FIELD_NAMES;
 import static org.apache.paimon.types.DataTypeRoot.ARRAY;
 import static org.apache.paimon.types.DataTypeRoot.MAP;
 import static org.apache.paimon.types.DataTypeRoot.MULTISET;
@@ -180,7 +180,7 @@ public class SchemaValidation {
             if (options.changelogProducer() != ChangelogProducer.LOOKUP
                     && options.changelogProducer() != ChangelogProducer.NONE) {
                 throw new IllegalArgumentException(
-                        "Only support 'none' and 'lookup' changelog-producer on FIRST_MERGE merge engine");
+                        "Only support 'none' and 'lookup' changelog-producer on FIRST_ROW merge engine");
             }
         }
 
@@ -540,7 +540,7 @@ public class SchemaValidation {
 
             if (options.mergeEngine() == MergeEngine.FIRST_ROW) {
                 throw new IllegalArgumentException(
-                        "Do not support use sequence field on FIRST_MERGE merge engine.");
+                        "Do not support use sequence field on FIRST_ROW merge engine.");
             }
 
             if (schema.crossPartitionUpdate()) {

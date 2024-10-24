@@ -27,12 +27,14 @@ public class FieldMinAgg extends FieldAggregator {
 
     public static final String NAME = "min";
 
+    private static final long serialVersionUID = 1L;
+
     public FieldMinAgg(DataType dataType) {
         super(dataType);
     }
 
     @Override
-    String name() {
+    public String name() {
         return NAME;
     }
 

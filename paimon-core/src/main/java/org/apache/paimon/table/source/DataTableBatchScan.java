@@ -19,6 +19,7 @@
 package org.apache.paimon.table.source;
 
 import org.apache.paimon.CoreOptions;
+import org.apache.paimon.manifest.PartitionEntry;
 import org.apache.paimon.operation.DefaultValueAssigner;
 import org.apache.paimon.predicate.Predicate;
 import org.apache.paimon.table.source.snapshot.SnapshotReader;
@@ -27,6 +28,7 @@ import org.apache.paimon.table.source.snapshot.StartingScanner.ScannedResult;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 import static org.apache.paimon.CoreOptions.MergeEngine.FIRST_ROW;
 
@@ -81,11 +83,41 @@ public class DataTableBatchScan extends AbstractDataTableScan {
         }
     }
 
+    @Override
+    public List<PartitionEntry> listPartitionEntries() {
+        if (startingScanner == null) {
+            startingScanner = createStartingScanner(false);
+        }
+        return startingScanner.scanPartitions(snapshotReader);
+    }
+
     private StartingScanner.Result applyPushDownLimit(StartingScanner.Result result) {
         if (pushDownLimit != null && result instanceof ScannedResult) {
             long scannedRowCount = 0;
             SnapshotReader.Plan plan = ((ScannedResult) result).plan();
             List<DataSplit> splits = plan.dataSplits();
+            if (splits.isEmpty()) {
+                return result;
+            }
+
+            // We first add the rawConvertible split to avoid merging, and if the row count
+            // is still less than limit number, then add split which is not rawConvertible.
+            splits.sort(
+                    (x, y) -> {
+                        if (x.rawConvertible() && y.rawConvertible()) {
+                            return 0;
+                        } else if (x.rawConvertible()) {
+                            return -1;
+                        } else {
+                            return 1;
+                        }
+                    });
+
+            // fast return if there is no rawConvertible split
+            if (!splits.get(0).rawConvertible()) {
+                return result;
+            }
+
             List<Split> limitedSplits = new ArrayList<>();
             for (DataSplit dataSplit : splits) {
                 long splitRowCount = getRowCountForSplit(dataSplit);
@@ -105,10 +137,14 @@ public class DataTableBatchScan extends AbstractDataTableScan {
     }
 
     /**
-     * 0 represents that we can't compute the row count of this split, 'cause this split needs to be
-     * merged.
+     * 0 represents that we can't compute the row count of this split: 1. the split needs to be
+     * merged; 2. the table enabled deletion vector and there are some deletion files.
      */
     private long getRowCountForSplit(DataSplit split) {
+        if (split.deletionFiles().isPresent()
+                && split.deletionFiles().get().stream().anyMatch(Objects::nonNull)) {
+            return 0L;
+        }
         return split.convertToRawFiles()
                 .map(files -> files.stream().map(RawFile::rowCount).reduce(Long::sum).orElse(0L))
                 .orElse(0L);

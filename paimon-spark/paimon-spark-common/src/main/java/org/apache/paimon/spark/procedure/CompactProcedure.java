@@ -43,6 +43,7 @@ import org.apache.paimon.table.sink.CommitMessageSerializer;
 import org.apache.paimon.table.sink.CompactionTaskSerializer;
 import org.apache.paimon.table.sink.TableCommitImpl;
 import org.apache.paimon.table.source.DataSplit;
+import org.apache.paimon.table.source.EndOfScanException;
 import org.apache.paimon.table.source.snapshot.SnapshotReader;
 import org.apache.paimon.utils.Pair;
 import org.apache.paimon.utils.ParameterUtils;
@@ -56,6 +57,7 @@ import org.apache.spark.api.java.function.FlatMapFunction;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.PaimonUtils;
 import org.apache.spark.sql.Row;
+import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.catalyst.InternalRow;
 import org.apache.spark.sql.catalyst.expressions.Expression;
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan;
@@ -66,6 +68,8 @@ import org.apache.spark.sql.types.DataTypes;
 import org.apache.spark.sql.types.Metadata;
 import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
@@ -96,6 +100,8 @@ import static org.apache.spark.sql.types.DataTypes.StringType;
  * </code></pre>
  */
 public class CompactProcedure extends BaseProcedure {
+
+    private static final Logger LOG = LoggerFactory.getLogger(CompactProcedure.class);
 
     private static final ProcedureParameter[] PARAMETERS =
             new ProcedureParameter[] {
@@ -182,7 +188,6 @@ public class CompactProcedure extends BaseProcedure {
                         dynamicOptions.putAll(ParameterUtils.parseCommaSeparatedKeyValues(options));
                     }
                     table = table.copy(dynamicOptions);
-
                     InternalRow internalRow =
                             newInternalRow(
                                     execute(
@@ -264,9 +269,8 @@ public class CompactProcedure extends BaseProcedure {
         Set<BinaryRow> partitionToBeCompacted =
                 getHistoryPartition(snapshotReader, partitionIdleTime);
         List<Pair<byte[], Integer>> partitionBuckets =
-                snapshotReader.read().splits().stream()
-                        .map(split -> (DataSplit) split)
-                        .map(dataSplit -> Pair.of(dataSplit.partition(), dataSplit.bucket()))
+                snapshotReader.bucketEntries().stream()
+                        .map(entry -> Pair.of(entry.partition(), entry.bucket()))
                         .distinct()
                         .filter(pair -> partitionToBeCompacted.contains(pair.getKey()))
                         .map(
@@ -277,13 +281,15 @@ public class CompactProcedure extends BaseProcedure {
                         .collect(Collectors.toList());
 
         if (partitionBuckets.isEmpty()) {
+            LOG.info("Partition bucket is empty, no compact job to execute.");
             return;
         }
 
+        int readParallelism = readParallelism(partitionBuckets, spark());
         BatchWriteBuilder writeBuilder = table.newBatchWriteBuilder();
         JavaRDD<byte[]> commitMessageJavaRDD =
                 javaSparkContext
-                        .parallelize(partitionBuckets)
+                        .parallelize(partitionBuckets, readParallelism)
                         .mapPartitions(
                                 (FlatMapFunction<Iterator<Pair<byte[], Integer>>, byte[]>)
                                         pairIterator -> {
@@ -335,8 +341,13 @@ public class CompactProcedure extends BaseProcedure {
             @Nullable Predicate filter,
             @Nullable Duration partitionIdleTime,
             JavaSparkContext javaSparkContext) {
-        List<UnawareAppendCompactionTask> compactionTasks =
-                new UnawareAppendTableCompactionCoordinator(table, false, filter).run();
+        List<UnawareAppendCompactionTask> compactionTasks;
+        try {
+            compactionTasks =
+                    new UnawareAppendTableCompactionCoordinator(table, false, filter).run();
+        } catch (EndOfScanException e) {
+            compactionTasks = new ArrayList<>();
+        }
         if (partitionIdleTime != null) {
             Map<BinaryRow, Long> partitionInfo =
                     table.newSnapshotReader().partitionEntries().stream()
@@ -356,6 +367,7 @@ public class CompactProcedure extends BaseProcedure {
                             .collect(Collectors.toList());
         }
         if (compactionTasks.isEmpty()) {
+            LOG.info("Task plan is empty, no compact job to execute.");
             return;
         }
 
@@ -369,10 +381,11 @@ public class CompactProcedure extends BaseProcedure {
             throw new RuntimeException("serialize compaction task failed");
         }
 
+        int readParallelism = readParallelism(serializedTasks, spark());
         String commitUser = createCommitUser(table.coreOptions().toConfiguration());
         JavaRDD<byte[]> commitMessageJavaRDD =
                 javaSparkContext
-                        .parallelize(serializedTasks)
+                        .parallelize(serializedTasks, readParallelism)
                         .mapPartitions(
                                 (FlatMapFunction<Iterator<byte[]>, byte[]>)
                                         taskIterator -> {
@@ -484,6 +497,22 @@ public class CompactProcedure extends BaseProcedure {
                                 Collectors.collectingAndThen(
                                         Collectors.toList(),
                                         list -> list.toArray(new DataSplit[0]))));
+    }
+
+    private int readParallelism(List<?> groupedTasks, SparkSession spark) {
+        int sparkParallelism =
+                Math.max(
+                        spark.sparkContext().defaultParallelism(),
+                        spark.sessionState().conf().numShufflePartitions());
+        int readParallelism = Math.min(groupedTasks.size(), sparkParallelism);
+        if (sparkParallelism > readParallelism) {
+            LOG.warn(
+                    String.format(
+                            "Spark default parallelism (%s) is greater than bucket or task parallelism (%s),"
+                                    + "we use %s as the final read parallelism",
+                            sparkParallelism, readParallelism, readParallelism));
+        }
+        return readParallelism;
     }
 
     @VisibleForTesting

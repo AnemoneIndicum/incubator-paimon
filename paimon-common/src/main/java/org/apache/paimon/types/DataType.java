@@ -104,6 +104,9 @@ public abstract class DataType implements Serializable {
         return typeRoot.getFamilies().contains(family);
     }
 
+    /** The default size of a value of this data type, used internally for size estimation. */
+    public abstract int defaultSize();
+
     /**
      * Returns a deep copy of this type with possibly different nullability.
      *
@@ -140,6 +143,16 @@ public abstract class DataType implements Serializable {
         }
         DataType that = (DataType) o;
         return isNullable == that.isNullable && typeRoot == that.typeRoot;
+    }
+
+    /**
+     * Determine whether the current type is the result of the target type after pruning (e.g.
+     * select some fields from a nested type) or just the same.
+     *
+     * @param o the target data type
+     */
+    public boolean isPrunedFrom(Object o) {
+        return equals(o);
     }
 
     @Override

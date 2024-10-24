@@ -30,12 +30,14 @@ public class FieldProductAgg extends FieldAggregator {
 
     public static final String NAME = "product";
 
+    private static final long serialVersionUID = 1L;
+
     public FieldProductAgg(DataType dataType) {
         super(dataType);
     }
 
     @Override
-    String name() {
+    public String name() {
         return NAME;
     }
 

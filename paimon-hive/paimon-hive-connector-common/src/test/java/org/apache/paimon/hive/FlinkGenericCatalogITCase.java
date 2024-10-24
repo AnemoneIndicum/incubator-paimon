@@ -48,6 +48,7 @@ import java.util.HashMap;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.AssertionsForClassTypes.assertThatThrownBy;
 
 /** IT cases for using Flink {@code FlinkGenericCatalog}. */
 @RunWith(PaimonEmbeddedHiveRunner.class)
@@ -131,11 +132,66 @@ public class FlinkGenericCatalogITCase extends AbstractTestBaseJUnit4 {
                         + " WITH ('connector'='paimon', 'file.format' = 'avro' )");
         sql("INSERT INTO paimon_t VALUES (1, 2, 'click', '2023-11-01')");
         sql("INSERT INTO paimon_t VALUES (2, 3, 'click', '2023-11-02')");
+        sql("INSERT INTO paimon_t VALUES (3, 4, 'click', '2023-11-03')");
+        sql("INSERT INTO paimon_t VALUES (4, 5, 'click', '2023-11-04')");
 
         List<Row> result =
                 sql("SELECT snapshot_id, schema_id, commit_kind FROM paimon_t$snapshots");
 
-        assertThat(result).containsExactly(Row.of(1L, 0L, "APPEND"), Row.of(2L, 0L, "APPEND"));
+        assertThat(result)
+                .containsExactly(
+                        Row.of(1L, 0L, "APPEND"),
+                        Row.of(2L, 0L, "APPEND"),
+                        Row.of(3L, 0L, "APPEND"),
+                        Row.of(4L, 0L, "APPEND"));
+
+        // check leaf predicate query
+        List<Row> result1 =
+                sql(
+                        "SELECT snapshot_id, schema_id, commit_kind FROM paimon_t$snapshots where snapshot_id>0");
+
+        assertThat(result1)
+                .containsExactly(
+                        Row.of(1L, 0L, "APPEND"),
+                        Row.of(2L, 0L, "APPEND"),
+                        Row.of(3L, 0L, "APPEND"),
+                        Row.of(4L, 0L, "APPEND"));
+
+        // check leaf predicate query with exist snapshot_id
+        List<Row> result2 =
+                sql(
+                        "SELECT snapshot_id, schema_id, commit_kind FROM paimon_t$snapshots where snapshot_id=2");
+
+        assertThat(result2).containsExactly(Row.of(2L, 0L, "APPEND"));
+
+        // check leaf predicate query with exist snapshot_id
+        assertThatThrownBy(
+                        () ->
+                                sql(
+                                        "SELECT snapshot_id, schema_id, commit_kind FROM paimon_t$snapshots where snapshot_id=6"))
+                .hasCauseInstanceOf(RuntimeException.class)
+                .hasRootCauseMessage(
+                        "snapshot upper id:6 should not greater than latestSnapshotId:4");
+
+        // check compound predicate query with right range
+        List<Row> result3 =
+                sql(
+                        "SELECT snapshot_id, schema_id, commit_kind FROM paimon_t$snapshots where snapshot_id>1 and snapshot_id<5");
+
+        assertThat(result3)
+                .containsExactly(
+                        Row.of(2L, 0L, "APPEND"),
+                        Row.of(3L, 0L, "APPEND"),
+                        Row.of(4L, 0L, "APPEND"));
+
+        // check with wrong range
+        assertThatThrownBy(
+                        () ->
+                                sql(
+                                        "SELECT snapshot_id, schema_id, commit_kind FROM paimon_t$snapshots where snapshot_id>9"))
+                .hasCauseInstanceOf(RuntimeException.class)
+                .hasRootCauseMessage(
+                        "snapshot upper id:10 should not greater than latestSnapshotId:4");
     }
 
     @Test
@@ -144,5 +200,21 @@ public class FlinkGenericCatalogITCase extends AbstractTestBaseJUnit4 {
 
         assertThat(result)
                 .contains(Row.of("compact"), Row.of("merge_into"), Row.of("migrate_table"));
+    }
+
+    @Test
+    public void testCreateTag() {
+        sql(
+                "CREATE TABLE paimon_t ( "
+                        + "f0 INT, "
+                        + "f1 INT "
+                        + ") WITH ('connector'='paimon', 'file.format' = 'avro' )");
+        sql("INSERT INTO paimon_t VALUES (1, 1), (2, 2)");
+        assertThat(sql("SELECT * FROM paimon_t"))
+                .containsExactlyInAnyOrder(Row.of(1, 1), Row.of(2, 2));
+        sql("CALL sys.create_tag('test_db.paimon_t', 'tag_1')");
+
+        List<Row> result = sql("SELECT tag_name FROM paimon_t$tags");
+        assertThat(result).contains(Row.of("tag_1"));
     }
 }

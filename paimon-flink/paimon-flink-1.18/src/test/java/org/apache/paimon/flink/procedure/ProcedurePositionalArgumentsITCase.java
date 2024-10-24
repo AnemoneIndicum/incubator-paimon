@@ -39,6 +39,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /** Ensure that the legacy multiply overloaded CALL with positional arguments can be invoked. */
 public class ProcedurePositionalArgumentsITCase extends CatalogITCaseBase {
+
     @Test
     public void testCompactDatabaseAndTable() {
         sql(
@@ -243,7 +244,10 @@ public class ProcedurePositionalArgumentsITCase extends CatalogITCaseBase {
         sql("INSERT INTO T VALUES ('1', '2024-06-01')");
         sql("INSERT INTO T VALUES ('2', '9024-06-01')");
         assertThat(read(table)).containsExactlyInAnyOrder("1:2024-06-01", "2:9024-06-01");
-        sql("CALL sys.expire_partitions('default.T', '1 d', 'yyyy-MM-dd', '$dt', 'values-time')");
+        assertThat(
+                        sql(
+                                "CALL sys.expire_partitions('default.T', '1 d', 'yyyy-MM-dd', '$dt', 'values-time')"))
+                .containsExactly(Row.of("dt=2024-06-01"));
         assertThat(read(table)).containsExactlyInAnyOrder("2:9024-06-01");
     }
 
@@ -316,13 +320,13 @@ public class ProcedurePositionalArgumentsITCase extends CatalogITCaseBase {
         sql("CALL sys.create_branch('default.T', 'test', 'tag1')");
         sql("CALL sys.create_branch('default.T', 'test2', 'tag2')");
 
-        assertThat(collectToString("SELECT branch_name, created_from_snapshot FROM `T$branches`"))
-                .containsExactlyInAnyOrder("+I[test, 1]", "+I[test2, 2]");
+        assertThat(collectToString("SELECT branch_name FROM `T$branches`"))
+                .containsExactlyInAnyOrder("+I[test]", "+I[test2]");
 
         sql("CALL sys.delete_branch('default.T', 'test')");
 
-        assertThat(collectToString("SELECT branch_name, created_from_snapshot FROM `T$branches`"))
-                .containsExactlyInAnyOrder("+I[test2, 2]");
+        assertThat(collectToString("SELECT branch_name FROM `T$branches`"))
+                .containsExactlyInAnyOrder("+I[test2]");
 
         sql("CALL sys.fast_forward('default.T', 'test2')");
 
@@ -484,5 +488,32 @@ public class ProcedurePositionalArgumentsITCase extends CatalogITCaseBase {
                         + ")");
         assertThatCode(() -> sql("CALL sys.rewrite_file_index('default.T', 'pt = 0')"))
                 .doesNotThrowAnyException();
+    }
+
+    @Test
+    public void testExpireTags() throws Exception {
+        sql(
+                "CREATE TABLE T ("
+                        + " k STRING,"
+                        + " dt STRING,"
+                        + " PRIMARY KEY (k, dt) NOT ENFORCED"
+                        + ") PARTITIONED BY (dt) WITH ("
+                        + " 'bucket' = '1'"
+                        + ")");
+        FileStoreTable table = paimonTable("T");
+        for (int i = 1; i <= 3; i++) {
+            sql("INSERT INTO T VALUES ('" + i + "', '" + i + "')");
+        }
+        assertThat(table.snapshotManager().snapshotCount()).isEqualTo(3L);
+
+        sql("CALL sys.create_tag('default.T', 'tag-1', 1)");
+        sql("CALL sys.create_tag('default.T', 'tag-2', 2, '1d')");
+        sql("CALL sys.create_tag('default.T', 'tag-3', 3, '1s')");
+
+        assertThat(sql("select count(*) from `T$tags`")).containsExactly(Row.of(3L));
+
+        Thread.sleep(1000);
+        assertThat(sql("CALL sys.expire_tags('default.T')"))
+                .containsExactlyInAnyOrder(Row.of("tag-3"));
     }
 }

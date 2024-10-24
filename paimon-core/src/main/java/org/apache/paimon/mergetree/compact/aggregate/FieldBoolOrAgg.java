@@ -25,12 +25,14 @@ public class FieldBoolOrAgg extends FieldAggregator {
 
     public static final String NAME = "bool_or";
 
+    private static final long serialVersionUID = 1L;
+
     public FieldBoolOrAgg(DataType dataType) {
         super(dataType);
     }
 
     @Override
-    String name() {
+    public String name() {
         return NAME;
     }
 

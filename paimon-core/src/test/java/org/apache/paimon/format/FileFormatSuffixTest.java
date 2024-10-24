@@ -66,7 +66,11 @@ public class FileFormatSuffixTest extends KeyValueFileReadWriteTest {
         assertThat(path.toString().endsWith(format)).isTrue();
 
         DataFilePathFactory dataFilePathFactory =
-                new DataFilePathFactory(new Path(tempDir + "/dt=1/bucket-1"), format);
+                new DataFilePathFactory(
+                        new Path(tempDir + "/dt=1/bucket-1"),
+                        format,
+                        CoreOptions.DATA_FILE_PREFIX.defaultValue(),
+                        CoreOptions.CHANGELOG_FILE_PREFIX.defaultValue());
         FileFormat fileFormat = FileFormat.fromIdentifier(format, new Options());
         LinkedList<DataFileMeta> toCompact = new LinkedList<>();
         CoreOptions options = new CoreOptions(new HashMap<>());
@@ -93,7 +97,8 @@ public class FileFormatSuffixTest extends KeyValueFileReadWriteTest {
                                 options, SCHEMA.getFieldNames()),
                         MemorySize.MAX_VALUE,
                         new FileIndexOptions(),
-                        true);
+                        true,
+                        false);
         appendOnlyWriter.setMemoryPool(
                 new HeapMemorySegmentPool(options.writeBufferSize(), options.pageSize()));
         appendOnlyWriter.write(

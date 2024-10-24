@@ -58,6 +58,8 @@ import org.apache.paimon.types.RowType;
 
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -220,10 +222,19 @@ public class AppendOnlyFileStoreTableTest extends FileStoreTableTestBase {
                 .hasSameElementsAs(Arrays.asList("200|20", "201|21", "202|22", "201|21"));
     }
 
-    @Test
-    public void testBatchFilter() throws Exception {
-        writeData();
-        FileStoreTable table = createFileStoreTable();
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    public void testBatchFilter(boolean statsDenseStore) throws Exception {
+        Consumer<Options> optionsSetter =
+                options -> {
+                    options.set(CoreOptions.METADATA_STATS_DENSE_STORE, statsDenseStore);
+                    if (statsDenseStore) {
+                        options.set(CoreOptions.METADATA_STATS_MODE, "none");
+                        options.set("fields.b.stats-mode", "full");
+                    }
+                };
+        writeData(optionsSetter);
+        FileStoreTable table = createFileStoreTable(optionsSetter);
         PredicateBuilder builder = new PredicateBuilder(table.schema().logicalRowType());
 
         Predicate predicate = builder.equal(2, 201L);
@@ -858,7 +869,11 @@ public class AppendOnlyFileStoreTableTest extends FileStoreTableTestBase {
     }
 
     private void writeData() throws Exception {
-        FileStoreTable table = createFileStoreTable();
+        writeData(options -> {});
+    }
+
+    private void writeData(Consumer<Options> optionsSetter) throws Exception {
+        FileStoreTable table = createFileStoreTable(optionsSetter);
         StreamTableWrite write = table.newWrite(commitUser);
         StreamTableCommit commit = table.newCommit(commitUser);
 
@@ -905,7 +920,8 @@ public class AppendOnlyFileStoreTableTest extends FileStoreTableTestBase {
     }
 
     @Override
-    protected FileStoreTable createFileStoreTable(Consumer<Options> configure) throws Exception {
+    protected FileStoreTable createFileStoreTable(Consumer<Options> configure, RowType rowType)
+            throws Exception {
         Options conf = new Options();
         conf.set(CoreOptions.PATH, tablePath.toString());
         configure.accept(conf);
@@ -916,7 +932,7 @@ public class AppendOnlyFileStoreTableTest extends FileStoreTableTestBase {
                 SchemaUtils.forceCommit(
                         new SchemaManager(LocalFileIO.create(), tablePath),
                         new Schema(
-                                ROW_TYPE.getFields(),
+                                rowType.getFields(),
                                 Collections.singletonList("pt"),
                                 Collections.emptyList(),
                                 conf.toMap(),

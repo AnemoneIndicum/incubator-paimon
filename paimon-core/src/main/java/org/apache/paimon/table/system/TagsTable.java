@@ -59,11 +59,11 @@ import javax.annotation.Nullable;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Iterator;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.TreeMap;
 
 import static org.apache.paimon.catalog.Catalog.SYSTEM_TABLE_SPLITTER;
 
@@ -188,7 +188,7 @@ public class TagsTable implements ReadonlyTable {
     private class TagsRead implements InnerTableRead {
 
         private final FileIO fileIO;
-        private int[][] projection;
+        private RowType readType;
 
         public TagsRead(FileIO fileIO) {
             this.fileIO = fileIO;
@@ -201,8 +201,8 @@ public class TagsTable implements ReadonlyTable {
         }
 
         @Override
-        public InnerTableRead withProjection(int[][] projection) {
-            this.projection = projection;
+        public InnerTableRead withReadType(RowType readType) {
+            this.readType = readType;
             return this;
         }
 
@@ -220,7 +220,7 @@ public class TagsTable implements ReadonlyTable {
             LeafPredicate predicate = ((TagsSplit) split).tagName;
             TagManager tagManager = new TagManager(fileIO, location, branch);
 
-            Map<String, Tag> nameToSnapshot = new LinkedHashMap<>();
+            Map<String, Tag> nameToSnapshot = new TreeMap<>();
 
             if (predicate != null
                     && predicate.function() instanceof Equal
@@ -237,10 +237,13 @@ public class TagsTable implements ReadonlyTable {
 
             Iterator<InternalRow> rows =
                     Iterators.transform(nameToSnapshot.entrySet().iterator(), this::toRow);
-            if (projection != null) {
+            if (readType != null) {
                 rows =
                         Iterators.transform(
-                                rows, row -> ProjectedRow.from(projection).replaceRow(row));
+                                rows,
+                                row ->
+                                        ProjectedRow.from(readType, TagsTable.TABLE_TYPE)
+                                                .replaceRow(row));
             }
             return new IteratorRecordReader<>(rows);
         }

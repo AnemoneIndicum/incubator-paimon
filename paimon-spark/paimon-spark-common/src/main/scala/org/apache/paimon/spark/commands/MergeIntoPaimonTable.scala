@@ -32,7 +32,7 @@ import org.apache.spark.sql.{Column, Dataset, Row, SparkSession}
 import org.apache.spark.sql.PaimonUtils._
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.encoders.ExpressionEncoder
-import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, BasePredicate, EqualTo, Expression, Literal, Or, UnsafeProjection}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, BasePredicate, Expression, Literal, UnsafeProjection}
 import org.apache.spark.sql.catalyst.expressions.Literal.TrueLiteral
 import org.apache.spark.sql.catalyst.expressions.codegen.GeneratePredicate
 import org.apache.spark.sql.catalyst.plans.logical._
@@ -243,7 +243,7 @@ case class MergeIntoPaimonTable(
     val outputFields = mutable.ArrayBuffer(tableSchema.fields: _*)
     outputFields += StructField(ROW_KIND_COL, ByteType)
     outputFields ++= metadataCols.map(_.toStructField)
-    val outputSchema = StructType(outputFields)
+    val outputSchema = StructType(outputFields.toSeq)
 
     val joinedRowEncoder = EncoderUtils.encode(joinedPlan.schema)
     val outputEncoder = EncoderUtils.encode(outputSchema).resolveAndBind()

@@ -27,6 +27,8 @@ import org.apache.paimon.data.Timestamp;
 import org.apache.paimon.disk.IOManager;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.Path;
+import org.apache.paimon.predicate.And;
+import org.apache.paimon.predicate.CompoundPredicate;
 import org.apache.paimon.predicate.Equal;
 import org.apache.paimon.predicate.GreaterOrEqual;
 import org.apache.paimon.predicate.GreaterThan;
@@ -201,7 +203,7 @@ public class SnapshotsTable implements ReadonlyTable {
     private class SnapshotsRead implements InnerTableRead {
 
         private final FileIO fileIO;
-        private int[][] projection;
+        private RowType readType;
         private Optional<Long> optionalFilterSnapshotIdMax = Optional.empty();
         private Optional<Long> optionalFilterSnapshotIdMin = Optional.empty();
 
@@ -215,8 +217,25 @@ public class SnapshotsTable implements ReadonlyTable {
                 return this;
             }
 
+            String leafName = "snapshot_id";
+            if (predicate instanceof CompoundPredicate) {
+                CompoundPredicate compoundPredicate = (CompoundPredicate) predicate;
+                if ((compoundPredicate.function()) instanceof And) {
+                    List<Predicate> children = compoundPredicate.children();
+                    for (Predicate leaf : children) {
+                        handleLeafPredicate(leaf, leafName);
+                    }
+                }
+            } else {
+                handleLeafPredicate(predicate, leafName);
+            }
+
+            return this;
+        }
+
+        public void handleLeafPredicate(Predicate predicate, String leafName) {
             LeafPredicate snapshotPred =
-                    predicate.visit(LeafPredicateExtractor.INSTANCE).get("snapshot_id");
+                    predicate.visit(LeafPredicateExtractor.INSTANCE).get(leafName);
             if (snapshotPred != null) {
                 if (snapshotPred.function() instanceof Equal) {
                     optionalFilterSnapshotIdMin =
@@ -245,13 +264,11 @@ public class SnapshotsTable implements ReadonlyTable {
                             Optional.of((Long) snapshotPred.literals().get(0));
                 }
             }
-
-            return this;
         }
 
         @Override
-        public InnerTableRead withProjection(int[][] projection) {
-            this.projection = projection;
+        public InnerTableRead withReadType(RowType readType) {
+            this.readType = readType;
             return this;
         }
 
@@ -272,10 +289,13 @@ public class SnapshotsTable implements ReadonlyTable {
                             optionalFilterSnapshotIdMax, optionalFilterSnapshotIdMin);
 
             Iterator<InternalRow> rows = Iterators.transform(snapshots, this::toRow);
-            if (projection != null) {
+            if (readType != null) {
                 rows =
                         Iterators.transform(
-                                rows, row -> ProjectedRow.from(projection).replaceRow(row));
+                                rows,
+                                row ->
+                                        ProjectedRow.from(readType, SnapshotsTable.TABLE_TYPE)
+                                                .replaceRow(row));
             }
             return new IteratorRecordReader<>(rows);
         }
