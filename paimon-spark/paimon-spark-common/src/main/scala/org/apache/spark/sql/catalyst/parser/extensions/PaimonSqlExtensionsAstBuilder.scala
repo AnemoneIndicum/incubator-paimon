@@ -19,7 +19,8 @@
 package org.apache.spark.sql.catalyst.parser.extensions
 
 import org.apache.paimon.spark.catalyst.plans.logical
-import org.apache.paimon.spark.catalyst.plans.logical.{PaimonCallArgument, PaimonCallStatement, PaimonNamedArgument, PaimonPositionalArgument, ShowTagsCommand}
+import org.apache.paimon.spark.catalyst.plans.logical.{CreateOrReplaceTagCommand, DeleteTagCommand, PaimonCallArgument, PaimonCallStatement, PaimonNamedArgument, PaimonPositionalArgument, RenameTagCommand, ShowTagsCommand, TagOptions}
+import org.apache.paimon.utils.TimeUtils
 
 import org.antlr.v4.runtime._
 import org.antlr.v4.runtime.misc.Interval
@@ -92,8 +93,64 @@ class PaimonSqlExtensionsAstBuilder(delegate: ParserInterface)
       ctx.parts.asScala.map(_.getText).toSeq
     }
 
-  override def visitShowTags(ctx: ShowTagsContext): AnyRef = withOrigin(ctx) {
+  /** Create a SHOW TAGS logical command. */
+  override def visitShowTags(ctx: ShowTagsContext): ShowTagsCommand = withOrigin(ctx) {
     ShowTagsCommand(typedVisit[Seq[String]](ctx.multipartIdentifier))
+  }
+
+  /** Create a CREATE OR REPLACE TAG logical command. */
+  override def visitCreateOrReplaceTag(ctx: CreateOrReplaceTagContext): CreateOrReplaceTagCommand =
+    withOrigin(ctx) {
+      val createTagClause = ctx.createReplaceTagClause()
+
+      val tagName = createTagClause.identifier().getText
+      val tagOptionsContext = Option(createTagClause.tagOptions())
+      val snapshotId =
+        tagOptionsContext
+          .flatMap(tagOptions => Option(tagOptions.snapshotId()))
+          .map(_.getText.toLong)
+      val timeRetainCtx = tagOptionsContext.flatMap(tagOptions => Option(tagOptions.timeRetain()))
+      val timeRetained = if (timeRetainCtx.nonEmpty) {
+        val (number, timeUnit) =
+          timeRetainCtx
+            .map(retain => (retain.number().getText.toLong, retain.timeUnit().getText))
+            .get
+        Option(TimeUtils.parseDuration(number, timeUnit))
+      } else {
+        None
+      }
+      val tagOptions = TagOptions(
+        snapshotId,
+        timeRetained
+      )
+
+      val create = createTagClause.CREATE() != null
+      val replace = createTagClause.REPLACE() != null
+      val ifNotExists = createTagClause.EXISTS() != null
+
+      CreateOrReplaceTagCommand(
+        typedVisit[Seq[String]](ctx.multipartIdentifier),
+        tagName,
+        tagOptions,
+        create,
+        replace,
+        ifNotExists)
+    }
+
+  /** Create a DELETE TAG logical command. */
+  override def visitDeleteTag(ctx: DeleteTagContext): DeleteTagCommand = withOrigin(ctx) {
+    DeleteTagCommand(
+      typedVisit[Seq[String]](ctx.multipartIdentifier),
+      ctx.identifier().getText,
+      ctx.EXISTS() != null)
+  }
+
+  /** Create a RENAME TAG logical command. */
+  override def visitRenameTag(ctx: RenameTagContext): RenameTagCommand = withOrigin(ctx) {
+    RenameTagCommand(
+      typedVisit[Seq[String]](ctx.multipartIdentifier),
+      ctx.identifier(0).getText,
+      ctx.identifier(1).getText)
   }
 
   private def toBuffer[T](list: java.util.List[T]) = list.asScala

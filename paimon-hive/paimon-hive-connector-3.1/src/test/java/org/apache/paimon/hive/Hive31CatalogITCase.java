@@ -89,7 +89,8 @@ public class Hive31CatalogITCase extends HiveCatalogITCaseBase {
         EnvironmentSettings settings = EnvironmentSettings.newInstance().inBatchMode().build();
         Class<?>[] customConstructorMetastoreClientClass = {
             CustomConstructorMetastoreClient.TwoParameterConstructorMetastoreClient.class,
-            CustomConstructorMetastoreClient.OneParameterConstructorMetastoreClient.class
+            CustomConstructorMetastoreClient.OneParameterConstructorMetastoreClient.class,
+            CustomConstructorMetastoreClient.OtherParameterConstructorMetastoreClient.class
         };
 
         for (Class<?> clazz : customConstructorMetastoreClientClass) {
@@ -132,7 +133,6 @@ public class Hive31CatalogITCase extends HiveCatalogITCaseBase {
                                 tEnv.executeSql(
                                                 "CREATE TABLE hive_table(a INT, b INT, c INT, d INT)")
                                         .await())
-                .isInstanceOf(TableException.class)
                 .hasMessage(
                         "Could not execute CreateTable in path `my_hive_custom_client`.`test_db`.`hive_table`");
         assertThat(

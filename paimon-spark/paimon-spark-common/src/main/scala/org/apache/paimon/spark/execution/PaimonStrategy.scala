@@ -19,7 +19,7 @@
 package org.apache.paimon.spark.execution
 
 import org.apache.paimon.spark.{SparkCatalog, SparkUtils}
-import org.apache.paimon.spark.catalyst.plans.logical.{PaimonCallCommand, ShowTagsCommand}
+import org.apache.paimon.spark.catalyst.plans.logical.{CreateOrReplaceTagCommand, DeleteTagCommand, PaimonCallCommand, RenameTagCommand, ShowTagsCommand}
 
 import org.apache.spark.sql.{SparkSession, Strategy}
 import org.apache.spark.sql.catalyst.InternalRow
@@ -49,6 +49,22 @@ case class PaimonStrategy(spark: SparkSession)
 
     case t @ ShowTagsCommand(PaimonCatalogAndIdentifier(catalog, ident)) =>
       ShowTagsExec(catalog, ident, t.output) :: Nil
+
+    case CreateOrReplaceTagCommand(
+          PaimonCatalogAndIdentifier(table, ident),
+          tagName,
+          tagOptions,
+          create,
+          replace,
+          ifNotExists) =>
+      CreateOrReplaceTagExec(table, ident, tagName, tagOptions, create, replace, ifNotExists) :: Nil
+
+    case DeleteTagCommand(PaimonCatalogAndIdentifier(catalog, ident), tagStr, ifExists) =>
+      DeleteTagExec(catalog, ident, tagStr, ifExists) :: Nil
+
+    case RenameTagCommand(PaimonCatalogAndIdentifier(catalog, ident), sourceTag, targetTag) =>
+      RenameTagExec(catalog, ident, sourceTag, targetTag) :: Nil
+
     case _ => Nil
   }
 

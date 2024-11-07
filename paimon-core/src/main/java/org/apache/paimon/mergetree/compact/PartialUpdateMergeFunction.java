@@ -23,6 +23,7 @@ import org.apache.paimon.KeyValue;
 import org.apache.paimon.data.GenericRow;
 import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.mergetree.compact.aggregate.FieldAggregator;
+import org.apache.paimon.mergetree.compact.aggregate.factory.FieldAggregatorFactory;
 import org.apache.paimon.options.Options;
 import org.apache.paimon.types.DataField;
 import org.apache.paimon.types.DataType;
@@ -51,7 +52,6 @@ import java.util.stream.Stream;
 import static org.apache.paimon.CoreOptions.FIELDS_PREFIX;
 import static org.apache.paimon.CoreOptions.FIELDS_SEPARATOR;
 import static org.apache.paimon.CoreOptions.PARTIAL_UPDATE_REMOVE_RECORD_ON_DELETE;
-import static org.apache.paimon.mergetree.compact.aggregate.FieldAggregator.createFieldAggregator;
 import static org.apache.paimon.utils.InternalRowUtils.createFieldGetters;
 
 /**
@@ -120,7 +120,6 @@ public class PartialUpdateMergeFunction implements MergeFunction<KeyValue> {
                     currentDeleteRow = true;
                     row = new GenericRow(getters.length);
                 }
-                // ignore -U records
                 return;
             }
 
@@ -254,10 +253,9 @@ public class PartialUpdateMergeFunction implements MergeFunction<KeyValue> {
         if (reused == null) {
             reused = new KeyValue();
         }
-        if (currentDeleteRow) {
-            return null;
-        }
-        return reused.replace(currentKey, latestSequenceNumber, RowKind.INSERT, row);
+
+        RowKind rowKind = currentDeleteRow ? RowKind.DELETE : RowKind.INSERT;
+        return reused.replace(currentKey, latestSequenceNumber, rowKind, row);
     }
 
     public static MergeFunctionFactory<KeyValue> factory(
@@ -303,7 +301,7 @@ public class PartialUpdateMergeFunction implements MergeFunction<KeyValue> {
                                     .collect(Collectors.toList());
 
                     Supplier<FieldsComparator> userDefinedSeqComparator =
-                            () -> UserDefinedSeqComparator.create(rowType, sequenceFields);
+                            () -> UserDefinedSeqComparator.create(rowType, sequenceFields, true);
                     Arrays.stream(v.split(FIELDS_SEPARATOR))
                             .map(
                                     fieldName ->
@@ -392,7 +390,7 @@ public class PartialUpdateMergeFunction implements MergeFunction<KeyValue> {
                                 projectedSeqComparators.put(
                                         newField,
                                         UserDefinedSeqComparator.create(
-                                                newRowType, newSequenceFields));
+                                                newRowType, newSequenceFields, true));
                             }
                         });
                 for (int i = 0; i < projects.length; i++) {
@@ -497,7 +495,7 @@ public class PartialUpdateMergeFunction implements MergeFunction<KeyValue> {
                     fieldAggregators.put(
                             i,
                             () ->
-                                    createFieldAggregator(
+                                    FieldAggregatorFactory.create(
                                             fieldType,
                                             strAggFunc,
                                             ignoreRetract,
@@ -508,7 +506,7 @@ public class PartialUpdateMergeFunction implements MergeFunction<KeyValue> {
                     fieldAggregators.put(
                             i,
                             () ->
-                                    createFieldAggregator(
+                                    FieldAggregatorFactory.create(
                                             fieldType,
                                             defaultAggFunc,
                                             ignoreRetract,

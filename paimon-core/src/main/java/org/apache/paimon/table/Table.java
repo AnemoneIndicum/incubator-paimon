@@ -33,6 +33,7 @@ import org.apache.paimon.utils.SimpleFileReader;
 
 import java.io.Serializable;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -120,14 +121,20 @@ public interface Table extends Serializable {
     @Experimental
     void renameTag(String tagName, String targetTagName);
 
+    /** Replace a tag with new snapshot id and new time retained. */
+    @Experimental
+    void replaceTag(String tagName, Long fromSnapshotId, Duration timeRetained);
+
     /** Delete a tag by name. */
     @Experimental
     void deleteTag(String tagName);
 
     /** Delete tags, tags are separated by commas. */
     @Experimental
-    default void deleteTags(String tagNames) {
-        for (String tagName : tagNames.split(",")) {
+    default void deleteTags(String tagStr) {
+        String[] tagNames =
+                Arrays.stream(tagStr.split(",")).map(String::trim).toArray(String[]::new);
+        for (String tagName : tagNames) {
             deleteTag(tagName);
         }
     }

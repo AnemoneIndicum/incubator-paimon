@@ -41,6 +41,8 @@ import org.apache.paimon.utils.FileStorePathFactory;
 import org.apache.paimon.utils.InternalRowPartitionComputer;
 import org.apache.paimon.utils.Preconditions;
 import org.apache.paimon.utils.StringUtils;
+import org.apache.paimon.view.View;
+import org.apache.paimon.view.ViewImpl;
 
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.catalog.AbstractCatalog;
@@ -53,10 +55,12 @@ import org.apache.flink.table.catalog.CatalogPartition;
 import org.apache.flink.table.catalog.CatalogPartitionImpl;
 import org.apache.flink.table.catalog.CatalogPartitionSpec;
 import org.apache.flink.table.catalog.CatalogTable;
+import org.apache.flink.table.catalog.CatalogView;
 import org.apache.flink.table.catalog.Column;
 import org.apache.flink.table.catalog.IntervalFreshness;
 import org.apache.flink.table.catalog.ObjectPath;
 import org.apache.flink.table.catalog.ResolvedCatalogBaseTable;
+import org.apache.flink.table.catalog.ResolvedCatalogView;
 import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.catalog.TableChange;
 import org.apache.flink.table.catalog.TableChange.AddColumn;
@@ -133,8 +137,11 @@ import static org.apache.paimon.CoreOptions.MATERIALIZED_TABLE_REFRESH_HANDLER_B
 import static org.apache.paimon.CoreOptions.MATERIALIZED_TABLE_REFRESH_HANDLER_DESCRIPTION;
 import static org.apache.paimon.CoreOptions.MATERIALIZED_TABLE_REFRESH_MODE;
 import static org.apache.paimon.CoreOptions.MATERIALIZED_TABLE_REFRESH_STATUS;
-import static org.apache.paimon.CoreOptions.MATERIALIZED_TABLE_SNAPSHOT;
 import static org.apache.paimon.CoreOptions.PATH;
+import static org.apache.paimon.catalog.Catalog.LAST_UPDATE_TIME_PROP;
+import static org.apache.paimon.catalog.Catalog.NUM_FILES_PROP;
+import static org.apache.paimon.catalog.Catalog.NUM_ROWS_PROP;
+import static org.apache.paimon.catalog.Catalog.TOTAL_SIZE_PROP;
 import static org.apache.paimon.flink.FlinkCatalogOptions.DISABLE_CREATE_TABLE_IN_DEFAULT_DB;
 import static org.apache.paimon.flink.FlinkCatalogOptions.LOG_SYSTEM_AUTO_REGISTER;
 import static org.apache.paimon.flink.FlinkCatalogOptions.REGISTER_TIMEOUT;
@@ -156,12 +163,8 @@ import static org.apache.paimon.utils.Preconditions.checkNotNull;
 public class FlinkCatalog extends AbstractCatalog {
 
     private static final Logger LOG = LoggerFactory.getLogger(FlinkCatalog.class);
-    public static final String NUM_ROWS_KEY = "numRows";
-    public static final String LAST_UPDATE_TIME_KEY = "lastUpdateTime";
-    public static final String TOTAL_SIZE_KEY = "totalSize";
-    public static final String NUM_FILES_KEY = "numFiles";
-    private final ClassLoader classLoader;
 
+    private final ClassLoader classLoader;
     private final Catalog catalog;
     private final String name;
     private final boolean logStoreAutoRegister;
@@ -184,7 +187,9 @@ public class FlinkCatalog extends AbstractCatalog {
         this.logStoreAutoRegisterTimeout = options.get(REGISTER_TIMEOUT);
         this.disableCreateTableInDefaultDatabase = options.get(DISABLE_CREATE_TABLE_IN_DEFAULT_DB);
         if (!disableCreateTableInDefaultDatabase) {
-            if (!catalog.databaseExists(defaultDatabase)) {
+            try {
+                getDatabase(defaultDatabase);
+            } catch (DatabaseNotExistException e) {
                 try {
                     catalog.createDatabase(defaultDatabase, true);
                 } catch (Catalog.DatabaseAlreadyExistException ignore) {
@@ -199,7 +204,7 @@ public class FlinkCatalog extends AbstractCatalog {
 
     @Override
     public Optional<Factory> getFactory() {
-        return Optional.of(new FlinkTableFactory());
+        return Optional.of(new FlinkTableFactory(this));
     }
 
     @Override
@@ -209,7 +214,12 @@ public class FlinkCatalog extends AbstractCatalog {
 
     @Override
     public boolean databaseExists(String databaseName) throws CatalogException {
-        return catalog.databaseExists(databaseName);
+        try {
+            catalog.getDatabase(databaseName);
+            return true;
+        } catch (Catalog.DatabaseNotExistException e) {
+            return false;
+        }
     }
 
     @Override
@@ -284,6 +294,11 @@ public class FlinkCatalog extends AbstractCatalog {
         try {
             table = catalog.getTable(toIdentifier(tablePath));
         } catch (Catalog.TableNotExistException e) {
+            Optional<CatalogBaseTable> view = getView(tablePath, timestamp);
+            if (view.isPresent()) {
+                return view.get();
+            }
+
             throw new TableNotExistException(getName(), tablePath);
         }
 
@@ -309,19 +324,70 @@ public class FlinkCatalog extends AbstractCatalog {
         }
     }
 
+    private Optional<CatalogBaseTable> getView(ObjectPath tablePath, @Nullable Long timestamp) {
+        View view;
+        try {
+            view = catalog.getView(toIdentifier(tablePath));
+        } catch (Catalog.ViewNotExistException e) {
+            return Optional.empty();
+        }
+
+        if (timestamp != null) {
+            throw new UnsupportedOperationException(
+                    String.format("View %s does not support time travel.", tablePath));
+        }
+
+        org.apache.flink.table.api.Schema schema =
+                org.apache.flink.table.api.Schema.newBuilder()
+                        .fromRowDataType(fromLogicalToDataType(toLogicalType(view.rowType())))
+                        .build();
+        return Optional.of(
+                CatalogView.of(
+                        schema,
+                        view.comment().orElse(null),
+                        view.query(),
+                        view.query(),
+                        view.options()));
+    }
+
     @Override
     public boolean tableExists(ObjectPath tablePath) throws CatalogException {
-        return catalog.tableExists(toIdentifier(tablePath));
+        Identifier identifier = toIdentifier(tablePath);
+        try {
+            catalog.getTable(identifier);
+            return true;
+        } catch (Catalog.TableNotExistException e) {
+            try {
+                catalog.getView(identifier);
+                return true;
+            } catch (Catalog.ViewNotExistException ex) {
+                return false;
+            }
+        }
     }
 
     @Override
     public void dropTable(ObjectPath tablePath, boolean ignoreIfNotExists)
             throws TableNotExistException, CatalogException {
         Identifier identifier = toIdentifier(tablePath);
-        Table table = null;
         try {
-            if (logStoreAutoRegister && catalog.tableExists(identifier)) {
-                table = catalog.getTable(identifier);
+            catalog.getView(identifier);
+            try {
+                catalog.dropView(identifier, ignoreIfNotExists);
+                return;
+            } catch (Catalog.ViewNotExistException e) {
+                throw new RuntimeException("Unexpected exception.", e);
+            }
+        } catch (Catalog.ViewNotExistException ignored) {
+        }
+
+        try {
+            Table table = null;
+            if (logStoreAutoRegister) {
+                try {
+                    table = catalog.getTable(identifier);
+                } catch (Catalog.TableNotExistException ignored) {
+                }
             }
             catalog.dropTable(toIdentifier(tablePath), ignoreIfNotExists);
             if (logStoreAutoRegister && table != null) {
@@ -335,16 +401,15 @@ public class FlinkCatalog extends AbstractCatalog {
     @Override
     public void createTable(ObjectPath tablePath, CatalogBaseTable table, boolean ignoreIfExists)
             throws TableAlreadyExistException, DatabaseNotExistException, CatalogException {
-        if (!(table instanceof CatalogTable || table instanceof CatalogMaterializedTable)) {
-            throw new UnsupportedOperationException(
-                    "Only support CatalogTable and CatalogMaterializedTable, but is: "
-                            + table.getClass());
-        }
-
         if (Objects.equals(getDefaultDatabase(), tablePath.getDatabaseName())
                 && disableCreateTableInDefaultDatabase) {
             throw new UnsupportedOperationException(
                     "Creating table in default database is disabled, please specify a database name.");
+        }
+
+        if (table instanceof CatalogView) {
+            createView(tablePath, (ResolvedCatalogView) table, ignoreIfExists);
+            return;
         }
 
         Identifier identifier = toIdentifier(tablePath);
@@ -372,11 +437,38 @@ public class FlinkCatalog extends AbstractCatalog {
         }
     }
 
+    private void createView(ObjectPath tablePath, ResolvedCatalogView table, boolean ignoreIfExists)
+            throws TableAlreadyExistException, DatabaseNotExistException {
+        Identifier identifier = toIdentifier(tablePath);
+        org.apache.paimon.types.RowType.Builder builder = org.apache.paimon.types.RowType.builder();
+        table.getResolvedSchema()
+                .getColumns()
+                .forEach(
+                        column ->
+                                builder.field(
+                                        column.getName(),
+                                        toDataType(column.getDataType().getLogicalType()),
+                                        column.getComment().orElse(null)));
+        View view =
+                new ViewImpl(
+                        identifier,
+                        builder.build(),
+                        table.getOriginalQuery(),
+                        table.getComment(),
+                        table.getOptions());
+        try {
+            catalog.createView(identifier, view, ignoreIfExists);
+        } catch (Catalog.ViewAlreadyExistException e) {
+            throw new TableAlreadyExistException(getName(), tablePath);
+        } catch (Catalog.DatabaseNotExistException e) {
+            throw new DatabaseNotExistException(getName(), tablePath.getDatabaseName());
+        }
+    }
+
     private static void fillOptionsForMaterializedTable(
             CatalogMaterializedTable mt, Map<String, String> options) {
         Options mtOptions = new Options();
         mtOptions.set(CoreOptions.TYPE, TableType.MATERIALIZED_TABLE);
-        mt.getSnapshot().ifPresent(x -> mtOptions.set(MATERIALIZED_TABLE_SNAPSHOT, x));
         mtOptions.set(MATERIALIZED_TABLE_DEFINITION_QUERY, mt.getDefinitionQuery());
         mtOptions.set(
                 MATERIALIZED_TABLE_INTERVAL_FRESHNESS, mt.getDefinitionFreshness().getInterval());
@@ -676,7 +768,9 @@ public class FlinkCatalog extends AbstractCatalog {
             throw new TableNotExistException(getName(), tablePath);
         }
 
-        Preconditions.checkArgument(table instanceof FileStoreTable, "Can't alter system table.");
+        checkArgument(
+                table instanceof FileStoreTable,
+                "Only support alter data table, but is: " + table.getClass());
         validateAlterTable(toCatalogTable(table), newTable);
         Map<String, Integer> oldTableNonPhysicalColumnIndex =
                 FlinkCatalogPropertiesUtil.nonPhysicalColumns(
@@ -900,7 +994,6 @@ public class FlinkCatalog extends AbstractCatalog {
 
     private CatalogMaterializedTable buildMaterializedTable(
             Table table, Map<String, String> newOptions, TableSchema schema, Options options) {
-        Long snapshot = options.get(MATERIALIZED_TABLE_SNAPSHOT);
         String definitionQuery = options.get(MATERIALIZED_TABLE_DEFINITION_QUERY);
         IntervalFreshness freshness =
                 IntervalFreshness.of(
@@ -928,7 +1021,6 @@ public class FlinkCatalog extends AbstractCatalog {
                 .comment(table.comment().orElse(""))
                 .partitionKeys(table.partitionKeys())
                 .options(newOptions)
-                .snapshot(snapshot)
                 .definitionQuery(definitionQuery)
                 .freshness(freshness)
                 .logicalRefreshMode(logicalRefreshMode)
@@ -1018,15 +1110,27 @@ public class FlinkCatalog extends AbstractCatalog {
         try {
             catalog.renameTable(toIdentifier(tablePath), toIdentifier(toTable), ignoreIfNotExists);
         } catch (Catalog.TableNotExistException e) {
-            throw new TableNotExistException(getName(), tablePath);
+            try {
+                catalog.renameView(
+                        toIdentifier(tablePath), toIdentifier(toTable), ignoreIfNotExists);
+            } catch (Catalog.ViewNotExistException ex) {
+                throw new TableNotExistException(getName(), tablePath);
+            } catch (Catalog.ViewAlreadyExistException ex) {
+                throw new TableAlreadyExistException(getName(), toTable);
+            }
         } catch (Catalog.TableAlreadyExistException e) {
             throw new TableAlreadyExistException(getName(), toTable);
         }
     }
 
     @Override
-    public final List<String> listViews(String databaseName) throws CatalogException {
-        return Collections.emptyList();
+    public final List<String> listViews(String databaseName)
+            throws DatabaseNotExistException, CatalogException {
+        try {
+            return catalog.listViews(databaseName);
+        } catch (Catalog.DatabaseNotExistException e) {
+            throw new DatabaseNotExistException(getName(), databaseName);
+        }
     }
 
     @Override
@@ -1121,11 +1225,11 @@ public class FlinkCatalog extends AbstractCatalog {
             // This was already filtered by the expected partition.
             PartitionEntry partitionEntry = partitionEntries.get(0);
             Map<String, String> properties = new HashMap<>();
-            properties.put(NUM_ROWS_KEY, String.valueOf(partitionEntry.recordCount()));
+            properties.put(NUM_ROWS_PROP, String.valueOf(partitionEntry.recordCount()));
             properties.put(
-                    LAST_UPDATE_TIME_KEY, String.valueOf(partitionEntry.lastFileCreationTime()));
-            properties.put(NUM_FILES_KEY, String.valueOf(partitionEntry.fileCount()));
-            properties.put(TOTAL_SIZE_KEY, String.valueOf(partitionEntry.fileSizeInBytes()));
+                    LAST_UPDATE_TIME_PROP, String.valueOf(partitionEntry.lastFileCreationTime()));
+            properties.put(NUM_FILES_PROP, String.valueOf(partitionEntry.fileCount()));
+            properties.put(TOTAL_SIZE_PROP, String.valueOf(partitionEntry.fileSizeInBytes()));
             return new CatalogPartitionImpl(properties, "");
         } catch (TableNotPartitionedException | TableNotExistException e) {
             throw new PartitionNotExistException(getName(), tablePath, partitionSpec);
@@ -1357,7 +1461,6 @@ public class FlinkCatalog extends AbstractCatalog {
 
     private List<String> allMaterializedTableAttributes() {
         return Arrays.asList(
-                MATERIALIZED_TABLE_SNAPSHOT.key(),
                 MATERIALIZED_TABLE_DEFINITION_QUERY.key(),
                 MATERIALIZED_TABLE_INTERVAL_FRESHNESS.key(),
                 MATERIALIZED_TABLE_INTERVAL_FRESHNESS_TIME_UNIT.key(),

@@ -21,6 +21,9 @@ package org.apache.paimon.flink.sink;
 import org.apache.paimon.CoreOptions;
 import org.apache.paimon.CoreOptions.ChangelogProducer;
 import org.apache.paimon.CoreOptions.TagCreationMode;
+import org.apache.paimon.flink.compact.changelog.ChangelogCompactCoordinateOperator;
+import org.apache.paimon.flink.compact.changelog.ChangelogCompactWorkerOperator;
+import org.apache.paimon.flink.compact.changelog.ChangelogTaskTypeInfo;
 import org.apache.paimon.manifest.ManifestCommittable;
 import org.apache.paimon.options.MemorySize;
 import org.apache.paimon.options.Options;
@@ -31,6 +34,7 @@ import org.apache.paimon.utils.SerializableRunnable;
 import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.api.common.operators.SlotSharingGroup;
 import org.apache.flink.api.dag.Transformation;
+import org.apache.flink.api.java.typeutils.EitherTypeInfo;
 import org.apache.flink.configuration.ExecutionOptions;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.streaming.api.CheckpointingMode;
@@ -54,6 +58,7 @@ import java.util.Set;
 
 import static org.apache.paimon.CoreOptions.FULL_COMPACTION_DELTA_COMMITS;
 import static org.apache.paimon.CoreOptions.createCommitUser;
+import static org.apache.paimon.flink.FlinkConnectorOptions.CHANGELOG_PRECOMMIT_COMPACT;
 import static org.apache.paimon.flink.FlinkConnectorOptions.CHANGELOG_PRODUCER_FULL_COMPACTION_TRIGGER_INTERVAL;
 import static org.apache.paimon.flink.FlinkConnectorOptions.END_INPUT_WATERMARK;
 import static org.apache.paimon.flink.FlinkConnectorOptions.SINK_AUTO_TAG_FOR_SAVEPOINT;
@@ -61,7 +66,9 @@ import static org.apache.paimon.flink.FlinkConnectorOptions.SINK_COMMITTER_CPU;
 import static org.apache.paimon.flink.FlinkConnectorOptions.SINK_COMMITTER_MEMORY;
 import static org.apache.paimon.flink.FlinkConnectorOptions.SINK_COMMITTER_OPERATOR_CHAINING;
 import static org.apache.paimon.flink.FlinkConnectorOptions.SINK_MANAGED_WRITER_BUFFER_MEMORY;
+import static org.apache.paimon.flink.FlinkConnectorOptions.SINK_OPERATOR_UID_SUFFIX;
 import static org.apache.paimon.flink.FlinkConnectorOptions.SINK_USE_MANAGED_MEMORY;
+import static org.apache.paimon.flink.FlinkConnectorOptions.generateCustomUid;
 import static org.apache.paimon.flink.utils.ManagedMemoryUtils.declareManagedMemory;
 import static org.apache.paimon.utils.Preconditions.checkArgument;
 
@@ -223,9 +230,31 @@ public abstract class FlinkSink<T> implements Serializable {
                         .setParallelism(parallelism == null ? input.getParallelism() : parallelism);
 
         Options options = Options.fromMap(table.options());
+
+        String uidSuffix = options.get(SINK_OPERATOR_UID_SUFFIX);
+        if (options.get(SINK_OPERATOR_UID_SUFFIX) != null) {
+            written = written.uid(generateCustomUid(WRITER_NAME, table.name(), uidSuffix));
+        }
+
         if (options.get(SINK_USE_MANAGED_MEMORY)) {
             declareManagedMemory(written, options.get(SINK_MANAGED_WRITER_BUFFER_MEMORY));
         }
+
+        if (options.get(CHANGELOG_PRECOMMIT_COMPACT)) {
+            written =
+                    written.transform(
+                                    "Changelog Compact Coordinator",
+                                    new EitherTypeInfo<>(
+                                            new CommittableTypeInfo(), new ChangelogTaskTypeInfo()),
+                                    new ChangelogCompactCoordinateOperator(table))
+                            .forceNonParallel()
+                            .transform(
+                                    "Changelog Compact Worker",
+                                    new CommittableTypeInfo(),
+                                    new ChangelogCompactWorkerOperator(table))
+                            .setParallelism(written.getParallelism());
+        }
+
         return written;
     }
 
@@ -274,6 +303,14 @@ public abstract class FlinkSink<T> implements Serializable {
                                 committerOperator)
                         .setParallelism(1)
                         .setMaxParallelism(1);
+        if (options.get(SINK_OPERATOR_UID_SUFFIX) != null) {
+            committed =
+                    committed.uid(
+                            generateCustomUid(
+                                    GLOBAL_COMMITTER_NAME,
+                                    table.name(),
+                                    options.get(SINK_OPERATOR_UID_SUFFIX)));
+        }
         configureGlobalCommitter(
                 committed, options.get(SINK_COMMITTER_CPU), options.get(SINK_COMMITTER_MEMORY));
         return committed.addSink(new DiscardingSink<>()).name("end").setParallelism(1);
