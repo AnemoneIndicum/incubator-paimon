@@ -23,18 +23,22 @@ import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.deletionvectors.ApplyDeletionVectorReader;
 import org.apache.paimon.deletionvectors.DeletionVector;
 import org.apache.paimon.disk.IOManager;
+import org.apache.paimon.fileindex.FileIndexResult;
+import org.apache.paimon.fileindex.bitmap.ApplyBitmapIndexRecordReader;
+import org.apache.paimon.fileindex.bitmap.BitmapIndexResult;
 import org.apache.paimon.format.FileFormatDiscover;
 import org.apache.paimon.format.FormatKey;
 import org.apache.paimon.format.FormatReaderContext;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.io.DataFileMeta;
 import org.apache.paimon.io.DataFilePathFactory;
-import org.apache.paimon.io.FileIndexSkipper;
-import org.apache.paimon.io.FileRecordReader;
+import org.apache.paimon.io.DataFileRecordReader;
+import org.apache.paimon.io.FileIndexEvaluator;
 import org.apache.paimon.mergetree.compact.ConcatRecordReader;
 import org.apache.paimon.partition.PartitionUtils;
 import org.apache.paimon.predicate.Predicate;
-import org.apache.paimon.reader.EmptyRecordReader;
+import org.apache.paimon.reader.EmptyFileRecordReader;
+import org.apache.paimon.reader.FileRecordReader;
 import org.apache.paimon.reader.ReaderSupplier;
 import org.apache.paimon.reader.RecordReader;
 import org.apache.paimon.schema.SchemaManager;
@@ -184,36 +188,46 @@ public class RawFileSplitRead implements SplitRead<InternalRow> {
         return ConcatRecordReader.create(suppliers);
     }
 
-    private RecordReader<InternalRow> createFileReader(
+    private FileRecordReader<InternalRow> createFileReader(
             BinaryRow partition,
             DataFileMeta file,
             DataFilePathFactory dataFilePathFactory,
             BulkFormatMapping bulkFormatMapping,
             IOExceptionSupplier<DeletionVector> dvFactory)
             throws IOException {
+        FileIndexResult fileIndexResult = null;
         if (fileIndexReadEnabled) {
-            boolean skip =
-                    FileIndexSkipper.skip(
+            fileIndexResult =
+                    FileIndexEvaluator.evaluate(
                             fileIO,
                             bulkFormatMapping.getDataSchema(),
                             bulkFormatMapping.getDataFilters(),
                             dataFilePathFactory,
                             file);
-            if (skip) {
-                return new EmptyRecordReader<>();
+            if (!fileIndexResult.remain()) {
+                return new EmptyFileRecordReader<>();
             }
         }
 
-        FileRecordReader fileRecordReader =
-                new FileRecordReader(
+        FormatReaderContext formatReaderContext =
+                new FormatReaderContext(
+                        fileIO,
+                        dataFilePathFactory.toPath(file.fileName()),
+                        file.fileSize(),
+                        fileIndexResult);
+        FileRecordReader<InternalRow> fileRecordReader =
+                new DataFileRecordReader(
                         bulkFormatMapping.getReaderFactory(),
-                        new FormatReaderContext(
-                                fileIO,
-                                dataFilePathFactory.toPath(file.fileName()),
-                                file.fileSize()),
+                        formatReaderContext,
                         bulkFormatMapping.getIndexMapping(),
                         bulkFormatMapping.getCastMapping(),
                         PartitionUtils.create(bulkFormatMapping.getPartitionPair(), partition));
+
+        if (fileIndexResult instanceof BitmapIndexResult) {
+            fileRecordReader =
+                    new ApplyBitmapIndexRecordReader(
+                            fileRecordReader, (BitmapIndexResult) fileIndexResult);
+        }
 
         DeletionVector deletionVector = dvFactory == null ? null : dvFactory.get();
         if (deletionVector != null && !deletionVector.isEmpty()) {

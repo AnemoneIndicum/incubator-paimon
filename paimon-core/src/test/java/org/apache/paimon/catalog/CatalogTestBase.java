@@ -37,6 +37,7 @@ import org.apache.paimon.shade.guava30.com.google.common.collect.Lists;
 import org.apache.paimon.shade.guava30.com.google.common.collect.Maps;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -46,6 +47,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 import static org.apache.paimon.testutils.assertj.PaimonAssertions.anyCauseMatches;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -109,6 +111,18 @@ public abstract class CatalogTestBase {
 
         List<String> databases = catalog.listDatabases();
         assertThat(databases).contains("db1", "db2", "db3");
+    }
+
+    @Test
+    public void testDuplicatedDatabaseAfterCreatingTable() throws Exception {
+        catalog.createDatabase("test_db", false);
+        Identifier identifier = Identifier.create("test_db", "new_table");
+        Schema schema = Schema.newBuilder().column("pk1", DataTypes.INT()).build();
+        catalog.createTable(identifier, schema, false);
+
+        List<String> databases = catalog.listDatabases();
+        List<String> distinctDatabases = databases.stream().distinct().collect(Collectors.toList());
+        Assertions.assertEquals(distinctDatabases.size(), databases.size());
     }
 
     @Test
@@ -499,7 +513,9 @@ public abstract class CatalogTestBase {
         catalog.createTable(
                 identifier,
                 new Schema(
-                        Lists.newArrayList(new DataField(0, "col1", DataTypes.STRING())),
+                        Lists.newArrayList(
+                                new DataField(0, "col1", DataTypes.STRING()),
+                                new DataField(1, "col2", DataTypes.STRING())),
                         Collections.emptyList(),
                         Collections.emptyList(),
                         Maps.newHashMap(),
@@ -511,7 +527,7 @@ public abstract class CatalogTestBase {
                 false);
         Table table = catalog.getTable(identifier);
 
-        assertThat(table.rowType().getFields()).hasSize(1);
+        assertThat(table.rowType().getFields()).hasSize(2);
         assertThat(table.rowType().getFieldIndex("col1")).isLessThan(0);
         assertThat(table.rowType().getFieldIndex("new_col1")).isEqualTo(0);
 
@@ -522,12 +538,12 @@ public abstract class CatalogTestBase {
                                 catalog.alterTable(
                                         identifier,
                                         Lists.newArrayList(
-                                                SchemaChange.renameColumn("col1", "new_col1")),
+                                                SchemaChange.renameColumn("col2", "new_col1")),
                                         false))
                 .satisfies(
                         anyCauseMatches(
                                 Catalog.ColumnAlreadyExistException.class,
-                                "Column col1 already exists in the test_db.test_table table."));
+                                "Column new_col1 already exists in the test_db.test_table table."));
 
         // Alter table renames a column throws ColumnNotExistException when column does not exist
         assertThatThrownBy(
@@ -541,7 +557,7 @@ public abstract class CatalogTestBase {
                 .satisfies(
                         anyCauseMatches(
                                 Catalog.ColumnNotExistException.class,
-                                "Column [non_existing_col] does not exist in the test_db.test_table table."));
+                                "Column non_existing_col does not exist in the test_db.test_table table."));
     }
 
     @Test
@@ -647,7 +663,7 @@ public abstract class CatalogTestBase {
                 .satisfies(
                         anyCauseMatches(
                                 Catalog.ColumnNotExistException.class,
-                                "Column [non_existing_col] does not exist in the test_db.test_table table."));
+                                "Column non_existing_col does not exist in the test_db.test_table table."));
         // Alter table update a column type throws Exception when column is partition columns
         assertThatThrownBy(
                         () ->
@@ -659,8 +675,8 @@ public abstract class CatalogTestBase {
                                         false))
                 .satisfies(
                         anyCauseMatches(
-                                IllegalArgumentException.class,
-                                "Cannot update partition column [dt] type in the table"));
+                                UnsupportedOperationException.class,
+                                "Cannot update partition column: [dt]"));
     }
 
     @Test
@@ -718,7 +734,7 @@ public abstract class CatalogTestBase {
                 .satisfies(
                         anyCauseMatches(
                                 Catalog.ColumnNotExistException.class,
-                                "Column [non_existing_col] does not exist in the test_db.test_table table."));
+                                "Column non_existing_col does not exist in the test_db.test_table table."));
     }
 
     @Test
@@ -774,7 +790,7 @@ public abstract class CatalogTestBase {
                 .satisfies(
                         anyCauseMatches(
                                 Catalog.ColumnNotExistException.class,
-                                "Column [non_existing_col] does not exist in the test_db.test_table table."));
+                                "Column non_existing_col does not exist in the test_db.test_table table."));
 
         // Alter table update a column nullability throws Exception when column is pk columns
         assertThatThrownBy(
@@ -931,5 +947,17 @@ public abstract class CatalogTestBase {
         assertThatThrownBy(() -> catalog.getTable(identifier))
                 .isInstanceOf(Catalog.TableNotExistException.class);
         assertThat(catalog.getTable(newIdentifier)).isInstanceOf(FormatTable.class);
+    }
+
+    @Test
+    public void testTableUUID() throws Exception {
+        catalog.createDatabase("test_db", false);
+        Identifier identifier = Identifier.create("test_db", "test_table");
+        catalog.createTable(identifier, DEFAULT_TABLE_SCHEMA, false);
+        Table table = catalog.getTable(identifier);
+        String uuid = table.uuid();
+        assertThat(uuid).startsWith(identifier.getFullName() + ".");
+        assertThat(Long.parseLong(uuid.substring((identifier.getFullName() + ".").length())))
+                .isGreaterThan(0);
     }
 }

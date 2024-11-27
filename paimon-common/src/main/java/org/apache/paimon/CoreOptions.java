@@ -315,7 +315,7 @@ public class CoreOptions implements Serializable {
     public static final ConfigOption<Integer> SNAPSHOT_EXPIRE_LIMIT =
             key("snapshot.expire.limit")
                     .intType()
-                    .defaultValue(10)
+                    .defaultValue(50)
                     .withDescription(
                             "The maximum number of snapshots allowed to expire at a time.");
 
@@ -632,6 +632,14 @@ public class CoreOptions implements Serializable {
                             "Whether to remove the whole row in partial-update engine when -D records are received.");
 
     @Immutable
+    public static final ConfigOption<String> PARTIAL_UPDATE_REMOVE_RECORD_ON_SEQUENCE_GROUP =
+            key("partial-update.remove-record-on-sequence-group")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "When -D records of the given sequence groups are received, remove the whole row.");
+
+    @Immutable
     public static final ConfigOption<String> ROWKIND_FIELD =
             key("rowkind.field")
                     .stringType()
@@ -921,6 +929,13 @@ public class CoreOptions implements Serializable {
                     .memoryType()
                     .defaultValue(MemorySize.parse("256 mb"))
                     .withDescription("Max memory size for lookup cache.");
+
+    public static final ConfigOption<Double> LOOKUP_CACHE_HIGH_PRIO_POOL_RATIO =
+            key("lookup.cache.high-priority-pool-ratio")
+                    .doubleType()
+                    .defaultValue(0.25)
+                    .withDescription(
+                            "The fraction of cache memory that is reserved for high-priority data like index, filter.");
 
     public static final ConfigOption<Boolean> LOOKUP_CACHE_BLOOM_FILTER_ENABLED =
             key("lookup.cache.bloom.filter.enabled")
@@ -1405,6 +1420,12 @@ public class CoreOptions implements Serializable {
                     .withDescription(
                             "Whether to enable asynchronous IO writing when writing files.");
 
+    public static final ConfigOption<String> OBJECT_LOCATION =
+            key("object-location")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription("The object location for object table.");
+
     @ExcludeFromDocumentation("Only used internally to support materialized table")
     public static final ConfigOption<String> MATERIALIZED_TABLE_DEFINITION_QUERY =
             key("materialized-table.definition-query")
@@ -1516,6 +1537,10 @@ public class CoreOptions implements Serializable {
         return new Path(options.get(PATH));
     }
 
+    public TableType type() {
+        return options.get(TYPE);
+    }
+
     public String formatType() {
         return normalizeFileFormat(options.get(FILE_FORMAT));
     }
@@ -1563,6 +1588,11 @@ public class CoreOptions implements Serializable {
     public static FileFormat createFileFormat(Options options, ConfigOption<String> formatOption) {
         String formatIdentifier = normalizeFileFormat(options.get(formatOption));
         return FileFormat.fromIdentifier(formatIdentifier, options);
+    }
+
+    public String objectLocation() {
+        checkArgument(type() == TableType.OBJECT_TABLE, "Only object table has object location!");
+        return options.get(OBJECT_LOCATION);
     }
 
     public Map<Integer, String> fileCompressionPerLevel() {
@@ -1835,6 +1865,10 @@ public class CoreOptions implements Serializable {
 
     public MemorySize lookupCacheMaxMemory() {
         return options.get(LOOKUP_CACHE_MAX_MEMORY_SIZE);
+    }
+
+    public double lookupCacheHighPrioPoolRatio() {
+        return options.get(LOOKUP_CACHE_HIGH_PRIO_POOL_RATIO);
     }
 
     public long targetFileSize(boolean hasPrimaryKey) {

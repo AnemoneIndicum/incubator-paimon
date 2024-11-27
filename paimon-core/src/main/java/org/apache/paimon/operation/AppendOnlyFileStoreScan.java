@@ -34,7 +34,6 @@ import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 
 /** {@link FileStoreScan} for {@link AppendOnlyFileStore}. */
@@ -100,12 +99,6 @@ public class AppendOnlyFileStoreScan extends AbstractFileStoreScan {
                 && (!fileIndexReadEnabled || testFileIndex(entry.file().embeddedIndex(), entry));
     }
 
-    @Override
-    protected List<ManifestEntry> filterWholeBucketByStats(List<ManifestEntry> entries) {
-        // We don't need to filter per-bucket entries here
-        return entries;
-    }
-
     private boolean testFileIndex(@Nullable byte[] embeddedIndexBytes, ManifestEntry entry) {
         if (embeddedIndexBytes == null) {
             return true;
@@ -120,7 +113,7 @@ public class AppendOnlyFileStoreScan extends AbstractFileStoreScan {
 
         try (FileIndexPredicate predicate =
                 new FileIndexPredicate(embeddedIndexBytes, dataRowType)) {
-            return predicate.testPredicate(dataPredicate);
+            return predicate.evaluate(dataPredicate).remain();
         } catch (IOException e) {
             throw new RuntimeException("Exception happens while checking predicate.", e);
         }

@@ -1,6 +1,6 @@
 ---
 title: "Python API"
-weight: 3
+weight: 4
 type: docs
 aliases:
 - /api/python-api.html
@@ -187,7 +187,7 @@ schema = Schema(
     options={'bucket': '2'})
 ```
 
-### Create Tale
+### Create Table
 ```python
 schema = ...
 catalog.create_table(

@@ -68,6 +68,8 @@ import org.apache.paimon.utils.SnapshotManager;
 import org.apache.paimon.utils.SnapshotNotExistException;
 import org.apache.paimon.utils.TagManager;
 
+import org.apache.paimon.shade.caffeine2.com.github.benmanes.caffeine.cache.Cache;
+
 import javax.annotation.Nullable;
 
 import java.io.IOException;
@@ -124,6 +126,11 @@ abstract class AbstractFileStoreTable implements FileStoreTable {
     }
 
     @Override
+    public void setSnapshotCache(Cache<Path, Snapshot> cache) {
+        store().setSnapshotCache(cache);
+    }
+
+    @Override
     public OptionalLong latestSnapshotId() {
         Long snapshot = store().snapshotManager().latestSnapshotId();
         return snapshot == null ? OptionalLong.empty() : OptionalLong.of(snapshot);
@@ -165,6 +172,15 @@ abstract class AbstractFileStoreTable implements FileStoreTable {
                 ? SchemaManager.identifierFromPath(
                         location().toUri().toString(), true, currentBranch())
                 : identifier;
+    }
+
+    @Override
+    public String uuid() {
+        if (catalogEnvironment.uuid() != null) {
+            return catalogEnvironment.uuid();
+        }
+        long earliestCreationTime = schemaManager().earliestCreationTime();
+        return fullName() + "." + earliestCreationTime;
     }
 
     @Override
@@ -331,7 +347,8 @@ abstract class AbstractFileStoreTable implements FileStoreTable {
                 : new PrimaryKeyFileStoreTable(fileIO, path, newTableSchema, catalogEnvironment);
     }
 
-    protected SchemaManager schemaManager() {
+    @Override
+    public SchemaManager schemaManager() {
         return new SchemaManager(fileIO(), path, currentBranch());
     }
 

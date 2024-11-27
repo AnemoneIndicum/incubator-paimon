@@ -107,14 +107,7 @@ public class CodeGenUtils {
 
         try {
             Pair<Class<?>, Object[]> result =
-                    COMPILED_CLASS_CACHE.get(
-                            classKey,
-                            () -> {
-                                GeneratedClass<T> generatedClass = supplier.get();
-                                return Pair.of(
-                                        generatedClass.compile(CodeGenUtils.class.getClassLoader()),
-                                        generatedClass.getReferences());
-                            });
+                    COMPILED_CLASS_CACHE.get(classKey, () -> generateClass(supplier));
 
             //noinspection unchecked
             return (T) GeneratedClass.newInstance(result.getLeft(), result.getRight());
@@ -122,6 +115,34 @@ public class CodeGenUtils {
             throw new RuntimeException(
                     "Could not instantiate generated class '" + classType + "'", e);
         }
+    }
+
+    private static <T> Pair<Class<?>, Object[]> generateClass(
+            Supplier<GeneratedClass<T>> supplier) {
+        long time = System.currentTimeMillis();
+        OutOfMemoryError toThrow;
+
+        do {
+            try {
+                GeneratedClass<T> generatedClass = supplier.get();
+                return Pair.of(
+                        generatedClass.compile(CodeGenUtils.class.getClassLoader()),
+                        generatedClass.getReferences());
+            } catch (OutOfMemoryError error) {
+                // try to gc meta space
+                System.gc();
+                try {
+                    Thread.sleep(5_000);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw error;
+                }
+                toThrow = error;
+            }
+        } while ((System.currentTimeMillis() - time) < 120_000);
+
+        // retry fail
+        throw toThrow;
     }
 
     private static class ClassKey {

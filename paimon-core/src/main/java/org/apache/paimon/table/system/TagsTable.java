@@ -28,6 +28,7 @@ import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.Path;
 import org.apache.paimon.predicate.CompoundPredicate;
 import org.apache.paimon.predicate.Equal;
+import org.apache.paimon.predicate.InPredicateVisitor;
 import org.apache.paimon.predicate.LeafPredicate;
 import org.apache.paimon.predicate.LeafPredicateExtractor;
 import org.apache.paimon.predicate.Or;
@@ -94,17 +95,13 @@ public class TagsTable implements ReadonlyTable {
     private final Path location;
     private final String branch;
 
-    public TagsTable(FileStoreTable dataTable) {
-        this(
-                dataTable.fileIO(),
-                dataTable.location(),
-                CoreOptions.branch(dataTable.schema().options()));
-    }
+    private final FileStoreTable dataTable;
 
-    public TagsTable(FileIO fileIO, Path location, String branchName) {
-        this.fileIO = fileIO;
-        this.location = location;
-        this.branch = branchName;
+    public TagsTable(FileStoreTable dataTable) {
+        this.fileIO = dataTable.fileIO();
+        this.location = dataTable.location();
+        this.branch = CoreOptions.branch(dataTable.schema().options());
+        this.dataTable = dataTable;
     }
 
     @Override
@@ -134,7 +131,7 @@ public class TagsTable implements ReadonlyTable {
 
     @Override
     public Table copy(Map<String, String> dynamicOptions) {
-        return new TagsTable(fileIO, location, branch);
+        return new TagsTable(dataTable.copy(dynamicOptions));
     }
 
     private class TagsScan extends ReadOnceTableScan {
@@ -239,26 +236,18 @@ public class TagsTable implements ReadonlyTable {
                     CompoundPredicate compoundPredicate = (CompoundPredicate) predicate;
                     // optimize for IN filter
                     if ((compoundPredicate.function()) instanceof Or) {
-                        List<Predicate> children = compoundPredicate.children();
-                        for (Predicate leaf : children) {
-                            if (leaf instanceof LeafPredicate
-                                    && (((LeafPredicate) leaf).function() instanceof Equal
-                                            && ((LeafPredicate) leaf).literals().get(0)
-                                                    instanceof BinaryString)
-                                    && predicate
-                                                    .visit(LeafPredicateExtractor.INSTANCE)
-                                                    .get(TAG_NAME)
-                                            != null) {
-                                String equalValue =
-                                        ((LeafPredicate) leaf).literals().get(0).toString();
-                                if (tagManager.tagExists(equalValue)) {
-                                    predicateMap.put(equalValue, tagManager.tag(equalValue));
-                                }
-                            } else {
-                                predicateMap.clear();
-                                break;
-                            }
-                        }
+                        InPredicateVisitor.extractInElements(predicate, TAG_NAME)
+                                .ifPresent(
+                                        leafs ->
+                                                leafs.forEach(
+                                                        leaf -> {
+                                                            String leftName = leaf.toString();
+                                                            if (tagManager.tagExists(leftName)) {
+                                                                predicateMap.put(
+                                                                        leftName,
+                                                                        tagManager.tag(leftName));
+                                                            }
+                                                        }));
                     }
                 }
             }

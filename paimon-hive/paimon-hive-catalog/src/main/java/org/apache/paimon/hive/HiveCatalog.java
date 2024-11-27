@@ -48,6 +48,7 @@ import org.apache.paimon.table.FormatTable;
 import org.apache.paimon.types.DataField;
 import org.apache.paimon.types.DataTypes;
 import org.apache.paimon.types.RowType;
+import org.apache.paimon.utils.Pair;
 import org.apache.paimon.utils.Preconditions;
 import org.apache.paimon.view.View;
 import org.apache.paimon.view.ViewImpl;
@@ -83,7 +84,6 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -112,7 +112,6 @@ import static org.apache.paimon.table.FormatTableOptions.FIELD_DELIMITER;
 import static org.apache.paimon.utils.BranchManager.DEFAULT_MAIN_BRANCH;
 import static org.apache.paimon.utils.HadoopUtils.addHadoopConfIfFound;
 import static org.apache.paimon.utils.Preconditions.checkArgument;
-import static org.apache.paimon.utils.Preconditions.checkNotNull;
 import static org.apache.paimon.utils.StringUtils.isNullOrWhitespaceOnly;
 
 /** A catalog implementation for Hive. */
@@ -122,7 +121,7 @@ public class HiveCatalog extends AbstractCatalog {
 
     // Reserved properties
     public static final String TABLE_TYPE_PROP = "table_type";
-    public static final String PAIMON_TABLE_TYPE_VALUE = "paimon";
+    public static final String PAIMON_TABLE_IDENTIFIER = "PAIMON";
 
     // we don't include paimon-hive-connector as dependencies because it depends on
     // hive-exec
@@ -135,6 +134,7 @@ public class HiveCatalog extends AbstractCatalog {
             "org.apache.paimon.hive.PaimonStorageHandler";
     private static final String HIVE_PREFIX = "hive.";
     public static final String HIVE_SITE_FILE = "hive-site.xml";
+    private static final String HIVE_EXTERNAL_TABLE_PROP = "EXTERNAL";
 
     private final HiveConf hiveConf;
     private final String clientClassName;
@@ -210,6 +210,20 @@ public class HiveCatalog extends AbstractCatalog {
         return getTableLocation(identifier, table);
     }
 
+    private Pair<Path, Boolean> initialTableLocation(
+            Map<String, String> tableOptions, Identifier identifier) {
+        boolean externalTable;
+        Path location;
+        if (tableOptions.containsKey(CoreOptions.PATH.key())) {
+            externalTable = true;
+            location = new Path(tableOptions.get(CoreOptions.PATH.key()));
+        } else {
+            externalTable = usingExternalTable(tableOptions);
+            location = getTableLocation(identifier, null);
+        }
+        return Pair.of(location, externalTable);
+    }
+
     private Path getTableLocation(Identifier identifier, @Nullable Table table) {
         try {
             String databaseName = identifier.getDatabaseName();
@@ -283,6 +297,8 @@ public class HiveCatalog extends AbstractCatalog {
                 (key, value) -> {
                     if (key.equals(COMMENT_PROP)) {
                         database.setDescription(value);
+                    } else if (key.equals(OWNER_PROP)) {
+                        database.setOwnerName(value);
                     } else if (key.equals(DB_LOCATION_PROP)) {
                         database.setLocationUri(value);
                     } else if (value != null) {
@@ -299,11 +315,14 @@ public class HiveCatalog extends AbstractCatalog {
         try {
             Database database = clients.run(client -> client.getDatabase(name));
             Map<String, String> options = new HashMap<>(database.getParameters());
-            if (database.getLocationUri() != null) {
-                options.put(DB_LOCATION_PROP, database.getLocationUri());
-            }
             if (database.getDescription() != null) {
                 options.put(COMMENT_PROP, database.getDescription());
+            }
+            if (database.getOwnerName() != null) {
+                options.put(OWNER_PROP, database.getOwnerName());
+            }
+            if (database.getLocationUri() != null) {
+                options.put(DB_LOCATION_PROP, database.getLocationUri());
             }
             return org.apache.paimon.catalog.Database.of(name, options, database.getDescription());
         } catch (NoSuchObjectException e) {
@@ -391,10 +410,14 @@ public class HiveCatalog extends AbstractCatalog {
         try {
             List<String> allTables = clients.run(client -> client.getAllTables(databaseName));
             List<String> result = new ArrayList<>(allTables.size());
-            for (String table : allTables) {
+            for (String t : allTables) {
                 try {
-                    getTable(new Identifier(databaseName, table));
-                    result.add(table);
+                    Identifier identifier = new Identifier(databaseName, t);
+                    Table table = getHmsTable(identifier);
+                    if (isPaimonTable(identifier, table)
+                            || (!formatTableDisabled() && isFormatTable(table))) {
+                        result.add(t);
+                    }
                 } catch (TableNotExistException ignored) {
                 }
             }
@@ -405,6 +428,18 @@ public class HiveCatalog extends AbstractCatalog {
             Thread.currentThread().interrupt();
             throw new RuntimeException("Interrupted in call to listTables " + databaseName, e);
         }
+    }
+
+    @Override
+    protected TableMeta getDataTableMeta(Identifier identifier) throws TableNotExistException {
+        return getDataTableMeta(identifier, getHmsTable(identifier));
+    }
+
+    private TableMeta getDataTableMeta(Identifier identifier, Table table)
+            throws TableNotExistException {
+        return new TableMeta(
+                getDataTableSchema(identifier, table),
+                identifier.getFullName() + "." + table.getCreateTime());
     }
 
     @Override
@@ -526,25 +561,13 @@ public class HiveCatalog extends AbstractCatalog {
         getDatabase(databaseName);
 
         try {
-            List<String> tables = clients.run(client -> client.getAllTables(databaseName));
-            List<String> views = new ArrayList<>();
-            for (String tableName : tables) {
-                Table table;
-                try {
-                    table = getHmsTable(Identifier.create(databaseName, tableName));
-                } catch (TableNotExistException e) {
-                    continue;
-                }
-                if (isView(table)) {
-                    views.add(tableName);
-                }
-            }
-            return views;
+            return clients.run(
+                    client -> client.getTables(databaseName, "*", TableType.VIRTUAL_VIEW));
         } catch (TException e) {
-            throw new RuntimeException("Failed to list all tables in database " + databaseName, e);
+            throw new RuntimeException("Failed to list views in database " + databaseName, e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new RuntimeException("Interrupted in call to listTables " + databaseName, e);
+            throw new RuntimeException("Interrupted in call to getTables " + databaseName, e);
         }
     }
 
@@ -566,20 +589,7 @@ public class HiveCatalog extends AbstractCatalog {
         } catch (ViewNotExistException ignored) {
         }
 
-        try {
-            String fromDB = fromView.getDatabaseName();
-            String fromViewName = fromView.getTableName();
-            Table table = clients.run(client -> client.getTable(fromDB, fromViewName));
-            table.setDbName(toView.getDatabaseName());
-            table.setTableName(toView.getTableName());
-            clients.execute(client -> client.alter_table(fromDB, fromViewName, table));
-        } catch (TException e) {
-            throw new RuntimeException("Failed to rename view " + fromView.getFullName(), e);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new RuntimeException(
-                    "Interrupted in call to rename view " + fromView.getFullName(), e);
-        }
+        renameHiveTable(fromView, toView);
     }
 
     @Override
@@ -588,18 +598,19 @@ public class HiveCatalog extends AbstractCatalog {
         Preconditions.checkArgument(identifier.getSystemTableName() == null);
         Table table = getHmsTable(identifier);
         try {
-            TableSchema tableSchema = getDataTableSchema(identifier, table);
+            TableMeta tableMeta = getDataTableMeta(identifier, table);
             return FileStoreTableFactory.create(
                     fileIO,
                     getTableLocation(identifier, table),
-                    tableSchema,
+                    tableMeta.schema(),
                     new CatalogEnvironment(
                             identifier,
+                            tableMeta.uuid(),
                             Lock.factory(
                                     lockFactory().orElse(null),
                                     lockContext().orElse(null),
                                     identifier),
-                            metastoreClientFactory(identifier, tableSchema).orElse(null),
+                            metastoreClientFactory(identifier, tableMeta.schema()).orElse(null),
                             lineageMetaFactory));
         } catch (TableNotExistException ignore) {
         }
@@ -637,8 +648,10 @@ public class HiveCatalog extends AbstractCatalog {
                         options,
                         schema.comment());
         try {
-            Path location = getTableLocation(identifier, null);
-            Table hiveTable = createHiveFormatTable(identifier, newSchema, location);
+            Pair<Path, Boolean> pair = initialTableLocation(schema.options(), identifier);
+            Path location = pair.getLeft();
+            boolean externalTable = pair.getRight();
+            Table hiveTable = createHiveFormatTable(identifier, newSchema, location, externalTable);
             clients.execute(client -> client.createTable(hiveTable));
         } catch (Exception e) {
             // we don't need to delete directories since HMS will roll back db and fs if failed.
@@ -646,29 +659,36 @@ public class HiveCatalog extends AbstractCatalog {
         }
     }
 
-    private boolean usingExternalTable() {
+    private boolean usingExternalTable(Map<String, String> tableOptions) {
         CatalogTableType tableType =
                 OptionsUtils.convertToEnum(
                         hiveConf.get(TABLE_TYPE.key(), CatalogTableType.MANAGED.toString()),
                         CatalogTableType.class);
-        return CatalogTableType.EXTERNAL.equals(tableType);
+
+        String externalPropValue =
+                tableOptions.getOrDefault(
+                        HIVE_EXTERNAL_TABLE_PROP.toLowerCase(),
+                        tableOptions.get(HIVE_EXTERNAL_TABLE_PROP.toUpperCase()));
+        return CatalogTableType.EXTERNAL.equals(tableType)
+                || "TRUE".equalsIgnoreCase(externalPropValue);
     }
 
     @Override
     protected void dropTableImpl(Identifier identifier) {
         try {
+            boolean externalTable = isExternalTable(getHmsTable(identifier));
             clients.execute(
                     client ->
                             client.dropTable(
                                     identifier.getDatabaseName(),
                                     identifier.getTableName(),
-                                    true,
+                                    !externalTable,
                                     false,
                                     true));
 
             // When drop a Hive external table, only the hive metadata is deleted and the data files
             // are not deleted.
-            if (usingExternalTable()) {
+            if (externalTable) {
                 return;
             }
 
@@ -683,7 +703,7 @@ public class HiveCatalog extends AbstractCatalog {
             } catch (Exception ee) {
                 LOG.error("Delete directory[{}] fail for table {}", path, identifier, ee);
             }
-        } catch (TException e) {
+        } catch (TException | TableNotExistException e) {
             throw new RuntimeException("Failed to drop table " + identifier.getFullName(), e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -694,13 +714,12 @@ public class HiveCatalog extends AbstractCatalog {
 
     @Override
     protected void createTableImpl(Identifier identifier, Schema schema) {
-        // first commit changes to underlying files
-        // if changes on Hive fails there is no harm to perform the same changes to files again
-        Path location = getTableLocation(identifier, null);
+        Pair<Path, Boolean> pair = initialTableLocation(schema.options(), identifier);
+        Path location = pair.getLeft();
+        boolean externalTable = pair.getRight();
         TableSchema tableSchema;
         try {
-            tableSchema =
-                    schemaManager(identifier, location).createTable(schema, usingExternalTable());
+            tableSchema = schemaManager(identifier, location).createTable(schema, externalTable);
         } catch (Exception e) {
             throw new RuntimeException(
                     "Failed to commit changes of table "
@@ -712,7 +731,9 @@ public class HiveCatalog extends AbstractCatalog {
         try {
             clients.execute(
                     client ->
-                            client.createTable(createHiveTable(identifier, tableSchema, location)));
+                            client.createTable(
+                                    createHiveTable(
+                                            identifier, tableSchema, location, externalTable)));
         } catch (Exception e) {
             try {
                 fileIO.deleteDirectoryQuietly(location);
@@ -723,7 +744,8 @@ public class HiveCatalog extends AbstractCatalog {
         }
     }
 
-    private Table createHiveTable(Identifier identifier, TableSchema tableSchema, Path location) {
+    private Table createHiveTable(
+            Identifier identifier, TableSchema tableSchema, Path location, boolean externalTable) {
         checkArgument(Options.fromMap(tableSchema.options()).get(TYPE) != FORMAT_TABLE);
 
         Map<String, String> tblProperties;
@@ -743,50 +765,39 @@ public class HiveCatalog extends AbstractCatalog {
             }
         }
 
-        Table table = newHmsTable(identifier, tblProperties, PAIMON_TABLE_TYPE_VALUE);
-        updateHmsTable(table, identifier, tableSchema, PAIMON_TABLE_TYPE_VALUE, location);
+        Table table = newHmsTable(identifier, tblProperties, null, externalTable);
+        updateHmsTable(table, identifier, tableSchema, null, location);
         return table;
     }
 
     private Table createHiveFormatTable(
-            Identifier identifier, TableSchema tableSchema, Path location) {
-        Options options = Options.fromMap(tableSchema.options());
-        checkArgument(options.get(TYPE) == FORMAT_TABLE);
+            Identifier identifier, TableSchema tableSchema, Path location, boolean externalTable) {
+        CoreOptions coreOptions = new CoreOptions(tableSchema.options());
+        checkArgument(coreOptions.type() == FORMAT_TABLE);
 
-        String provider = tableSchema.options().get(FILE_FORMAT.key());
-        checkNotNull(provider, FILE_FORMAT.key() + " should be configured.");
-        // valid supported format
-        FormatTable.Format.valueOf(provider.toUpperCase());
+        // file.format option has a default value and cannot be empty.
+        FormatTable.Format provider = FormatTable.parseFormat(coreOptions.formatType());
 
         Map<String, String> tblProperties = new HashMap<>();
 
-        Table table = newHmsTable(identifier, tblProperties, provider);
+        Table table = newHmsTable(identifier, tblProperties, provider, externalTable);
         updateHmsTable(table, identifier, tableSchema, provider, location);
 
-        if (FormatTable.Format.CSV.toString().equalsIgnoreCase(provider)) {
-            table.getSd()
-                    .getSerdeInfo()
-                    .getParameters()
-                    .put(FIELD_DELIM, options.get(FIELD_DELIMITER));
-        }
         return table;
     }
 
     @Override
     protected void renameTableImpl(Identifier fromTable, Identifier toTable) {
         try {
-            String fromDB = fromTable.getDatabaseName();
-            String fromTableName = fromTable.getTableName();
-            Table table = clients.run(client -> client.getTable(fromDB, fromTableName));
-            table.setDbName(toTable.getDatabaseName());
-            table.setTableName(toTable.getTableName());
-            clients.execute(client -> client.alter_table(fromDB, fromTableName, table));
-
+            // Get fromTable's location before rename
             Path fromPath = getTableLocation(fromTable);
-            if (!new SchemaManager(fileIO, fromPath).listAllIds().isEmpty()) {
+            Table table = renameHiveTable(fromTable, toTable);
+            Path toPath = getTableLocation(toTable);
+            if (!isExternalTable(table)
+                    && !fromPath.equals(toPath)
+                    && !new SchemaManager(fileIO, fromPath).listAllIds().isEmpty()) {
                 // Rename the file system's table directory. Maintain consistency between tables in
                 // the file system and tables in the Hive Metastore.
-                Path toPath = getTableLocation(toTable);
                 try {
                     fileIO.rename(fromPath, toPath);
                 } catch (IOException e) {
@@ -804,6 +815,24 @@ public class HiveCatalog extends AbstractCatalog {
                                 client.alter_table(
                                         toTable.getDatabaseName(), toTable.getTableName(), table));
             }
+        } catch (TException e) {
+            throw new RuntimeException("Failed to rename table " + fromTable.getFullName(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Interrupted in call to renameTable", e);
+        }
+    }
+
+    private Table renameHiveTable(Identifier fromTable, Identifier toTable) {
+        try {
+            String fromDB = fromTable.getDatabaseName();
+            String fromTableName = fromTable.getTableName();
+            Table table = clients.run(client -> client.getTable(fromDB, fromTableName));
+            table.setDbName(toTable.getDatabaseName());
+            table.setTableName(toTable.getTableName());
+            clients.execute(client -> client.alter_table(fromDB, fromTableName, table));
+
+            return table;
         } catch (TException e) {
             throw new RuntimeException("Failed to rename table " + fromTable.getFullName(), e);
         } catch (InterruptedException e) {
@@ -840,19 +869,19 @@ public class HiveCatalog extends AbstractCatalog {
             throws TException, InterruptedException {
         updateHmsTablePars(table, newSchema);
         Path location = getTableLocation(identifier, table);
-        updateHmsTable(table, identifier, newSchema, newSchema.options().get("provider"), location);
-        clients.execute(
-                client ->
-                        client.alter_table(
-                                identifier.getDatabaseName(),
-                                identifier.getTableName(),
-                                table,
-                                true));
+        // file format is null, because only data table support alter table.
+        updateHmsTable(table, identifier, newSchema, null, location);
+        clients.execute(client -> HiveAlterTableUtils.alterTable(client, identifier, table));
     }
 
     @Override
     public boolean allowUpperCase() {
         return catalogOptions.getOptional(ALLOW_UPPER_CASE).orElse(false);
+    }
+
+    @Override
+    protected boolean allowCustomTablePath() {
+        return true;
     }
 
     public boolean syncAllProperties() {
@@ -861,7 +890,7 @@ public class HiveCatalog extends AbstractCatalog {
 
     @Override
     public void repairCatalog() {
-        List<String> databases = null;
+        List<String> databases;
         try {
             databases = listDatabasesInFileSystem(new Path(warehouse));
         } catch (IOException e) {
@@ -911,10 +940,13 @@ public class HiveCatalog extends AbstractCatalog {
         TableSchema tableSchema =
                 tableSchemaInFileSystem(location, identifier.getBranchNameOrDefault())
                         .orElseThrow(() -> new TableNotExistException(identifier));
-        Table newTable = createHiveTable(identifier, tableSchema, location);
+
         try {
+            Table newTable = null;
             try {
                 Table table = getHmsTable(identifier);
+                newTable =
+                        createHiveTable(identifier, tableSchema, location, isExternalTable(table));
                 checkArgument(
                         isPaimonTable(table),
                         "Table %s is not a paimon table in hive metastore.",
@@ -925,7 +957,16 @@ public class HiveCatalog extends AbstractCatalog {
                 }
             } catch (TableNotExistException e) {
                 // hive table does not exist.
-                clients.execute(client -> client.createTable(newTable));
+                if (newTable == null) {
+                    newTable =
+                            createHiveTable(
+                                    identifier,
+                                    tableSchema,
+                                    location,
+                                    usingExternalTable(tableSchema.options()));
+                }
+                Table finalNewTable = newTable;
+                clients.execute(client -> client.createTable(finalNewTable));
             }
 
             // repair partitions
@@ -955,7 +996,7 @@ public class HiveCatalog extends AbstractCatalog {
         return warehouse;
     }
 
-    private Table getHmsTable(Identifier identifier) throws TableNotExistException {
+    public Table getHmsTable(Identifier identifier) throws TableNotExistException {
         try {
             return clients.run(
                     client ->
@@ -998,20 +1039,20 @@ public class HiveCatalog extends AbstractCatalog {
         }
     }
 
-    private static boolean isView(Table table) {
-        return TableType.valueOf(table.getTableType()) == TableType.VIRTUAL_VIEW;
+    public static boolean isView(Table table) {
+        return table != null && TableType.VIRTUAL_VIEW.name().equals(table.getTableType());
+    }
+
+    private boolean isExternalTable(Table table) {
+        return table != null && TableType.EXTERNAL_TABLE.name().equals(table.getTableType());
     }
 
     private Table newHmsTable(
-            Identifier identifier, Map<String, String> tableParameters, String provider) {
+            Identifier identifier,
+            Map<String, String> tableParameters,
+            @Nullable FormatTable.Format provider,
+            boolean externalTable) {
         long currentTimeMillis = System.currentTimeMillis();
-        CatalogTableType tableType =
-                OptionsUtils.convertToEnum(
-                        hiveConf.get(TABLE_TYPE.key(), CatalogTableType.MANAGED.toString()),
-                        CatalogTableType.class);
-        if (provider == null) {
-            provider = PAIMON_TABLE_TYPE_VALUE;
-        }
         Table table =
                 new Table(
                         identifier.getTableName(),
@@ -1026,68 +1067,86 @@ public class HiveCatalog extends AbstractCatalog {
                         tableParameters,
                         null,
                         null,
-                        tableType.toString().toUpperCase(Locale.ROOT) + "_TABLE");
-        table.getParameters().put(TABLE_TYPE_PROP, provider.toUpperCase());
-        if (PAIMON_TABLE_TYPE_VALUE.equalsIgnoreCase(provider)) {
+                        externalTable
+                                ? TableType.EXTERNAL_TABLE.name()
+                                : TableType.MANAGED_TABLE.name());
+
+        if (provider == null) {
+            // normal paimon table
+            table.getParameters().put(TABLE_TYPE_PROP, PAIMON_TABLE_IDENTIFIER);
             table.getParameters()
                     .put(hive_metastoreConstants.META_TABLE_STORAGE, STORAGE_HANDLER_CLASS_NAME);
         } else {
-            table.getParameters().put(FILE_FORMAT.key(), provider.toLowerCase());
+            // format table
+            table.getParameters().put(TABLE_TYPE_PROP, provider.name());
+            table.getParameters().put(FILE_FORMAT.key(), provider.name().toLowerCase());
             table.getParameters().put(TYPE.key(), FORMAT_TABLE.toString());
         }
-        if (CatalogTableType.EXTERNAL.equals(tableType)) {
-            table.getParameters().put("EXTERNAL", "TRUE");
+
+        if (externalTable) {
+            table.getParameters().put(HIVE_EXTERNAL_TABLE_PROP, "TRUE");
         }
         return table;
     }
 
-    private String getSerdeClassName(String provider) {
-        if (provider == null || provider.equalsIgnoreCase(PAIMON_TABLE_TYPE_VALUE)) {
-            return SERDE_CLASS_NAME;
-        } else if (provider.equalsIgnoreCase("csv")) {
-            return "org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe";
-        } else if (provider.equalsIgnoreCase("parquet")) {
-            return "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe";
-        } else if (provider.equalsIgnoreCase("orc")) {
-            return "org.apache.hadoop.hive.ql.io.orc.OrcSerde";
-        } else {
+    private String getSerdeClassName(@Nullable FormatTable.Format provider) {
+        if (provider == null) {
             return SERDE_CLASS_NAME;
         }
+        switch (provider) {
+            case CSV:
+                return "org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe";
+            case PARQUET:
+                return "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe";
+            case ORC:
+                return "org.apache.hadoop.hive.ql.io.orc.OrcSerde";
+        }
+        return SERDE_CLASS_NAME;
     }
 
-    private String getInputFormatName(String provider) {
-        if (provider == null || provider.equalsIgnoreCase(PAIMON_TABLE_TYPE_VALUE)) {
-            return INPUT_FORMAT_CLASS_NAME;
-        } else if (provider.equalsIgnoreCase("csv")) {
-            return "org.apache.hadoop.mapred.TextInputFormat";
-        } else if (provider.equalsIgnoreCase("parquet")) {
-            return "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat";
-        } else if (provider.equalsIgnoreCase("orc")) {
-            return "org.apache.hadoop.hive.ql.io.orc.OrcInputFormat";
-        } else {
+    private String getInputFormatName(@Nullable FormatTable.Format provider) {
+        if (provider == null) {
             return INPUT_FORMAT_CLASS_NAME;
         }
+        switch (provider) {
+            case CSV:
+                return "org.apache.hadoop.mapred.TextInputFormat";
+            case PARQUET:
+                return "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat";
+            case ORC:
+                return "org.apache.hadoop.hive.ql.io.orc.OrcInputFormat";
+        }
+        return INPUT_FORMAT_CLASS_NAME;
     }
 
-    private String getOutputFormatClassName(String provider) {
-        if (provider == null || provider.equalsIgnoreCase(PAIMON_TABLE_TYPE_VALUE)) {
-            return OUTPUT_FORMAT_CLASS_NAME;
-        } else if (provider.equalsIgnoreCase("csv")) {
-            return "org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat";
-        } else if (provider.equalsIgnoreCase("parquet")) {
-            return "org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat";
-        } else if (provider.equalsIgnoreCase("orc")) {
-            return "org.apache.hadoop.hive.ql.io.orc.OrcOutputFormat";
-        } else {
+    private String getOutputFormatClassName(@Nullable FormatTable.Format provider) {
+        if (provider == null) {
             return OUTPUT_FORMAT_CLASS_NAME;
         }
+        switch (provider) {
+            case CSV:
+                return "org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat";
+            case PARQUET:
+                return "org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat";
+            case ORC:
+                return "org.apache.hadoop.hive.ql.io.orc.OrcOutputFormat";
+        }
+        return OUTPUT_FORMAT_CLASS_NAME;
+    }
+
+    private Map<String, String> setSerDeInfoParam(@Nullable FormatTable.Format provider) {
+        Map<String, String> param = new HashMap<>();
+        if (provider == FormatTable.Format.CSV) {
+            param.put(FIELD_DELIM, options.get(FIELD_DELIMITER));
+        }
+        return param;
     }
 
     private void updateHmsTable(
             Table table,
             Identifier identifier,
             TableSchema schema,
-            String provider,
+            @Nullable FormatTable.Format provider,
             Path location) {
         StorageDescriptor sd = table.getSd() != null ? table.getSd() : new StorageDescriptor();
 
@@ -1149,14 +1208,6 @@ public class HiveCatalog extends AbstractCatalog {
             location = getTableLocation(identifier, table);
         }
         locationHelper.specifyTableLocation(table, location.toString());
-    }
-
-    private Map<String, String> setSerDeInfoParam(String provider) {
-        Map<String, String> param = new HashMap<>();
-        if (provider != null && provider.equalsIgnoreCase("csv")) {
-            param.put(FIELD_DELIM, options.get(FIELD_DELIMITER));
-        }
-        return param;
     }
 
     private void updateHmsTablePars(Table table, TableSchema schema) {

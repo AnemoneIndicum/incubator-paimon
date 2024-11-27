@@ -33,6 +33,7 @@ import org.apache.flink.table.catalog.exceptions.PartitionNotExistException;
 import org.apache.flink.table.catalog.exceptions.TableNotPartitionedException;
 import org.apache.flink.types.Row;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import javax.annotation.Nonnull;
 
@@ -299,7 +300,7 @@ public class CatalogTableITCase extends CatalogITCaseBase {
         result =
                 sql(
                         "SELECT schema_id, fields, partition_keys, "
-                                + "primary_keys, options, `comment` FROM T$schemas where schema_id>0 and schema_id<3");
+                                + "primary_keys, options, `comment` FROM T$schemas where schema_id>0 and schema_id<3 order by schema_id");
         assertThat(result.toString())
                 .isEqualTo(
                         "[+I[1, [{\"id\":0,\"name\":\"a\",\"type\":\"INT NOT NULL\"},"
@@ -313,7 +314,7 @@ public class CatalogTableITCase extends CatalogITCaseBase {
         result =
                 sql(
                         "SELECT schema_id, fields, partition_keys, "
-                                + "primary_keys, options, `comment` FROM T$schemas where schema_id in (1, 3)");
+                                + "primary_keys, options, `comment` FROM T$schemas where schema_id in (1, 3) order by schema_id");
         assertThat(result.toString())
                 .isEqualTo(
                         "[+I[1, [{\"id\":0,\"name\":\"a\",\"type\":\"INT NOT NULL\"},"
@@ -940,6 +941,7 @@ public class CatalogTableITCase extends CatalogITCaseBase {
     }
 
     @Test
+    @Timeout(60)
     public void testConsumersTable() throws Exception {
         batchSql("CREATE TABLE T (a INT, b INT)");
         batchSql("INSERT INTO T VALUES (1, 2)");
@@ -952,9 +954,17 @@ public class CatalogTableITCase extends CatalogITCaseBase {
 
         batchSql("INSERT INTO T VALUES (5, 6), (7, 8)");
         assertThat(iterator.collect(2)).containsExactlyInAnyOrder(Row.of(1, 2), Row.of(3, 4));
+
+        List<Row> result;
+        do {
+            result = sql("SELECT * FROM T$consumers");
+            if (!result.isEmpty()) {
+                break;
+            }
+            Thread.sleep(1000);
+        } while (true);
         iterator.close();
 
-        List<Row> result = sql("SELECT * FROM T$consumers");
         assertThat(result).hasSize(1);
         assertThat(result.get(0).getField(0)).isEqualTo("my1");
         assertThat((Long) result.get(0).getField(1)).isGreaterThanOrEqualTo(3);
@@ -972,7 +982,8 @@ public class CatalogTableITCase extends CatalogITCaseBase {
                                         "SELECT * FROM T /*+ OPTIONS('consumer-id' = 'test-id') */ WHERE a = 1"))
                 .rootCause()
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessage("consumer.expiration-time should be specified when using consumer-id.");
+                .hasMessageContaining(
+                        "You need to configure 'consumer.expiration-time' (ALTER TABLE) and restart your write job for it");
     }
 
     @Test
@@ -985,7 +996,8 @@ public class CatalogTableITCase extends CatalogITCaseBase {
                                 streamSqlIter(
                                         "SELECT * FROM T /*+ OPTIONS('consumer-id'='test-id') */"))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessage("consumer.expiration-time should be specified when using consumer-id.");
+                .hasMessageContaining(
+                        "You need to configure 'consumer.expiration-time' (ALTER TABLE) and restart your write job for it");
     }
 
     @Test

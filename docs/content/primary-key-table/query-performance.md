@@ -33,7 +33,7 @@ The table schema has the greatest impact on query performance. See [Table Mode](
 For Merge On Read table, the most important thing you should pay attention to is the number of buckets, which will limit
 the concurrency of reading data.
 
-For MOW (Deletion Vectors) or COW table or [Read Optimized]({{< ref "maintenance/system-tables#read-optimized-table" >}}) table,
+For MOW (Deletion Vectors) or COW table or [Read Optimized]({{< ref "concepts/system-tables#read-optimized-table" >}}) table,
 There is no limit to the concurrency of reading data, and they can also utilize some filtering conditions for non-primary-key columns.
 
 ## Data Skipping By Primary Key Filter
@@ -62,6 +62,9 @@ Supported filter types:
 
 `Bitmap`:
 * `file-index.bitmap.columns`: specify the columns that need bitmap index.
+
+`Bit-Slice Index Bitmap`
+* `file-index.bsi.columns`: specify the columns that need bsi index.
 
 More filter types will be supported...
 

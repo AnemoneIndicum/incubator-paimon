@@ -1,7 +1,7 @@
 ---
 title: Specification
 bookCollapseSection: true
-weight: 4
+weight: 7
 ---
 <!--
 Licensed to the Apache Software Foundation (ASF) under one
