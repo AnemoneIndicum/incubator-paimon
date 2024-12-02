@@ -16,18 +16,11 @@
  * limitations under the License.
  */
 
-package org.apache.paimon.lineage;
+package org.apache.paimon.rest.exceptions;
 
-import org.apache.paimon.data.Timestamp;
-
-/**
- * Data lineage entity with table lineage, barrier id and snapshot id for table source and sink
- * lineage.
- */
-public interface DataLineageEntity extends TableLineageEntity {
-    long getBarrierId();
-
-    long getSnapshotId();
-
-    Timestamp getCreateTime();
+/** Exception thrown on HTTP 403 Forbidden. */
+public class ForbiddenException extends RESTException {
+    public ForbiddenException(String message, Object... args) {
+        super(message, args);
+    }
 }

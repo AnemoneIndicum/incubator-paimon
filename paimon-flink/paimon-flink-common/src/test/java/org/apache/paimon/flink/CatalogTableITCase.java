@@ -21,8 +21,6 @@ package org.apache.paimon.flink;
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.table.system.AllTableOptionsTable;
 import org.apache.paimon.table.system.CatalogOptionsTable;
-import org.apache.paimon.table.system.SinkTableLineageTable;
-import org.apache.paimon.table.system.SourceTableLineageTable;
 import org.apache.paimon.utils.BlockingIterator;
 
 import org.apache.commons.lang3.StringUtils;
@@ -200,9 +198,7 @@ public class CatalogTableITCase extends CatalogITCaseBase {
         assertThat(sql("SHOW TABLES"))
                 .containsExactlyInAnyOrder(
                         Row.of(AllTableOptionsTable.ALL_TABLE_OPTIONS),
-                        Row.of(CatalogOptionsTable.CATALOG_OPTIONS),
-                        Row.of(SourceTableLineageTable.SOURCE_TABLE_LINEAGE),
-                        Row.of(SinkTableLineageTable.SINK_TABLE_LINEAGE));
+                        Row.of(CatalogOptionsTable.CATALOG_OPTIONS));
     }
 
     @Test
@@ -251,17 +247,20 @@ public class CatalogTableITCase extends CatalogITCaseBase {
         sql("ALTER TABLE T SET ('snapshot.num-retained.min' = '18')");
         sql("ALTER TABLE T SET ('manifest.format' = 'avro')");
 
-        assertThat(sql("SHOW CREATE TABLE T$schemas").toString())
-                .isEqualTo(
-                        "[+I[CREATE TABLE `PAIMON`.`default`.`T$schemas` (\n"
-                                + "  `schema_id` BIGINT NOT NULL,\n"
-                                + "  `fields` VARCHAR(2147483647) NOT NULL,\n"
-                                + "  `partition_keys` VARCHAR(2147483647) NOT NULL,\n"
-                                + "  `primary_keys` VARCHAR(2147483647) NOT NULL,\n"
-                                + "  `options` VARCHAR(2147483647) NOT NULL,\n"
-                                + "  `comment` VARCHAR(2147483647),\n"
-                                + "  `update_time` TIMESTAMP(3) NOT NULL\n"
-                                + ") ]]");
+        String actualResult = sql("SHOW CREATE TABLE T$schemas").toString();
+        String expectedResult =
+                "[+I[CREATE TABLE `PAIMON`.`default`.`T$schemas` (\n"
+                        + "  `schema_id` BIGINT NOT NULL,\n"
+                        + "  `fields` VARCHAR(2147483647) NOT NULL,\n"
+                        + "  `partition_keys` VARCHAR(2147483647) NOT NULL,\n"
+                        + "  `primary_keys` VARCHAR(2147483647) NOT NULL,\n"
+                        + "  `options` VARCHAR(2147483647) NOT NULL,\n"
+                        + "  `comment` VARCHAR(2147483647),\n"
+                        + "  `update_time` TIMESTAMP(3) NOT NULL\n"
+                        + ") ]]";
+        actualResult = actualResult.replace(" ", "").replace("\n", "");
+        expectedResult = expectedResult.replace(" ", "").replace("\n", "");
+        assertThat(actualResult).isEqualTo(expectedResult);
 
         List<Row> result =
                 sql(

@@ -16,22 +16,19 @@
  * limitations under the License.
  */
 
-package org.apache.paimon.lineage;
+package org.apache.paimon.rest;
 
-import org.apache.paimon.factories.Factory;
-import org.apache.paimon.options.Options;
+/** Resource paths for REST catalog. */
+public class ResourcePaths {
+    public static final String V1_CONFIG = "/api/v1/config";
 
-import java.io.Serializable;
+    public static ResourcePaths forCatalogProperties(String prefix) {
+        return new ResourcePaths(prefix);
+    }
 
-/** Factory to create {@link LineageMeta}. Each factory should have a unique identifier. */
-public interface LineageMetaFactory extends Factory, Serializable {
+    private final String prefix;
 
-    LineageMeta create(LineageMetaContext context);
-
-    /**
-     * Context has all options in a catalog and is used in factory to create {@link LineageMeta}.
-     */
-    interface LineageMetaContext {
-        Options options();
+    public ResourcePaths(String prefix) {
+        this.prefix = prefix;
     }
 }

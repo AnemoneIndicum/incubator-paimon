@@ -16,41 +16,23 @@
  * limitations under the License.
  */
 
-package org.apache.paimon.lineage;
+package org.apache.paimon.rest;
 
-import org.apache.paimon.data.Timestamp;
+import org.apache.paimon.catalog.Catalog;
+import org.apache.paimon.catalog.CatalogContext;
+import org.apache.paimon.catalog.CatalogFactory;
 
-/** Default implementation for {@link TableLineageEntity}. */
-public class TableLineageEntityImpl implements TableLineageEntity {
-    private final String database;
-    private final String table;
-    private final String job;
-    private final Timestamp timestamp;
+/** Factory to create {@link RESTCatalog}. */
+public class RESTCatalogFactory implements CatalogFactory {
+    public static final String IDENTIFIER = "rest";
 
-    public TableLineageEntityImpl(String database, String table, String job, Timestamp timestamp) {
-        this.database = database;
-        this.table = table;
-        this.job = job;
-        this.timestamp = timestamp;
+    @Override
+    public String identifier() {
+        return IDENTIFIER;
     }
 
     @Override
-    public String getDatabase() {
-        return database;
-    }
-
-    @Override
-    public String getTable() {
-        return table;
-    }
-
-    @Override
-    public String getJob() {
-        return job;
-    }
-
-    @Override
-    public Timestamp getCreateTime() {
-        return timestamp;
+    public Catalog create(CatalogContext context) {
+        return new RESTCatalog(context.options());
     }
 }

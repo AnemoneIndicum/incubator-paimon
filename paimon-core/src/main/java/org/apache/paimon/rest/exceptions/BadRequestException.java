@@ -16,17 +16,12 @@
  * limitations under the License.
  */
 
-package org.apache.paimon.lineage;
+package org.apache.paimon.rest.exceptions;
 
-import org.apache.paimon.data.Timestamp;
+/** Exception thrown on HTTP 400 - Bad Request. */
+public class BadRequestException extends RESTException {
 
-/** Table lineage entity with database, table and job for table source and sink lineage. */
-public interface TableLineageEntity {
-    String getDatabase();
-
-    String getTable();
-
-    String getJob();
-
-    Timestamp getCreateTime();
+    public BadRequestException(String message, Object... args) {
+        super(message, args);
+    }
 }

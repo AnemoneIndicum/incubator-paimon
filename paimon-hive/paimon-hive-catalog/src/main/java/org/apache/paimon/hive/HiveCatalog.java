@@ -610,8 +610,7 @@ public class HiveCatalog extends AbstractCatalog {
                                     lockFactory().orElse(null),
                                     lockContext().orElse(null),
                                     identifier),
-                            metastoreClientFactory(identifier, tableMeta.schema()).orElse(null),
-                            lineageMetaFactory));
+                            metastoreClientFactory(identifier, tableMeta.schema()).orElse(null)));
         } catch (TableNotExistException ignore) {
         }
 
@@ -1017,10 +1016,8 @@ public class HiveCatalog extends AbstractCatalog {
 
     private boolean isPaimonTable(Identifier identifier, Table table) {
         return isPaimonTable(table)
-                && tableSchemaInFileSystem(
-                                getTableLocation(identifier, table),
-                                identifier.getBranchNameOrDefault())
-                        .isPresent();
+                && tableExistsInFileSystem(
+                        getTableLocation(identifier, table), identifier.getBranchNameOrDefault());
     }
 
     private static boolean isPaimonTable(Table table) {

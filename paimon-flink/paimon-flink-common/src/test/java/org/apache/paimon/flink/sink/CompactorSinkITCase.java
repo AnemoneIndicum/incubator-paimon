@@ -132,7 +132,7 @@ public class CompactorSinkITCase extends AbstractTestBase {
                         .withContinuousMode(false)
                         .withPartitionPredicate(predicate)
                         .build();
-        new CompactorSinkBuilder(table).withFullCompaction(true).withInput(source).build();
+        new CompactorSinkBuilder(table, true).withInput(source).build();
         env.execute();
 
         snapshot = snapshotManager.snapshot(snapshotManager.latestSnapshotId());
@@ -181,8 +181,8 @@ public class CompactorSinkITCase extends AbstractTestBase {
                                                 FlinkConnectorOptions.SINK_PARALLELISM.key(),
                                                 String.valueOf(sinkParalellism));
                                     }
-                                }))
-                .withFullCompaction(false)
+                                }),
+                        false)
                 .withInput(source)
                 .build();
 
@@ -254,8 +254,8 @@ public class CompactorSinkITCase extends AbstractTestBase {
         return harness;
     }
 
-    protected StoreCompactOperator createCompactOperator(FileStoreTable table) {
-        return new StoreCompactOperator(
+    protected StoreCompactOperator.Factory createCompactOperator(FileStoreTable table) {
+        return new StoreCompactOperator.Factory(
                 table,
                 (t, commitUser, state, ioManager, memoryPool, metricGroup) ->
                         new StoreSinkWriteImpl(
@@ -272,10 +272,16 @@ public class CompactorSinkITCase extends AbstractTestBase {
                 true);
     }
 
-    protected MultiTablesStoreCompactOperator createMultiTablesCompactOperator(
+    protected MultiTablesStoreCompactOperator.Factory createMultiTablesCompactOperator(
             Catalog.Loader catalogLoader) throws Exception {
-        return new MultiTablesStoreCompactOperator(
-                catalogLoader, commitUser, new CheckpointConfig(), false, false, new Options());
+        return new MultiTablesStoreCompactOperator.Factory(
+                catalogLoader,
+                commitUser,
+                new CheckpointConfig(),
+                false,
+                false,
+                true,
+                new Options());
     }
 
     private static byte[] partition(String dt, int hh) {
